@@ -1,4 +1,6 @@
-import { addonBuilder, serveHTTP } from "stremio-addon-sdk";
+import stremioSdk from "stremio-addon-sdk";
+
+const { addonBuilder, serveHTTP } = stremioSdk;
 
 const PORT = Number(process.env.PORT || 7000);
 const PLATFORM_URL = (process.env.PLATFORM_URL || "http://localhost:8080").replace(/\/$/, "");
@@ -8,12 +10,12 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replac
 
 const manifest = {
   id: "com.justone.addon",
-  version: "0.1.0",
+  version: "0.1.1",
   name: "JustOne",
   description:
-    "Personal hub: movies/series via CinePro + live TV via dlhd-web. Not for public hosting.",
+    "Personal hub: live TV via dlhd-web. For VOD, also use CinePro native /stremio/manifest.json. Not for public hosting.",
   resources: ["catalog", "meta", "stream"],
-  types: ["movie", "series", "tv"],
+  types: ["tv"],
   catalogs: [
     {
       type: "tv",
@@ -22,7 +24,7 @@ const manifest = {
       extra: [{ name: "search", isRequired: false }],
     },
   ],
-  idPrefixes: ["justone_live_", "tt", "tmdb:"],
+  idPrefixes: ["justone_live_"],
   behaviorHints: {
     configurable: false,
     configurationRequired: false,
@@ -50,7 +52,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
       if (q) {
         metas = metas.filter((m) => m.name.toLowerCase().includes(q));
       }
-      return { metas: metas.slice(0, 200) };
+      return { metas: metas.slice(0, 500) };
     } catch (e) {
       console.error("catalog live error", e);
       return { metas: [] };
@@ -62,11 +64,23 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 builder.defineMetaHandler(async ({ type, id }) => {
   if (type === "tv" && id.startsWith("justone_live_")) {
     const channelId = id.replace("justone_live_", "");
+    let name = `Channel ${channelId}`;
+    try {
+      const r = await fetch(`${DLHD_URL}/api/channels`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      const channels = await r.json();
+      const list = Array.isArray(channels) ? channels : channels.channels || [];
+      const found = list.find((c) => String(c.id) === String(channelId));
+      if (found?.name) name = found.name;
+    } catch {
+      /* ignore */
+    }
     return {
       meta: {
         id,
         type: "tv",
-        name: `Channel ${channelId}`,
+        name,
         description: "Live channel via JustOne / dlhd-web",
       },
     };
@@ -75,8 +89,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
 });
 
 builder.defineStreamHandler(async ({ type, id }) => {
-  // Live channels
-  if (id.startsWith("justone_live_")) {
+  if (type === "tv" && id.startsWith("justone_live_")) {
     const channelId = id.replace("justone_live_", "");
     return {
       streams: [
@@ -88,25 +101,13 @@ builder.defineStreamHandler(async ({ type, id }) => {
       ],
     };
   }
-
-  // IMDb-style ids — forward to CinePro if it exposes streams; best-effort
-  if (type === "movie" || type === "series") {
-    try {
-      // Prefer CinePro native Stremio if enabled on Core
-      const cineManifest = `${CINEPRO_URL}/stremio/manifest.json`;
-      // Fallback: empty and let users also install CinePro native addon
-      void cineManifest;
-      return { streams: [] };
-    } catch {
-      return { streams: [] };
-    }
-  }
-
   return { streams: [] };
 });
 
-const interface_ = builder.getInterface();
-serveHTTP(interface_, { port: PORT });
+const iface = builder.getInterface();
+serveHTTP(iface, { port: PORT });
 console.log(`JustOne Stremio addon on :${PORT}`);
 console.log(`  platform: ${PLATFORM_URL}`);
-console.log(`  install: ${PUBLIC_URL.replace(/:\d+$/, ":" + PORT)}/manifest.json`);
+console.log(`  dlhd: ${DLHD_URL}`);
+console.log(`  install: http://0.0.0.0:${PORT}/manifest.json`);
+console.log(`  VOD: use CinePro at ${CINEPRO_URL}/stremio/manifest.json`);
