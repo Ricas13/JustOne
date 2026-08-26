@@ -1,0 +1,81 @@
+services:
+  cinepro:
+    image: ghcr.io/cinepro-org/core:latest
+    container_name: justone-cinepro
+    restart: unless-stopped
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      STREMIO_ADDON: ${STREMIO_ADDON:-true}
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    networks:
+      - justone
+
+  dlhd:
+    # Build from upstream when no public image exists; override if you fork
+    image: ${DLHD_IMAGE:-ghcr.io/lunatic16/dlhd-web:latest}
+    container_name: justone-dlhd
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DLHD_BASE: ${DLHD_BASE:-https://dlhd.st}
+    ports:
+      - "3001:3000"
+    networks:
+      - justone
+    # If the public image is unavailable, comment `image` and use:
+    # build:
+    #   context: https://github.com/Lunatic16/dlhd-web.git
+
+  platform:
+    build:
+      context: ./apps/platform
+    container_name: justone-platform
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PLATFORM_PORT: ${PLATFORM_PORT:-8080}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      CINEPRO_URL: ${CINEPRO_URL:-http://cinepro:3000}
+      DLHD_URL: ${DLHD_URL:-http://dlhd:3000}
+      LIBRARY_ROOT: /data/library
+      MOVIES_PATH: /data/library/movies
+      TV_PATH: /data/library/tv
+      LIVE_PATH: /data/library/live
+      STRM_USE_PROXY: ${STRM_USE_PROXY:-true}
+    ports:
+      - "${PLATFORM_PORT:-8080}:8080"
+    volumes:
+      - ./data/library:/data/library
+    depends_on:
+      - cinepro
+      - dlhd
+    networks:
+      - justone
+
+  stremio-addon:
+    build:
+      context: ./apps/stremio-addon
+    container_name: justone-stremio
+    restart: unless-stopped
+    environment:
+      PORT: 7000
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      PLATFORM_URL: http://platform:8080
+      CINEPRO_URL: ${CINEPRO_URL:-http://cinepro:3000}
+      DLHD_URL: ${DLHD_URL:-http://dlhd:3000}
+    ports:
+      - "7000:7000"
+    depends_on:
+      - platform
+      - cinepro
+      - dlhd
+    networks:
+      - justone
+
+networks:
+  justone:
+    driver: bridge
