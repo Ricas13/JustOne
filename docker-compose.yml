@@ -13,10 +13,10 @@ services:
     networks:
       - justone
 
-  # No public GHCR image for dlhd-web — build from upstream source
+  # Upstream dlhd-web is missing m3u8.ts — we clone + patch in docker/dlhd/
   dlhd:
     build:
-      context: https://github.com/Lunatic16/dlhd-web.git#main
+      context: ./docker/dlhd
     image: justone-dlhd:local
     container_name: justone-dlhd
     restart: unless-stopped

@@ -1,49 +1,30 @@
 # Troubleshooting
 
-## `ghcr.io/lunatic16/dlhd-web:latest` denied
+## dlhd `Cannot find module './m3u8.js'`
 
-Expected. There is no public image. Compose builds from:
+Upstream [Lunatic16/dlhd-web](https://github.com/Lunatic16/dlhd-web) references `src/channels/m3u8.ts` but the file was never committed.
 
-`https://github.com/Lunatic16/dlhd-web.git`
-
-If git build fails (network, private, Dockerfile issues), clone manually:
+JustOne fixes this by building from `docker/dlhd/`, which clones upstream and injects our `m3u8.ts` patch.
 
 ```bash
-cd /opt
-git clone https://github.com/Lunatic16/dlhd-web.git
-cd /opt/JustOne
+git pull
+docker compose build dlhd --no-cache
+docker compose up -d
 ```
 
-Then in `docker-compose.yml` set:
-
-```yaml
-  dlhd:
-    build:
-      context: /opt/dlhd-web
-    image: justone-dlhd:local
-```
-
-## CinePro pull interrupted
-
-Retry:
+## CinePro pull issues
 
 ```bash
 docker pull ghcr.io/cinepro-org/core:latest
-docker compose up -d --build
 ```
 
 Ensure `TMDB_API_KEY` is set in `.env`.
-
-## Build context from GitHub URL not supported
-
-Older Docker may not support remote git contexts. Use the manual clone method above.
 
 ## Check services
 
 ```bash
 docker compose ps
-curl -s http://localhost:8080/health | jq
-curl -sI http://localhost:3000
-curl -sI http://localhost:3001
+curl -s http://localhost:8080/health
+curl -s http://localhost:3001/api/channels | head
 curl -sI http://localhost:7000/manifest.json
 ```
