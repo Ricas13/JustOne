@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, publicizeStreamUrl } from "./config.js";
 
 function sanitize(name) {
   return String(name)
@@ -9,26 +9,19 @@ function sanitize(name) {
     .trim();
 }
 
-/**
- * Write a movie .strm using Jellyfin-friendly layout:
- * movies/Title (Year)/Title (Year).strm
- */
 export async function writeMovieStrm({ title, year, streamUrl, tmdbId }) {
   const folderName = year ? `${sanitize(title)} (${year})` : sanitize(title);
   const dir = path.join(config.moviesPath, folderName);
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, `${folderName}.strm`);
+  const fixed = publicizeStreamUrl(streamUrl);
   const url = config.strmUseProxy
-    ? `${config.publicUrl}/proxy/vod?url=${encodeURIComponent(streamUrl)}&tmdb=${tmdbId || ""}`
-    : streamUrl;
+    ? `${config.publicUrl}/proxy/vod?url=${encodeURIComponent(fixed)}&tmdb=${tmdbId || ""}`
+    : fixed;
   await fs.writeFile(filePath, url + "\n", "utf8");
   return { filePath, url };
 }
 
-/**
- * Write an episode .strm:
- * tv/Show Name/Season 01/Show Name - S01E02.strm
- */
 export async function writeEpisodeStrm({
   showTitle,
   season,
@@ -47,9 +40,10 @@ export async function writeEpisodeStrm({
   const base = `${show} - S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
   const fileName = episodeTitle ? `${base} - ${sanitize(episodeTitle)}.strm` : `${base}.strm`;
   const filePath = path.join(seasonDir, fileName);
+  const fixed = publicizeStreamUrl(streamUrl);
   const url = config.strmUseProxy
-    ? `${config.publicUrl}/proxy/vod?url=${encodeURIComponent(streamUrl)}&tmdb=${tmdbId || ""}`
-    : streamUrl;
+    ? `${config.publicUrl}/proxy/vod?url=${encodeURIComponent(fixed)}&tmdb=${tmdbId || ""}`
+    : fixed;
   await fs.writeFile(filePath, url + "\n", "utf8");
   return { filePath, url };
 }

@@ -1,5 +1,5 @@
 import express from "express";
-import { config } from "./config.js";
+import { config, publicizeStreamUrl } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 
 const app = express();
@@ -18,7 +18,12 @@ app.get("/health", async (_req, res) => {
       checks[name] = { ok: false, error: String(e.message || e) };
     }
   }
-  res.json({ service: "justone-platform", publicUrl: config.publicUrl, checks });
+  res.json({
+    service: "justone-platform",
+    publicUrl: config.publicUrl,
+    cineproPublicUrl: config.cineproPublicUrl,
+    checks,
+  });
 });
 
 app.get("/", (_req, res) => {
@@ -28,22 +33,24 @@ app.get("/", (_req, res) => {
 code{background:#f4f4f5;padding:.1rem .3rem;border-radius:4px}</style></head>
 <body>
 <h1>JustOne</h1>
-<p>Personal media hub — VOD (CinePro) + Live TV (dlhd-web) + STRM for Jellyfin + Stremio.</p>
+<p>Public: <code>${config.publicUrl}</code></p>
 <ul>
 <li><a href="/health">/health</a></li>
 <li><a href="/live/playlist.m3u8">/live/playlist.m3u8</a></li>
-<li>Live Stremio addon: <code>:7000/manifest.json</code></li>
-<li>VOD Stremio (CinePro native): <code>:3010/stremio/manifest.json</code> (host port may vary)</li>
+<li>Live Stremio: <code>${config.publicUrl}/stremio-live/manifest.json</code></li>
+<li>VOD Stremio (CinePro): <code>${config.cineproPublicUrl}/stremio/manifest.json</code></li>
 </ul>
 <p><strong>Personal use only.</strong></p>
 </body></html>`);
 });
 
 app.get("/proxy/vod", async (req, res) => {
-  const target = req.query.url;
+  let target = req.query.url;
   if (!target || typeof target !== "string") {
     return res.status(400).send("url query required");
   }
+  target = publicizeStreamUrl(target);
+  // If still an internal cinepro URL, force public
   res.redirect(302, target);
 });
 
@@ -113,7 +120,6 @@ app.post("/library/episode", async (req, res) => {
   }
 });
 
-/** Extract playable URLs from CinePro/OMSS-style JSON */
 function extractSources(data) {
   if (!data) return [];
   if (Array.isArray(data.sources)) return data.sources;
@@ -129,11 +135,6 @@ function sourceUrl(s) {
   return s.url || s.src || s.stream || s.file || null;
 }
 
-/**
- * CinePro Core API (from server banner):
- *   GET /v1/movies/:id
- *   GET /v1/tv/:id/seasons/:s/episodes/:e
- */
 app.post("/resolve/movie", async (req, res) => {
   try {
     const { tmdbId, title, year, writeStrm = false } = req.body || {};
@@ -157,7 +158,12 @@ app.post("/resolve/movie", async (req, res) => {
       return res.status(502).json({ error: "cinepro error", status: r.status, data });
     }
 
-    const sources = extractSources(data);
+    const sources = extractSources(data).map((s) => {
+      if (s && typeof s === "object" && s.url) {
+        return { ...s, url: publicizeStreamUrl(s.url) };
+      }
+      return s;
+    });
     let strm = null;
     if (writeStrm && sources.length && title) {
       const streamUrl = sourceUrl(sources[0]);
@@ -201,7 +207,12 @@ app.post("/resolve/episode", async (req, res) => {
       return res.status(502).json({ error: "cinepro error", status: r.status, data });
     }
 
-    const sources = extractSources(data);
+    const sources = extractSources(data).map((s) => {
+      if (s && typeof s === "object" && s.url) {
+        return { ...s, url: publicizeStreamUrl(s.url) };
+      }
+      return s;
+    });
     let strm = null;
     if (writeStrm && sources.length && showTitle) {
       const streamUrl = sourceUrl(sources[0]);
@@ -237,6 +248,7 @@ app.get("/live/channels", async (_req, res) => {
 app.listen(config.port, "0.0.0.0", () => {
   console.log(`JustOne platform on :${config.port}`);
   console.log(`  public: ${config.publicUrl}`);
-  console.log(`  cinepro: ${config.cineproUrl}`);
+  console.log(`  cinepro public: ${config.cineproPublicUrl}`);
+  console.log(`  cinepro internal: ${config.cineproUrl}`);
   console.log(`  dlhd: ${config.dlhdUrl}`);
 });

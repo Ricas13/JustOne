@@ -8,12 +8,22 @@ services:
       STREMIO_ADDON: ${STREMIO_ADDON:-true}
       HOST: "0.0.0.0"
       PORT: "3000"
-    ports:
-      - "3000:3000"
+      # So CinePro builds proxy links against the public URL when possible
+      PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
     networks:
-      - justone
+      - media_net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=media_net
+      - traefik.http.routers.justone-cinepro.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/cinepro`)
+      - traefik.http.routers.justone-cinepro.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.justone-cinepro.tls=true
+      - traefik.http.routers.justone-cinepro.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.routers.justone-cinepro.priority=20
+      - traefik.http.routers.justone-cinepro.middlewares=justone-cinepro-strip
+      - traefik.http.middlewares.justone-cinepro-strip.stripprefix.prefixes=/cinepro
+      - traefik.http.services.justone-cinepro.loadbalancer.server.port=3000
 
-  # Upstream dlhd-web is missing m3u8.ts — we clone + patch in docker/dlhd/
   dlhd:
     build:
       context: ./docker/dlhd
@@ -23,10 +33,20 @@ services:
     environment:
       PORT: "3000"
       DLHD_BASE: ${DLHD_BASE:-https://dlhd.st}
-    ports:
-      - "3001:3000"
     networks:
-      - justone
+      - media_net
+    # Optional direct exposure; normally reached via platform proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=media_net
+      - traefik.http.routers.justone-dlhd.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/dlhd`)
+      - traefik.http.routers.justone-dlhd.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.justone-dlhd.tls=true
+      - traefik.http.routers.justone-dlhd.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.routers.justone-dlhd.priority=20
+      - traefik.http.routers.justone-dlhd.middlewares=justone-dlhd-strip
+      - traefik.http.middlewares.justone-dlhd-strip.stripprefix.prefixes=/dlhd
+      - traefik.http.services.justone-dlhd.loadbalancer.server.port=3000
 
   platform:
     build:
@@ -36,24 +56,32 @@ services:
     env_file:
       - .env
     environment:
-      PLATFORM_PORT: ${PLATFORM_PORT:-8080}
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
-      CINEPRO_URL: ${CINEPRO_URL:-http://cinepro:3000}
-      DLHD_URL: ${DLHD_URL:-http://dlhd:3000}
+      PLATFORM_PORT: "8080"
+      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      CINEPRO_URL: http://cinepro:3000
+      CINEPRO_PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
+      DLHD_URL: http://dlhd:3000
       LIBRARY_ROOT: /data/library
       MOVIES_PATH: /data/library/movies
       TV_PATH: /data/library/tv
       LIVE_PATH: /data/library/live
       STRM_USE_PROXY: ${STRM_USE_PROXY:-true}
-    ports:
-      - "${PLATFORM_PORT:-8080}:8080"
     volumes:
       - ./data/library:/data/library
     depends_on:
       - cinepro
       - dlhd
     networks:
-      - justone
+      - media_net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=media_net
+      - traefik.http.routers.justone.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`)
+      - traefik.http.routers.justone.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.justone.tls=true
+      - traefik.http.routers.justone.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.routers.justone.priority=1
+      - traefik.http.services.justone.loadbalancer.server.port=8080
 
   stremio-addon:
     build:
@@ -62,19 +90,28 @@ services:
     restart: unless-stopped
     environment:
       PORT: "7000"
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
-      PLATFORM_URL: http://platform:8080
-      CINEPRO_URL: ${CINEPRO_URL:-http://cinepro:3000}
-      DLHD_URL: ${DLHD_URL:-http://dlhd:3000}
-    ports:
-      - "7000:7000"
+      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      PLATFORM_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      CINEPRO_URL: http://cinepro:3000
+      DLHD_URL: http://dlhd:3000
     depends_on:
       - platform
       - cinepro
       - dlhd
     networks:
-      - justone
+      - media_net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=media_net
+      - traefik.http.routers.justone-stremio.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/stremio-live`)
+      - traefik.http.routers.justone-stremio.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.justone-stremio.tls=true
+      - traefik.http.routers.justone-stremio.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.routers.justone-stremio.priority=20
+      - traefik.http.routers.justone-stremio.middlewares=justone-stremio-strip
+      - traefik.http.middlewares.justone-stremio-strip.stripprefix.prefixes=/stremio-live
+      - traefik.http.services.justone-stremio.loadbalancer.server.port=7000
 
 networks:
-  justone:
-    driver: bridge
+  media_net:
+    external: true
