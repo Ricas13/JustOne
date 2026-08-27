@@ -18,9 +18,14 @@ export const config = {
   tmdbKey: process.env.TMDB_API_KEY || "",
   liveRefreshMin: Number(process.env.LIVE_REFRESH_MIN || 30),
   generateOnStart: String(process.env.GENERATE_ON_START || "true") !== "false",
-  moviePages: Number(process.env.MOVIE_PAGES || 25),
-  tvPages: Number(process.env.TV_PAGES || 15),
+  moviePages: Number(process.env.MOVIE_PAGES || 40),
+  tvPages: Number(process.env.TV_PAGES || 25),
   tvMaxEpisodes: Number(process.env.TV_MAX_EPISODES || 24),
+  tvMaxSeasons: Number(process.env.TV_MAX_SEASONS || 4),
+  maxMovies: Number(process.env.MAX_MOVIES || 5000),
+  maxShows: Number(process.env.MAX_SHOWS || 1500),
+  qualityFallback: String(process.env.QUALITY_FALLBACK || "true") !== "false",
+  discoverFromYear: Number(process.env.DISCOVER_FROM_YEAR || 1980),
   qualities: String(process.env.QUALITIES || "1080p,4k")
     .split(",")
     .map((s) => s.trim())

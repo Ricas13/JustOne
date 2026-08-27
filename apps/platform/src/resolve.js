@@ -65,7 +65,8 @@ export function pickSource(sources, quality) {
   const available = [...new Set(list.map((s) => s.quality))];
   const ranked = [...list].sort((a, b) => qualityRank(b.quality, quality) - qualityRank(a.quality, quality));
   const exact = ranked.find((s) => qualityRank(s.quality, quality) === 3);
-  const fallback = quality === "4k" ? null : ranked[0];
+  const allowFallback = config.qualityFallback || quality !== "4k";
+  const fallback = allowFallback ? ranked[0] : null;
   const best = exact || fallback;
   return {
     url: best?.url || null,

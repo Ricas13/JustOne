@@ -172,31 +172,79 @@ export async function writeLivePlaylist(force = true) {
 
 async function uniqueMovies(pages) {
   const seen = new Map();
-  const lists = ["/trending/movie/week", "/movie/popular", "/movie/top_rated"];
-  for (const endpoint of lists) {
-    for (let page = 1; page <= pages; page++) {
-      job.detail = `${endpoint} p${page}`;
-      log("tmdb", job.detail);
-      const data = await tmdb(endpoint, { page });
-      for (const m of data?.results || []) {
-        if (m?.id && !seen.has(m.id)) seen.set(m.id, m);
-      }
+  const add = (rows) => {
+    for (const m of rows || []) {
+      if (m?.id && !seen.has(m.id)) seen.set(m.id, m);
     }
+  };
+  const lists = [
+    "/trending/movie/week",
+    "/trending/movie/day",
+    "/movie/popular",
+    "/movie/top_rated",
+    "/movie/now_playing",
+    "/movie/upcoming",
+  ];
+  const p = Math.min(pages, 50);
+  for (const endpoint of lists) {
+    for (let page = 1; page <= p; page++) {
+      job.detail = `${endpoint} p${page}`;
+      log("tmdb", job.detail, "n=" + seen.size);
+      const data = await tmdb(endpoint, { page });
+      add(data?.results);
+      if (seen.size >= config.maxMovies) return [...seen.values()];
+    }
+  }
+  const discPages = Math.min(p, 20);
+  for (let page = 1; page <= discPages; page++) {
+    job.detail = `discover/movie p${page}`;
+    const data = await tmdb("/discover/movie", {
+      page,
+      sort_by: "vote_count.desc",
+      "vote_count.gte": 50,
+      include_adult: "false",
+    });
+    add(data?.results);
+    if (seen.size >= config.maxMovies) return [...seen.values()];
+  }
+  const now = new Date().getFullYear();
+  const from = Math.max(1950, config.discoverFromYear);
+  for (let year = now; year >= from; year--) {
+    job.detail = `discover ${year}`;
+    const data = await tmdb("/discover/movie", {
+      page: 1,
+      sort_by: "popularity.desc",
+      primary_release_year: year,
+      include_adult: "false",
+    });
+    add(data?.results);
+    if (seen.size >= config.maxMovies) break;
   }
   return [...seen.values()];
 }
 
 async function uniqueShows(pages) {
   const seen = new Map();
-  const lists = ["/trending/tv/week", "/tv/popular"];
+  const add = (rows) => {
+    for (const s of rows || []) {
+      if (s?.id && !seen.has(s.id)) seen.set(s.id, s);
+    }
+  };
+  const lists = [
+    "/trending/tv/week",
+    "/trending/tv/day",
+    "/tv/popular",
+    "/tv/top_rated",
+    "/tv/on_the_air",
+  ];
+  const p = Math.min(pages, 40);
   for (const endpoint of lists) {
-    for (let page = 1; page <= pages; page++) {
+    for (let page = 1; page <= p; page++) {
       job.detail = `${endpoint} p${page}`;
-      log("tmdb", job.detail);
+      log("tmdb", job.detail, "n=" + seen.size);
       const data = await tmdb(endpoint, { page });
-      for (const s of data?.results || []) {
-        if (s?.id && !seen.has(s.id)) seen.set(s.id, s);
-      }
+      add(data?.results);
+      if (seen.size >= config.maxShows) return [...seen.values()];
     }
   }
   return [...seen.values()];
@@ -218,7 +266,7 @@ export async function generateLibrary({
   const qs = config.qualities.length ? config.qualities : ["1080p", "4k"];
   try {
     log("generate: fetching movie lists");
-    const movies = await uniqueMovies(Math.min(moviePages, 40));
+    const movies = await uniqueMovies(Math.min(moviePages, 50));
     log("generate: writing", movies.length, "movies ×", qs.join(","));
     for (const m of movies) {
       const year = Number(String(m.release_date || "").slice(0, 4)) || 0;
@@ -230,26 +278,32 @@ export async function generateLibrary({
     }
     job.phase = "tv";
     log("generate: fetching tv lists");
-    const shows = await uniqueShows(Math.min(tvPages, 30));
+    const shows = await uniqueShows(Math.min(tvPages, 40));
     log("generate: writing", shows.length, "shows");
+    const maxSeasons = config.tvMaxSeasons;
     for (const s of shows) {
       const year = Number(String(s.first_air_date || "").slice(0, 4)) || 0;
       const detail = await tmdb(`/tv/${s.id}`, { append_to_response: "external_ids" });
       const tvdbId = detail?.external_ids?.tvdb_id;
-      const season = (detail?.seasons || []).find((x) => x.season_number === 1);
-      const count = Math.min(season?.episode_count || maxEpisodes, maxEpisodes);
-      for (let ep = 1; ep <= count; ep++) {
-        for (const quality of qs) {
-          await writeEpisodeStrm({
-            showTitle: s.name,
-            year,
-            tmdbId: s.id,
-            tvdbId,
-            season: 1,
-            episode: ep,
-            quality,
-          });
-          job.episodes += 1;
+      const seasons = (detail?.seasons || [])
+        .filter((x) => x.season_number > 0)
+        .slice(0, maxSeasons);
+      for (const sn of seasons) {
+        const seasonNum = sn.season_number;
+        const count = Math.min(sn.episode_count || maxEpisodes, maxEpisodes);
+        for (let ep = 1; ep <= count; ep++) {
+          for (const quality of qs) {
+            await writeEpisodeStrm({
+              showTitle: s.name,
+              year,
+              tmdbId: s.id,
+              tvdbId,
+              season: seasonNum,
+              episode: ep,
+              quality,
+            });
+            job.episodes += 1;
+          }
         }
       }
       if (job.episodes % 200 === 0) log("generate episodes", job.episodes);
@@ -354,5 +408,6 @@ export function libraryStatus() {
       live: config.liveDir,
     },
     generateOnStart: config.generateOnStart,
+    qualityFallback: config.qualityFallback,
   };
 }
