@@ -1,8 +1,5 @@
-# Drop this into Traefik's *file* provider directory (often /etc/traefik/dynamic/).
-# It beats leftover CinePro docker labels that still own resolver.vpn4u.cc.
-#
-# Traefik must share Docker network media_net with container justone-platform.
-# If your cert resolver is not named "le", change certResolver below.
+# Copy onto Traefik's file-provider directory (e.g. /etc/traefik/dynamic/justone.yml)
+# then wait a few seconds. No certResolver — reuses the existing resolver.vpn4u.cc cert.
 
 http:
   routers:
@@ -12,8 +9,7 @@ http:
         - websecure
       service: justone-platform
       priority: 10000
-      tls:
-        certResolver: le
+      tls: {}
 
   services:
     justone-platform:

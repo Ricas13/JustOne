@@ -61,12 +61,11 @@ services:
       - media_net
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=${TRAEFIK_NETWORK:-media_net}"
-      - "traefik.http.routers.justone-platform.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`)"
-      - "traefik.http.routers.justone-platform.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.docker.network=media_net"
+      - "traefik.http.routers.justone-platform.rule=Host(`resolver.vpn4u.cc`)"
+      - "traefik.http.routers.justone-platform.entrypoints=websecure"
       - "traefik.http.routers.justone-platform.tls=true"
-      - "traefik.http.routers.justone-platform.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}"
-      - "traefik.http.routers.justone-platform.priority=1000"
+      - "traefik.http.routers.justone-platform.priority=10000"
       - "traefik.http.routers.justone-platform.service=justone-platform"
       - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
 
