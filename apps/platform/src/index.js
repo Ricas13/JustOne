@@ -28,6 +28,7 @@ import {
   episodeDownloadFilename,
   proxyStream,
   fixMediaType,
+  restreamMpegTs,
 } from "./play.js";
 import { isAuthed, isPublicPath, setAuthCookie, clearAuthCookie } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
@@ -226,7 +227,7 @@ app.get("/resolve/episode/:tmdbId/:season/:episode", async (req, res) => {
 
 app.get("/resolve/live/:channelId", async (req, res) => {
   try {
-    const id = String(req.params.channelId).replace(/\.m3u8$/i, "");
+    const id = String(req.params.channelId).replace(/\.(m3u8|ts)$/i, "");
     const picked = await resolveLive(id, { force: req.query.refresh === "1" });
     return redirectTo(res, picked, req.query.format, playLivePath(id));
   } catch (e) {
@@ -285,9 +286,19 @@ app.get("/play/episode/:tmdbId/:season/:episode", async (req, res) => {
 
 app.get("/play/live/:channelId", async (req, res) => {
   try {
-    const id = String(req.params.channelId).replace(/\.m3u8$/i, "");
+    const raw = String(req.params.channelId);
+    const asTs = /\.ts$/i.test(raw) || req.query.fmt === "ts";
+    const id = raw.replace(/\.(m3u8|ts)$/i, "");
     const picked = await resolveLive(id, { force: req.query.refresh === "1" });
     if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(id));
+    if (asTs) {
+      if (req.method === "HEAD") {
+        res.setHeader("Content-Type", "video/mp2t");
+        return res.status(200).end();
+      }
+      const hls = `http://127.0.0.1:${config.port}/play/live/${id}.m3u8`;
+      return restreamMpegTs(req, res, hls);
+    }
     proxyStream(req, res, picked.url, { filename: null, download: false });
   } catch (e) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });

@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import { spawn } from "node:child_process";
 import { config } from "./config.js";
 import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
 
@@ -35,8 +36,63 @@ export function playEpisodePath(tmdbId, season, episode, quality) {
 }
 
 export function playLivePath(channelId) {
-  const id = String(channelId).replace(/\.m3u8$/i, "");
-  return `/play/live/${encodeURIComponent(id)}.m3u8`;
+  const id = String(channelId).replace(/\.(m3u8|ts)$/i, "");
+  return `/play/live/${encodeURIComponent(id)}.ts`;
+}
+
+export function restreamMpegTs(req, res, inputUrl) {
+  const ua =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  res.setHeader("Content-Type", "video/mp2t");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  const ff = spawn(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "warning",
+      "-nostdin",
+      "-user_agent",
+      ua,
+      "-reconnect",
+      "1",
+      "-reconnect_streamed",
+      "1",
+      "-reconnect_delay_max",
+      "2",
+      "-i",
+      inputUrl,
+      "-map",
+      "0:v:0?",
+      "-map",
+      "0:a:0?",
+      "-c",
+      "copy",
+      "-f",
+      "mpegts",
+      "-flush_packets",
+      "1",
+      "pipe:1",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  ff.stdout.pipe(res);
+  ff.stderr.on("data", (d) => log("ffmpeg", String(d).trim()));
+  const kill = () => {
+    try {
+      ff.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  };
+  req.on("close", kill);
+  res.on("close", kill);
+  ff.on("error", (e) => {
+    log("ffmpeg spawn", e.message);
+    if (!res.headersSent) res.status(502).end("ffmpeg missing");
+  });
 }
 
 export function publicPlayUrl(pathAndQuery) {

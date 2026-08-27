@@ -163,7 +163,7 @@ export function buildM3u(list) {
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
     );
     const play =
-      ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.m3u8`;
+      ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.ts`;
     lines.push(`${config.publicUrl}${play}`);
   });
   return lines.join("\n") + "\n";
