@@ -22,6 +22,30 @@ export function defaultSources() {
       url: "http://api.toonamiaftermath.com:3000/pst/playlist.m3u8",
       enabled: true,
     },
+    {
+      id: "iptv-org-sports",
+      name: "IPTV-org Sports",
+      url: "https://iptv-org.github.io/iptv/categories/sports.m3u",
+      enabled: true,
+    },
+    {
+      id: "iptv-org-news",
+      name: "IPTV-org News",
+      url: "https://iptv-org.github.io/iptv/categories/news.m3u",
+      enabled: true,
+    },
+    {
+      id: "iptv-org-us",
+      name: "IPTV-org USA",
+      url: "https://iptv-org.github.io/iptv/countries/us.m3u",
+      enabled: true,
+    },
+    {
+      id: "free-tv",
+      name: "Free-TV (Pluto / Samsung / Plex)",
+      url: "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8",
+      enabled: true,
+    },
   ];
 }
 
@@ -30,14 +54,18 @@ function sourcesFile() {
 }
 
 export async function readSources() {
+  let list = [];
   try {
     const raw = await fs.readFile(sourcesFile(), "utf8");
-    const list = JSON.parse(raw);
-    if (Array.isArray(list) && list.length) return list;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) list = parsed;
   } catch {
     /* first run */
   }
-  const list = defaultSources();
+  const have = new Set(list.map((s) => s.id));
+  for (const d of defaultSources()) {
+    if (!have.has(d.id)) list.push(d);
+  }
   await writeSources(list);
   return list;
 }
