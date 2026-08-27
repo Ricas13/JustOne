@@ -1,20 +1,45 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { config, publicizeStreamUrl } from "./config.js";
+import { config } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
+import {
+  resolveMovie,
+  resolveEpisode,
+  resolveLive,
+  cacheStats,
+} from "./resolve.js";
+import { slugTvgId } from "./naming.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
+const TMDB = "https://api.themoviedb.org/3";
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
   next();
 });
 app.use(express.static(publicDir));
+
+function redirectTo(res, url, format) {
+  if (!url) return res.status(502).json({ error: "no source" });
+  if (format === "json") return res.json({ url, mode: "redirect" });
+  res.setHeader("Cache-Control", "no-store");
+  return res.redirect(302, url);
+}
+
+async function tmdb(pathname, params = {}) {
+  if (!config.tmdbKey) return null;
+  const url = new URL(TMDB + pathname);
+  url.searchParams.set("api_key", config.tmdbKey);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok) return null;
+  return r.json();
+}
 
 app.get("/health", async (_req, res) => {
   const checks = {};
@@ -31,17 +56,187 @@ app.get("/health", async (_req, res) => {
   }
   res.json({
     service: "justone-platform",
+    mode: "redirect-resolver",
     publicUrl: config.publicUrl,
-    cineproPublicUrl: config.cineproPublicUrl,
+    cache: cacheStats(),
     checks,
   });
+});
+
+app.get("/resolve/movie/:tmdbId", async (req, res) => {
+  try {
+    const quality = req.query.quality === "4k" ? "4k" : "1080p";
+    const url = await resolveMovie(req.params.tmdbId, quality);
+    return redirectTo(res, url, req.query.format);
+  } catch (e) {
+    res.status(502).send(String(e.message || e));
+  }
+});
+
+app.get("/resolve/episode/:tmdbId/:season/:episode", async (req, res) => {
+  try {
+    const quality = req.query.quality === "4k" ? "4k" : "1080p";
+    const url = await resolveEpisode(
+      req.params.tmdbId,
+      req.params.season,
+      req.params.episode,
+      quality,
+    );
+    return redirectTo(res, url, req.query.format);
+  } catch (e) {
+    res.status(502).send(String(e.message || e));
+  }
+});
+
+app.get("/resolve/live/:channelId", async (req, res) => {
+  try {
+    const force = req.query.refresh === "1";
+    const url = await resolveLive(req.params.channelId, { force });
+    return redirectTo(res, url, req.query.format);
+  } catch (e) {
+    res.status(502).send(String(e.message || e));
+  }
+});
+
+let channelCache = { at: 0, list: [] };
+
+async function loadChannels(force = false) {
+  const stale = Date.now() - channelCache.at > config.liveRefreshMin * 60 * 1000;
+  if (!force && channelCache.list.length && !stale) return channelCache.list;
+  const r = await fetch(`${config.dlhdUrl}/api/channels`, {
+    signal: AbortSignal.timeout(20000),
+  });
+  const data = await r.json();
+  const list = Array.isArray(data) ? data : data.channels || [];
+  channelCache = { at: Date.now(), list };
+  return list;
+}
+
+app.get("/live/channels", async (_req, res) => {
+  try {
+    res.json(await loadChannels());
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/live/playlist.m3u8", async (req, res) => {
+  try {
+    const force = req.query.refresh === "1";
+    const list = await loadChannels(force);
+    const lines = [`#EXTM3U url-tvg="${config.epgUrl}" tvg-shift=0`];
+    list.forEach((ch, i) => {
+      const name = ch.name || `Channel ${ch.id}`;
+      const tvg = slugTvgId(name);
+      const logo = ch.logo || "";
+      const group = ch.group || ch.category || "Live";
+      lines.push(
+        `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
+      );
+      lines.push(`${config.publicUrl}/resolve/live/${ch.id}`);
+    });
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-cache");
+    res.send(lines.join("\n") + "\n");
+  } catch (e) {
+    res.status(502).send(String(e.message || e));
+  }
+});
+
+app.post("/live/refresh", async (_req, res) => {
+  try {
+    const list = await loadChannels(true);
+    res.json({ ok: true, count: list.length });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/library/movie", async (req, res) => {
+  try {
+    const { title, year, tmdbId, qualities } = req.body || {};
+    if (!title || !tmdbId) return res.status(400).json({ error: "title and tmdbId required" });
+    const qs = qualities?.length ? qualities : config.qualities;
+    const written = [];
+    for (const quality of qs) {
+      written.push(await writeMovieStrm({ title, year, tmdbId, quality }));
+    }
+    res.json({ ok: true, written });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/library/episode", async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.showTitle || !body.tmdbId || body.season == null || body.episode == null) {
+      return res.status(400).json({ error: "showTitle, tmdbId, season, episode required" });
+    }
+    const qs = body.qualities?.length ? body.qualities : config.qualities;
+    const written = [];
+    for (const quality of qs) {
+      written.push(await writeEpisodeStrm({ ...body, quality }));
+    }
+    res.json({ ok: true, written });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/library/generate", async (req, res) => {
+  try {
+    const moviePages = Math.min(Number(req.body?.moviePages || 0), 50);
+    const tvPages = Math.min(Number(req.body?.tvPages || 0), 20);
+    const maxEpisodes = Math.min(Number(req.body?.maxEpisodes || 12), 40);
+    const qs = config.qualities;
+    let movies = 0;
+    let episodes = 0;
+    for (let page = 1; page <= moviePages; page++) {
+      const data = await tmdb("/trending/movie/week", { page });
+      for (const m of data?.results || []) {
+        const year = Number(String(m.release_date || "").slice(0, 4)) || 0;
+        for (const quality of qs) {
+          await writeMovieStrm({ title: m.title, year, tmdbId: m.id, quality });
+          movies += 1;
+        }
+      }
+    }
+    for (let page = 1; page <= tvPages; page++) {
+      const data = await tmdb("/trending/tv/week", { page });
+      for (const s of data?.results || []) {
+        const year = Number(String(s.first_air_date || "").slice(0, 4)) || 0;
+        const detail = await tmdb(`/tv/${s.id}`, { append_to_response: "external_ids" });
+        const tvdbId = detail?.external_ids?.tvdb_id;
+        const season = (detail?.seasons || []).find((x) => x.season_number === 1);
+        const count = Math.min(season?.episode_count || maxEpisodes, maxEpisodes);
+        for (let ep = 1; ep <= count; ep++) {
+          for (const quality of qs) {
+            await writeEpisodeStrm({
+              showTitle: s.name,
+              year,
+              tmdbId: s.id,
+              tvdbId,
+              season: 1,
+              episode: ep,
+              quality,
+            });
+            episodes += 1;
+          }
+        }
+      }
+    }
+    res.json({ ok: true, movies, episodes });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 const unifiedManifest = {
   id: "com.justone.addon",
   version: "1.0.0",
   name: "JustOne",
-  description: "Movies, series, and live TV from your personal JustOne hub.",
+  description: "Resolver addon: catalogs plus direct stream URLs after CinePro/live resolve.",
   resources: ["catalog", "meta", "stream"],
   types: ["movie", "series", "tv"],
   catalogs: [
@@ -50,224 +245,27 @@ const unifiedManifest = {
     { type: "tv", id: "justone-live", name: "JustOne Live TV" },
   ],
   idPrefixes: ["tmdb:", "justone_live_"],
-  behaviorHints: { configurable: false, configurationRequired: false },
 };
 
-app.get("/stremio/manifest.json", (_req, res) => {
-  res.json(unifiedManifest);
-});
-
-app.get("/proxy/vod", async (req, res) => {
-  let target = req.query.url;
-  if (!target || typeof target !== "string") {
-    return res.status(400).send("url query required");
-  }
-  target = publicizeStreamUrl(target);
-  res.redirect(302, target);
-});
-
-app.get("/proxy/live/:channelId", async (req, res) => {
-  const id = req.params.channelId;
-  const upstream = `${config.dlhdUrl}/api/stream/${id}.m3u8`;
-  res.redirect(302, upstream);
-});
-
-app.get("/live/playlist.m3u8", async (_req, res) => {
-  try {
-    const r = await fetch(`${config.dlhdUrl}/playlist.m3u8`, {
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!r.ok) {
-      return res.status(502).send(`live playlist error: ${r.status}`);
-    }
-    let text = await r.text();
-    text = text.replace(
-      /https?:\/\/[^\s]+\/api\/stream\/(\d+)\.m3u8/g,
-      `${config.publicUrl}/proxy/live/$1`,
-    );
-    text = text.replace(
-      /(?:^|\n)(\/api\/stream\/(\d+)\.m3u8)/g,
-      `\n${config.publicUrl}/proxy/live/$2`,
-    );
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.setHeader("Cache-Control", "no-cache");
-    res.send(text);
-  } catch (e) {
-    res.status(502).send(String(e.message || e));
-  }
-});
-
-app.post("/library/movie", async (req, res) => {
-  try {
-    const { title, year, streamUrl, tmdbId } = req.body || {};
-    if (!title || !streamUrl) {
-      return res.status(400).json({ error: "title and streamUrl required" });
-    }
-    const result = await writeMovieStrm({ title, year, streamUrl, tmdbId });
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.post("/library/episode", async (req, res) => {
-  try {
-    const { showTitle, season, episode, episodeTitle, streamUrl, tmdbId } = req.body || {};
-    if (!showTitle || season == null || episode == null || !streamUrl) {
-      return res.status(400).json({
-        error: "showTitle, season, episode, streamUrl required",
-      });
-    }
-    const result = await writeEpisodeStrm({
-      showTitle,
-      season,
-      episode,
-      episodeTitle,
-      streamUrl,
-      tmdbId,
-    });
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-function extractSources(data) {
-  if (!data) return [];
-  if (Array.isArray(data.sources)) return data.sources;
-  if (Array.isArray(data.streams)) return data.streams;
-  if (Array.isArray(data.results)) return data.results;
-  if (Array.isArray(data)) return data;
-  return [];
-}
-
-function sourceUrl(s) {
-  if (!s) return null;
-  if (typeof s === "string") return s;
-  return s.url || s.src || s.stream || s.file || null;
-}
-
-app.post("/resolve/movie", async (req, res) => {
-  try {
-    const { tmdbId, title, year, writeStrm = false } = req.body || {};
-    if (!tmdbId) {
-      return res.status(400).json({ error: "tmdbId required" });
-    }
-    const pathUrl = `${config.cineproUrl}/v1/movies/${tmdbId}`;
-    const r = await fetch(pathUrl, { signal: AbortSignal.timeout(90000) });
-    const body = await r.text();
-    let data;
-    try {
-      data = JSON.parse(body);
-    } catch {
-      return res.status(502).json({
-        error: "cinepro non-json response",
-        status: r.status,
-        preview: body.slice(0, 400),
-      });
-    }
-    if (!r.ok) {
-      return res.status(502).json({ error: "cinepro error", status: r.status, data });
-    }
-
-    const sources = extractSources(data).map((s) => {
-      if (s && typeof s === "object" && s.url) {
-        return { ...s, url: publicizeStreamUrl(s.url) };
-      }
-      return s;
-    });
-    let strm = null;
-    if (writeStrm && sources.length && title) {
-      const stream = sourceUrl(sources[0]);
-      if (stream) {
-        strm = await writeMovieStrm({ title, year, streamUrl: stream, tmdbId });
-      }
-    }
-    res.json({ ok: true, path: pathUrl, sources, strm });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.post("/resolve/episode", async (req, res) => {
-  try {
-    const {
-      tmdbId,
-      season,
-      episode,
-      showTitle,
-      episodeTitle,
-      writeStrm = false,
-    } = req.body || {};
-    if (!tmdbId || season == null || episode == null) {
-      return res.status(400).json({ error: "tmdbId, season, episode required" });
-    }
-    const pathUrl = `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`;
-    const r = await fetch(pathUrl, { signal: AbortSignal.timeout(90000) });
-    const body = await r.text();
-    let data;
-    try {
-      data = JSON.parse(body);
-    } catch {
-      return res.status(502).json({
-        error: "cinepro non-json response",
-        status: r.status,
-        preview: body.slice(0, 400),
-      });
-    }
-    if (!r.ok) {
-      return res.status(502).json({ error: "cinepro error", status: r.status, data });
-    }
-
-    const sources = extractSources(data).map((s) => {
-      if (s && typeof s === "object" && s.url) {
-        return { ...s, url: publicizeStreamUrl(s.url) };
-      }
-      return s;
-    });
-    let strm = null;
-    if (writeStrm && sources.length && showTitle) {
-      const stream = sourceUrl(sources[0]);
-      if (stream) {
-        strm = await writeEpisodeStrm({
-          showTitle,
-          season,
-          episode,
-          episodeTitle,
-          streamUrl: stream,
-          tmdbId,
-        });
-      }
-    }
-    res.json({ ok: true, path: pathUrl, sources, strm });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.get("/live/channels", async (_req, res) => {
-  try {
-    const r = await fetch(`${config.dlhdUrl}/api/channels`, {
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch (e) {
-    res.status(502).json({ error: String(e.message || e) });
-  }
-});
+app.get("/stremio/manifest.json", (_req, res) => res.json(unifiedManifest));
 
 app.get("*", (req, res, next) => {
-  if (req.path.startsWith("/api") || req.path.startsWith("/proxy") || req.path.startsWith("/live") || req.path.startsWith("/stremio") || req.path.startsWith("/library") || req.path.startsWith("/resolve") || req.path.startsWith("/health")) {
+  if (
+    req.path.startsWith("/resolve") ||
+    req.path.startsWith("/live") ||
+    req.path.startsWith("/library") ||
+    req.path.startsWith("/health") ||
+    req.path.startsWith("/stremio")
+  ) {
     return next();
   }
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
+setInterval(() => {
+  loadChannels(true).catch(() => {});
+}, Math.max(config.liveRefreshMin, 5) * 60 * 1000).unref?.();
+
 app.listen(config.port, "0.0.0.0", () => {
-  console.log(`JustOne platform on :${config.port}`);
-  console.log(`  public: ${config.publicUrl}`);
-  console.log(`  cinepro public: ${config.cineproPublicUrl}`);
-  console.log(`  cinepro internal: ${config.cineproUrl}`);
-  console.log(`  dlhd: ${config.dlhdUrl}`);
+  console.log(`JustOne platform on :${config.port} (redirect resolver)`);
 });

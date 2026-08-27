@@ -13,17 +13,6 @@ services:
       - "3000:3000"
     networks:
       - justone
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=justone
-      - traefik.http.routers.justone-cinepro.rule=Host(`${TRAEFIK_HOST:-localhost}`) && PathPrefix(`/cinepro`)
-      - traefik.http.routers.justone-cinepro.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.justone-cinepro.tls=true
-      - traefik.http.routers.justone-cinepro.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      - traefik.http.routers.justone-cinepro.priority=20
-      - traefik.http.routers.justone-cinepro.middlewares=justone-cinepro-strip
-      - traefik.http.middlewares.justone-cinepro-strip.stripprefix.prefixes=/cinepro
-      - traefik.http.services.justone-cinepro.loadbalancer.server.port=3000
 
   dlhd:
     build:
@@ -38,17 +27,6 @@ services:
       - "3001:3000"
     networks:
       - justone
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=justone
-      - traefik.http.routers.justone-dlhd.rule=Host(`${TRAEFIK_HOST:-localhost}`) && PathPrefix(`/dlhd`)
-      - traefik.http.routers.justone-dlhd.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.justone-dlhd.tls=true
-      - traefik.http.routers.justone-dlhd.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      - traefik.http.routers.justone-dlhd.priority=20
-      - traefik.http.routers.justone-dlhd.middlewares=justone-dlhd-strip
-      - traefik.http.middlewares.justone-dlhd-strip.stripprefix.prefixes=/dlhd
-      - traefik.http.services.justone-dlhd.loadbalancer.server.port=3000
 
   platform:
     build:
@@ -64,10 +42,11 @@ services:
       CINEPRO_PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-http://localhost:3000}
       DLHD_URL: http://dlhd:3000
       LIBRARY_ROOT: /data/library
-      MOVIES_PATH: /data/library/movies
-      TV_PATH: /data/library/tv
-      LIVE_PATH: /data/library/live
-      STRM_USE_PROXY: ${STRM_USE_PROXY:-true}
+      EPG_URL: ${EPG_URL:-}
+      LIVE_REFRESH_MIN: ${LIVE_REFRESH_MIN:-30}
+      QUALITIES: ${QUALITIES:-1080p,4k}
+      RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-900000}
+      TMDB_API_KEY: ${TMDB_API_KEY}
     volumes:
       - ./data/library:/data/library
     depends_on:
@@ -77,15 +56,6 @@ services:
       - "8080:8080"
     networks:
       - justone
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=justone
-      - traefik.http.routers.justone.rule=Host(`${TRAEFIK_HOST:-localhost}`)
-      - traefik.http.routers.justone.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.justone.tls=true
-      - traefik.http.routers.justone.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      - traefik.http.routers.justone.priority=1
-      - traefik.http.services.justone.loadbalancer.server.port=8080
 
   stremio-addon:
     build:
@@ -101,23 +71,10 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY}
     depends_on:
       - platform
-      - cinepro
-      - dlhd
     ports:
       - "7000:7000"
     networks:
       - justone
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=justone
-      - traefik.http.routers.justone-stremio.rule=Host(`${TRAEFIK_HOST:-localhost}`) && PathPrefix(`/stremio-live`)
-      - traefik.http.routers.justone-stremio.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.justone-stremio.tls=true
-      - traefik.http.routers.justone-stremio.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      - traefik.http.routers.justone-stremio.priority=20
-      - traefik.http.routers.justone-stremio.middlewares=justone-stremio-strip
-      - traefik.http.middlewares.justone-stremio-strip.stripprefix.prefixes=/stremio-live
-      - traefik.http.services.justone-stremio.loadbalancer.server.port=7000
 
 networks:
   justone:
