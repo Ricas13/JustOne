@@ -46,6 +46,7 @@ services:
       CINEPRO_URL: http://cinepro:3000
       CINEPRO_PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
       DLHD_URL: http://dlhd:3000
+      DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
       STREMIO_UPSTREAM: http://stremio-addon:7000
       PATH_MOVIES_1080: ${PATH_MOVIES_1080:-/mnt/resolver-files/Movies/Movies}
       PATH_MOVIES_4K: ${PATH_MOVIES_4K:-/mnt/resolver-files/Movies/Movies-4K}

@@ -47,14 +47,61 @@ async function tmdb(pathname, params = {}) {
 
 let channelCache = { at: 0, list: [] };
 
+function decodeHtml(s) {
+  return String(s)
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(new RegExp("&" + "amp;", "g"), String.fromCharCode(38))
+    .replace(new RegExp("&" + "lt;", "g"), String.fromCharCode(60))
+    .replace(new RegExp("&" + "gt;", "g"), String.fromCharCode(62))
+    .replace(new RegExp("&" + "quot;", "g"), String.fromCharCode(34))
+    .trim();
+}
+
+function parseDlstreams247(html) {
+  const seen = new Map();
+  const re = /href="\/watch\.php\?id=(\d+)"[\s\S]{0,500}?card__title">([^<]+)/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const id = m[1];
+    if (seen.has(id)) continue;
+    const name = decodeHtml(m[2]);
+    const group = /18\+|adult/i.test(name) ? "18+" : "24/7";
+    seen.set(id, { id, name, group });
+  }
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function scrape247() {
+  const r = await fetch(config.dlstreams247, {
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      accept: "text/html",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error("dlstreams " + r.status);
+  const html = await r.text();
+  const list = parseDlstreams247(html);
+  if (!list.length) throw new Error("dlstreams parse empty");
+  log("scraped 24/7", list.length, "from", config.dlstreams247);
+  return list;
+}
+
 export async function loadChannels(force = false) {
   const stale = Date.now() - channelCache.at > config.liveRefreshMin * 60 * 1000;
   if (!force && channelCache.list.length && !stale) return channelCache.list;
-  const r = await fetch(`${config.dlhdUrl}/api/channels`, {
-    signal: AbortSignal.timeout(12000),
-  });
-  const data = await r.json();
-  const list = Array.isArray(data) ? data : data.channels || data.items || [];
+  let list = [];
+  try {
+    list = await scrape247();
+  } catch (e) {
+    log("24/7 scrape failed, fallback dlhd", String(e.message || e));
+    const r = await fetch(`${config.dlhdUrl}/api/channels`, {
+      signal: AbortSignal.timeout(12000),
+    });
+    const data = await r.json();
+    list = Array.isArray(data) ? data : data.channels || data.items || [];
+  }
   channelCache = { at: Date.now(), list };
   return list;
 }

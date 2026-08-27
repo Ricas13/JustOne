@@ -7,6 +7,7 @@ export const config = {
     "",
   ),
   dlhdUrl: (process.env.DLHD_URL || "http://dlhd:3000").replace(/\/$/, ""),
+  dlstreams247: process.env.DLSTREAMS_247 || "https://dlstreams.st/24-7-channels.php",
   movies1080: process.env.PATH_MOVIES_1080 || "/mnt/resolver-files/Movies/Movies",
   movies4k: process.env.PATH_MOVIES_4K || "/mnt/resolver-files/Movies/Movies-4K",
   tv1080: process.env.PATH_TV_1080 || "/mnt/resolver-files/TV/TV",
