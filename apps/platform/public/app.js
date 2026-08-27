@@ -15,6 +15,46 @@ function copy(text) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 
+function urlBox(id, label, url) {
+  return `
+    <p>${label}</p>
+    <input id="${id}" class="url" type="text" readonly value="${esc(url)}" />
+    <p><button type="button" data-copy-from="${id}">Copy</button></p>`;
+}
+
+function bindCopies() {
+  app.querySelectorAll("[data-copy-from]").forEach((btn) => {
+    btn.onclick = () => {
+      const el = document.getElementById(btn.getAttribute("data-copy-from"));
+      if (!el) return;
+      el.select();
+      copy(el.value);
+    };
+  });
+}
+
+function overview(st, links) {
+  const p = st?.paths || {};
+  const all = links?.all || M3U;
+  app.innerHTML = `
+    <h1>JustOne</h1>
+    <p class="muted">Admin only. Jellyfin / VLC use the public play URLs — origin stays hidden.</p>
+    <div class="panel">
+      ${urlBox("m3u", "IPTV playlist (paste this in Jellyfin / IPTVEditor)", all)}
+    </div>
+    <div class="panel">
+      <p>Libraries</p>
+      <code>${p.movies1080 || ""}</code><br/>
+      <code>${p.movies4k || ""}</code><br/>
+      <code>${p.tv1080 || ""}</code><br/>
+      <code>${p.tv4k || ""}</code><br/>
+      <code>${p.live || ""}/playlist.m3u8</code>
+    </div>
+    <div class="panel" id="job">Job: ${st?.phase || "…"} · movies ${st?.movies || 0} · episodes ${st?.episodes || 0} · live ${st?.channels || 0}</div>
+    <form method="post" action="/logout"><button type="submit">Log out</button></form>`;
+  bindCopies();
+}
+
 function overview(st) {
   const p = st?.paths || {};
   app.innerHTML = `
@@ -68,19 +108,11 @@ async function live() {
     <h1>Live IPTV</h1>
     <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches. Extra is Toonami / IPTV-org / pasted M3Us.${links.locked ? " URLs include a secret key — don’t share them." : " Set PLAYLIST_KEY in .env to lock these URLs."}</p>
     <div class="panel">
-      <p>24/7 (Jellyfin — start with this)</p>
-      <code>${esc(tv)}</code>
-      <p><button type="button" data-copy="${esc(tv)}">Copy</button></p>
-      <p>Sports events</p>
-      <code>${esc(sports)}</code>
-      <p><button type="button" data-copy="${esc(sports)}">Copy</button></p>
-      <p>Extra sources</p>
-      <code>${esc(extra)}</code>
-      <p><button type="button" data-copy="${esc(extra)}">Copy</button></p>
-      <p>Everything</p>
-      <code>${esc(all)}</code>
-      <p><button type="button" data-copy="${esc(all)}">Copy</button>
-         <button type="button" id="ref">Refresh all sources</button>
+      ${urlBox("u-tv", "24/7 (Jellyfin — start with this)", tv)}
+      ${urlBox("u-sports", "Sports events", sports)}
+      ${urlBox("u-extra", "Extra sources", extra)}
+      ${urlBox("u-all", "Everything", all)}
+      <p><button type="button" id="ref">Refresh all sources</button>
          <span id="c" class="muted"></span></p>
     </div>
     <div class="panel">
@@ -108,9 +140,7 @@ async function live() {
       <table>${rows || "<tr><td class=muted>No extra sources yet. Toonami Aftermath is added on first run.</td></tr>"}</table>
     </div>
     <pre id="preview">Loading…</pre>`;
-  app.querySelectorAll("[data-copy]").forEach((btn) => {
-    btn.onclick = () => copy(btn.getAttribute("data-copy"));
-  });
+  bindCopies();
   document.getElementById("ref").onclick = async () => {
     const x = await j("/live/refresh", { method: "POST" });
     document.getElementById("c").textContent = `${x.count || 0} entries`;
@@ -155,10 +185,11 @@ async function loadPreview() {
 
 async function poll() {
   const st = await j("/library/status");
+  const links = await j("/live/links");
   const h = location.hash || "#/";
   if (h.startsWith("#/library")) library(st);
   else if (h.startsWith("#/live")) await live();
-  else overview(st);
+  else overview(st, links);
 }
 
 window.addEventListener("hashchange", poll);
