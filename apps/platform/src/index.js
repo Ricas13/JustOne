@@ -432,9 +432,21 @@ app.get("*", (req, res, next) => {
   sendIndex(req, res);
 });
 
-setInterval(() => {
-  writeLivePlaylist(true).catch(() => {});
-}, Math.max(config.liveRefreshMin, 5) * 60 * 1000).unref?.();
+function catalogTick() {
+  process.stdout.write("scheduled refresh: live + tmdb\n");
+  writeLivePlaylist(true)
+    .then((out) => process.stdout.write("scheduled live " + out.count + "\n"))
+    .catch((e) => process.stdout.write("scheduled live fail " + String(e.message || e) + "\n"));
+  if (job.running) {
+    process.stdout.write("scheduled tmdb skipped (already running)\n");
+    return;
+  }
+  generateLibrary().catch((e) => process.stdout.write("scheduled tmdb fail " + String(e.message || e) + "\n"));
+}
+
+const catalogMs = Math.max(config.catalogRefreshHours, 1) * 60 * 60 * 1000;
+setInterval(catalogTick, catalogMs).unref?.();
+process.stdout.write(`catalog refresh every ${config.catalogRefreshHours}h\n`);
 
 app.listen(config.port, "0.0.0.0", () => {
   process.stdout.write(`JustOne platform on :${config.port} (redirect resolver)\n`);

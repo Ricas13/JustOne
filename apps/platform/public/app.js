@@ -41,7 +41,7 @@ function overview(st) {
 function library(st) {
   app.innerHTML = `
     <h1>STRM</h1>
-    <p class="muted">TMDB: trending + popular + top rated + discover (years ${new Date().getFullYear()}→back). Playback prefers 4K then falls back to 1080p unless QUALITY_FALLBACK=false. Click generate to expand the library (first-run marker is skipped).</p>
+    <p class="muted">Live channels + TMDB STRMs refresh every 6 hours. Generate now runs the same job immediately.</p>
     <div class="panel">
       <p id="job">phase ${st?.phase} running=${st?.running} movies=${st?.movies} episodes=${st?.episodes}</p>
       <button id="go" type="button">Generate now</button>
