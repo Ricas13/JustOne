@@ -19,6 +19,15 @@ import {
   libraryStatus,
   job,
 } from "./generate.js";
+import {
+  playMoviePath,
+  playEpisodePath,
+  playLivePath,
+  publicPlayUrl,
+  movieDownloadFilename,
+  episodeDownloadFilename,
+  proxyStream,
+} from "./play.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -37,31 +46,30 @@ app.use((req, res, next) => {
 });
 app.use(express.static(publicDir, { index: "index.html" }));
 
-function redirectTo(res, picked, format) {
+function redirectTo(res, picked, format, playPath) {
   if (!picked?.url) {
     return res.status(404).json({
       error: "no source",
       wanted: picked?.wanted,
       available: picked?.available || [],
-      diagnostics: picked?.diagnostics || [],
     });
   }
+  const opaque = publicPlayUrl(playPath);
   res.setHeader("x-justone-quality", picked.quality || "");
   res.setHeader("x-justone-wanted", picked.wanted || "");
   res.setHeader("x-justone-matched", picked.matched ? "1" : "0");
   if (format === "json") {
     return res.json({
-      url: picked.url,
-      mode: "redirect",
+      url: opaque,
+      mode: "play",
       quality: picked.quality,
       wanted: picked.wanted,
       matched: picked.matched,
       available: picked.available,
-      provider: picked.provider,
     });
   }
   res.setHeader("Cache-Control", "no-store");
-  return res.redirect(302, picked.url);
+  return res.redirect(302, opaque);
 }
 
 function proxyTo(base) {
@@ -116,8 +124,8 @@ app.get("/health", async (_req, res) => {
 app.get("/resolve/movie/:tmdbId", async (req, res) => {
   try {
     const quality = req.query.quality === "4k" ? "4k" : "1080p";
-    const url = await resolveMovie(req.params.tmdbId, quality);
-    return redirectTo(res, url, req.query.format);
+    const picked = await resolveMovie(req.params.tmdbId, quality);
+    return redirectTo(res, picked, req.query.format, playMoviePath(req.params.tmdbId, quality));
   } catch (e) {
     res.status(502).send(String(e.message || e));
   }
@@ -126,13 +134,18 @@ app.get("/resolve/movie/:tmdbId", async (req, res) => {
 app.get("/resolve/episode/:tmdbId/:season/:episode", async (req, res) => {
   try {
     const quality = req.query.quality === "4k" ? "4k" : "1080p";
-    const url = await resolveEpisode(
+    const picked = await resolveEpisode(
       req.params.tmdbId,
       req.params.season,
       req.params.episode,
       quality,
     );
-    return redirectTo(res, url, req.query.format);
+    return redirectTo(
+      res,
+      picked,
+      req.query.format,
+      playEpisodePath(req.params.tmdbId, req.params.season, req.params.episode, quality),
+    );
   } catch (e) {
     res.status(502).send(String(e.message || e));
   }
@@ -141,10 +154,70 @@ app.get("/resolve/episode/:tmdbId/:season/:episode", async (req, res) => {
 app.get("/resolve/live/:channelId", async (req, res) => {
   try {
     const force = req.query.refresh === "1";
-    const url = await resolveLive(req.params.channelId, { force });
-    return redirectTo(res, url, req.query.format);
+    const picked = await resolveLive(req.params.channelId, { force });
+    return redirectTo(res, picked, req.query.format, playLivePath(req.params.channelId));
   } catch (e) {
     res.status(502).send(String(e.message || e));
+  }
+});
+
+function extOf(picked) {
+  const t = String(picked?.type || picked?.url || "").toLowerCase();
+  if (t.includes("m3u8") || t.includes("hls")) return "m3u8";
+  if (t.includes("webm")) return "webm";
+  if (t.includes("mkv")) return "mkv";
+  return "mp4";
+}
+
+app.get("/play/movie/:tmdbId", async (req, res) => {
+  try {
+    const quality = req.query.quality === "4k" ? "4k" : "1080p";
+    const picked = await resolveMovie(req.params.tmdbId, quality);
+    if (!picked?.url) return redirectTo(res, picked, "json", playMoviePath(req.params.tmdbId, quality));
+    const filename = await movieDownloadFilename(req.params.tmdbId, extOf(picked));
+    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: "play failed" });
+  }
+});
+
+app.get("/play/episode/:tmdbId/:season/:episode", async (req, res) => {
+  try {
+    const quality = req.query.quality === "4k" ? "4k" : "1080p";
+    const picked = await resolveEpisode(
+      req.params.tmdbId,
+      req.params.season,
+      req.params.episode,
+      quality,
+    );
+    if (!picked?.url) {
+      return redirectTo(
+        res,
+        picked,
+        "json",
+        playEpisodePath(req.params.tmdbId, req.params.season, req.params.episode, quality),
+      );
+    }
+    const filename = await episodeDownloadFilename(
+      req.params.tmdbId,
+      req.params.season,
+      req.params.episode,
+      extOf(picked),
+    );
+    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: "play failed" });
+  }
+});
+
+app.get("/play/live/:channelId", async (req, res) => {
+  try {
+    const picked = await resolveLive(req.params.channelId, { force: req.query.refresh === "1" });
+    if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(req.params.channelId));
+    const filename = `live-${req.params.channelId}.m3u8`;
+    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: "play failed" });
   }
 });
 
@@ -230,6 +303,7 @@ function sendIndex(_req, res) {
 app.get("/", sendIndex);
 app.get("*", (req, res, next) => {
   if (
+    req.path.startsWith("/play") ||
     req.path.startsWith("/resolve") ||
     req.path.startsWith("/live") ||
     req.path.startsWith("/library") ||

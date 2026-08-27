@@ -71,6 +71,7 @@ export function pickSource(sources, quality) {
     url: best?.url || null,
     quality: best?.quality || null,
     provider: best?.provider || null,
+    type: best?.raw?.type || "",
     available,
     wanted: quality,
     matched: Boolean(exact),

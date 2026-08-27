@@ -27,6 +27,10 @@ export function episodeFile(seriesTitle, year, season, episode, episodeTitle) {
   return `${show} (${year}) - ${code}${ep}.strm`;
 }
 
+export function downloadName(strmFile, ext = "mp4") {
+  return String(strmFile).replace(/\.strm$/i, `.${ext}`);
+}
+
 export function libraryRoot(kind, quality) {
   const q = quality === "4k" ? "4k" : "1080p";
   return kind === "movie" ? `movies-${q}` : `tv-${q}`;
