@@ -8,7 +8,18 @@ async function j(path, opts) {
     return {};
   }
   const t = await r.text();
-  try { return JSON.parse(t); } catch { return { raw: t, status: r.status }; }
+  try {
+    return JSON.parse(t);
+  } catch {
+    return { raw: t, status: r.status };
+  }
+}
+
+function esc(s) {
+  return String(s || "")
+    .replace(/&/g, "&" + "amp;")
+    .replace(/</g, "&" + "lt;")
+    .replace(/"/g, "&" + "quot;");
 }
 
 function copy(text) {
@@ -41,6 +52,7 @@ function overview(st, links) {
     <p class="muted">Admin only. Jellyfin / VLC use the public play URLs — origin stays hidden.</p>
     <div class="panel">
       ${urlBox("m3u", "IPTV playlist (paste this in Jellyfin / IPTVEditor)", all)}
+      <p class="muted">${links?.locked ? "This URL includes PLAYLIST_KEY." : "Set PLAYLIST_KEY in .env to lock public play URLs."}</p>
     </div>
     <div class="panel">
       <p>Libraries</p>
@@ -55,29 +67,6 @@ function overview(st, links) {
   bindCopies();
 }
 
-function overview(st) {
-  const p = st?.paths || {};
-  app.innerHTML = `
-    <h1>JustOne</h1>
-    <p class="muted">Admin only. Jellyfin / VLC use the public play URLs — origin stays hidden.</p>
-    <div class="panel">
-      <p>IPTV playlist (VLC, IPTVEditor, Jellyfin Live TV)</p>
-      <code id="m3u">${M3U}</code>
-      <p><button type="button" id="copy">Copy M3U URL</button></p>
-    </div>
-    <div class="panel">
-      <p>Libraries</p>
-      <code>${p.movies1080 || ""}</code><br/>
-      <code>${p.movies4k || ""}</code><br/>
-      <code>${p.tv1080 || ""}</code><br/>
-      <code>${p.tv4k || ""}</code><br/>
-      <code>${p.live || ""}/playlist.m3u8</code>
-    </div>
-    <div class="panel" id="job">Job: ${st?.phase || "…"} · movies ${st?.movies || 0} · episodes ${st?.episodes || 0} · live ${st?.channels || 0}</div>
-    <form method="post" action="/logout"><button type="submit">Log out</button></form>`;
-  document.getElementById("copy").onclick = () => copy(M3U);
-}
-
 function library(st) {
   app.innerHTML = `
     <h1>STRM</h1>
@@ -87,7 +76,11 @@ function library(st) {
       <button id="go" type="button">Generate now</button>
     </div>`;
   document.getElementById("go").onclick = async () => {
-    await j("/library/generate", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    await j("/library/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
     poll();
   };
 }
@@ -100,13 +93,15 @@ async function live() {
   const extra = links.extra || `${origin}/live/extra.m3u8`;
   const all = links.all || M3U;
   const sources = await j("/live/sources");
-  const rows = (Array.isArray(sources) ? sources : []).map(
-    (s) =>
-      `<tr><td>${esc(s.name)}</td><td class="muted">${esc(s.url)}</td><td><button type="button" data-del="${esc(s.id)}">Remove</button></td></tr>`,
-  ).join("");
+  const rows = (Array.isArray(sources) ? sources : [])
+    .map(
+      (s) =>
+        `<tr><td>${esc(s.name)}</td><td class="muted">${esc(s.url)}</td><td><button type="button" data-del="${esc(s.id)}">Remove</button></td></tr>`,
+    )
+    .join("");
   app.innerHTML = `
     <h1>Live IPTV</h1>
-    <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches. Extra is Toonami / IPTV-org / pasted M3Us.${links.locked ? " URLs include a secret key — don’t share them." : " Set PLAYLIST_KEY in .env to lock these URLs."}</p>
+    <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches.${links.locked ? " URLs include a secret key — don’t share them." : " Set PLAYLIST_KEY in .env to lock these URLs."}</p>
     <div class="panel">
       ${urlBox("u-tv", "24/7 (Jellyfin — start with this)", tv)}
       ${urlBox("u-sports", "Sports events", sports)}
@@ -117,27 +112,16 @@ async function live() {
     </div>
     <div class="panel">
       <h2>Extra M3U sources</h2>
-      <p class="muted">Add a playlist URL. Group title becomes the source name. Playback still goes through /play so the origin stays hidden.</p>
+      <p class="muted">Add a playlist URL. Group title becomes the source name.</p>
       <form id="add">
         <input name="name" list="hints" placeholder="Name (e.g. VAVOO)" required />
         <input name="url" type="url" placeholder="https://…/playlist.m3u8" required />
         <button type="submit">Add source</button>
       </form>
       <datalist id="hints">
-        <option value="Strong Vault TV (SVT)"></option>
-        <option value="Premium Live TV Vault (PLTV1)"></option>
-        <option value="Premium Live TV Vault 2 (PLTV2)"></option>
-        <option value="TV247US"></option>
-        <option value="SharkStreams"></option>
-        <option value="VAVOO"></option>
-        <option value="Live Sports"></option>
-        <option value="Libre Futbol"></option>
-        <option value="Free Live Sports"></option>
-        <option value="Pirates IPTV"></option>
-        <option value="CNCVerse"></option>
         <option value="Toonami Aftermath"></option>
       </datalist>
-      <table>${rows || "<tr><td class=muted>No extra sources yet. Toonami Aftermath is added on first run.</td></tr>"}</table>
+      <table>${rows || "<tr><td class=muted>No extra sources yet.</td></tr>"}</table>
     </div>
     <pre id="preview">Loading…</pre>`;
   bindCopies();
@@ -169,11 +153,9 @@ async function live() {
   loadPreview();
 }
 
-function esc(s) {
-  return String(s || "")
-    .replace(/&/g, "&" + "amp;")
-    .replace(/</g, "&" + "lt;")
-    .replace(/"/g, "&" + "quot;");
+async function health() {
+  const h = await j("/health");
+  app.innerHTML = `<h1>Health</h1><pre>${esc(JSON.stringify(h, null, 2))}</pre>`;
 }
 
 async function loadPreview() {
@@ -184,12 +166,17 @@ async function loadPreview() {
 }
 
 async function poll() {
-  const st = await j("/library/status");
-  const links = await j("/live/links");
-  const h = location.hash || "#/";
-  if (h.startsWith("#/library")) library(st);
-  else if (h.startsWith("#/live")) await live();
-  else overview(st, links);
+  try {
+    const st = await j("/library/status");
+    const links = await j("/live/links");
+    const h = location.hash || "#/";
+    if (h.startsWith("#/library")) library(st);
+    else if (h.startsWith("#/live")) await live();
+    else if (h.startsWith("#/health")) await health();
+    else overview(st, links);
+  } catch (e) {
+    app.innerHTML = `<h1>Dashboard</h1><p class="muted">${esc(String(e.message || e))}</p>`;
+  }
 }
 
 window.addEventListener("hashchange", poll);
