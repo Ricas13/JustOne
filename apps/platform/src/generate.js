@@ -68,7 +68,7 @@ function parseDlstreams247(html) {
     if (!id || id === "00" || seen.has(id)) continue;
     const name = decodeHtml(m[2]);
     const group = /18\+|adult/i.test(name) ? "18+" : "24/7";
-    seen.set(id, withCountry({ id, name, group }));
+    seen.set(id, { ...withCountry({ id, name, group }), kind: "247" });
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -92,8 +92,12 @@ function parseSchedule(html) {
     const id = m[3];
     if (!id || id === "00") continue;
     const chName = decodeHtml(m[4] || `Channel ${id}`);
-    const name = event ? `${event} — ${chName}` : chName;
-    list.push(withCountry({ id, name, group: group || "Live" }));
+    list.push({
+      id,
+      name: event ? `${event} — ${chName}` : chName,
+      group: forM3u(group) || "Sports",
+      kind: "sports",
+    });
   }
   return list;
 }
@@ -131,10 +135,12 @@ export async function loadChannels(force = false) {
     list = await scrapeAll();
     const extra = await loadAllExtra();
     log("extra m3u", extra.length);
-    list = [...list, ...extra];
-    list = list.map(withCountry).sort((a, b) => {
+    list = [...list, ...extra.map((c) => ({ ...c, kind: c.kind || "ext" }))];
+    list = list.map((ch) => (ch.kind === "247" ? withCountry({ ...ch, kind: "247" }) : ch));
+    list.sort((a, b) => {
+      const k = String(a.kind || "").localeCompare(String(b.kind || ""));
       const g = String(a.group || "").localeCompare(String(b.group || ""));
-      return g || String(a.name || "").localeCompare(String(b.name || ""));
+      return k || g || String(a.name || "").localeCompare(String(b.name || ""));
     });
   } catch (e) {
     log("dlstreams scrape failed, fallback dlhd", String(e.message || e));
@@ -157,15 +163,29 @@ function forM3u(s) {
     .trim();
 }
 
-export function buildM3u(list) {
+export function filterChannels(list, kind) {
+  if (!kind || kind === "all") return list;
+  const k = String(kind).toLowerCase();
+  if (k === "247" || k === "tv") return list.filter((c) => c.kind === "247");
+  if (k === "sports") return list.filter((c) => c.kind === "sports");
+  if (k === "extra") return list.filter((c) => c.kind === "ext");
+  return list.filter((c) => String(c.group || "").toLowerCase() === k);
+}
+
+export function buildM3u(list, kind = "all") {
+  const rows = filterChannels(list, kind);
   const lines = [`#EXTM3U url-tvg="${config.epgUrl}" tvg-shift=0`];
-  list.forEach((ch, i) => {
+  const base =
+    kind === "sports" ? 5000 : kind === "extra" ? 8000 : kind === "247" ? 1000 : 1;
+  rows.forEach((ch, i) => {
     const name = forM3u(ch.name || `Channel ${ch.id}`);
-    const tvg = slugTvgId(name) || `dlhd-${ch.id}`;
+    const tvg =
+      ch.kind === "ext" ? slugTvgId(name) || ch.id : `dlhd-${ch.id}`;
     const logo = ch.logo || ch.image || "";
     const group = forM3u(ch.group || ch.category || "Live") || "Live";
+    const n = base + i;
     lines.push(
-      `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
+      `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${n}" group-title="${group}",${name}`,
     );
     const play =
       ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.ts`;
@@ -177,11 +197,15 @@ export function buildM3u(list) {
 export async function writeLivePlaylist(force = true) {
   const list = await loadChannels(force);
   job.channels = list.length;
-  const body = buildM3u(list);
   await fs.mkdir(config.liveDir, { recursive: true });
-  const file = path.join(config.liveDir, "playlist.m3u8");
-  await fs.writeFile(file, body, "utf8");
-  return { file, count: list.length, body };
+  const files = [];
+  for (const kind of ["all", "247", "sports", "extra"]) {
+    const name = kind === "all" ? "playlist.m3u8" : `${kind}.m3u8`;
+    const file = path.join(config.liveDir, name);
+    await fs.writeFile(file, buildM3u(list, kind), "utf8");
+    files.push(file);
+  }
+  return { file: files[0], count: list.length, files };
 }
 
 async function uniqueMovies(pages) {

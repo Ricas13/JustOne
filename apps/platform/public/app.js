@@ -53,6 +53,7 @@ function library(st) {
 }
 
 async function live() {
+  const origin = location.origin;
   const sources = await j("/live/sources");
   const rows = (Array.isArray(sources) ? sources : []).map(
     (s) =>
@@ -60,10 +61,20 @@ async function live() {
   ).join("");
   app.innerHTML = `
     <h1>Live IPTV</h1>
-    <p class="muted">One playlist for VLC / IPTVEditor / Jellyfin. DLStreams is scraped automatically. Extra sources are M3U URLs you paste (SVT, PLTV, VAVOO, …) — those vaults are not public pages we can scrape.</p>
+    <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches. Extra is Toonami / IPTV-org / pasted M3Us.</p>
     <div class="panel">
+      <p>24/7 (Jellyfin — start with this)</p>
+      <code>${origin}/live/247.m3u8</code>
+      <p><button type="button" data-copy="${origin}/live/247.m3u8">Copy</button></p>
+      <p>Sports events</p>
+      <code>${origin}/live/sports.m3u8</code>
+      <p><button type="button" data-copy="${origin}/live/sports.m3u8">Copy</button></p>
+      <p>Extra sources</p>
+      <code>${origin}/live/extra.m3u8</code>
+      <p><button type="button" data-copy="${origin}/live/extra.m3u8">Copy</button></p>
+      <p>Everything</p>
       <code>${M3U}</code>
-      <p><button type="button" id="copy">Copy M3U URL</button>
+      <p><button type="button" data-copy="${M3U}">Copy</button>
          <button type="button" id="ref">Refresh all sources</button>
          <span id="c" class="muted"></span></p>
     </div>
@@ -92,7 +103,9 @@ async function live() {
       <table>${rows || "<tr><td class=muted>No extra sources yet. Toonami Aftermath is added on first run.</td></tr>"}</table>
     </div>
     <pre id="preview">Loading…</pre>`;
-  document.getElementById("copy").onclick = () => copy(M3U);
+  app.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.onclick = () => copy(btn.getAttribute("data-copy"));
+  });
   document.getElementById("ref").onclick = async () => {
     const x = await j("/live/refresh", { method: "POST" });
     document.getElementById("c").textContent = `${x.count || 0} entries`;

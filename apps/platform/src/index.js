@@ -13,6 +13,7 @@ import {
 import {
   loadChannels,
   buildM3u,
+  filterChannels,
   writeLivePlaylist,
   generateLibrary,
   bootstrap,
@@ -327,17 +328,27 @@ app.get("/live/channels", async (_req, res) => {
   }
 });
 
-app.get("/live/playlist.m3u8", async (req, res) => {
+app.get("/live/playlist.m3u8", (req, res) => sendPlaylist(req, res, req.query.kind || "all"));
+app.get("/live/247.m3u8", (req, res) => sendPlaylist(req, res, "247"));
+app.get("/live/sports.m3u8", (req, res) => sendPlaylist(req, res, "sports"));
+app.get("/live/extra.m3u8", (req, res) => sendPlaylist(req, res, "extra"));
+
+async function sendPlaylist(req, res, kind) {
   try {
     const list = await loadChannels(req.query.refresh === "1");
-    const body = buildM3u(list);
+    let rows = filterChannels(list, kind);
+    const country = String(req.query.country || "").trim();
+    if (country) {
+      rows = rows.filter((c) => String(c.group || "").toLowerCase() === country.toLowerCase());
+    }
+    const body = buildM3u(rows, kind === "all" && !country ? "all" : kind);
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-cache");
     res.send(body);
   } catch (e) {
     res.status(502).send(String(e.message || e));
   }
-});
+}
 
 app.post("/live/refresh", async (_req, res) => {
   try {
