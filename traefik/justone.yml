@@ -1,5 +1,5 @@
-# Host path: /opt/traefik/dynamic/justone.yml  (Traefik watches this)
-# Traefik shares media_net with justone-platform — do not use 127.0.0.1.
+# Copy to: /opt/traefik/dynamic/justone.yml
+# Repo lives at /opt/JustOne
 
 http:
   routers:

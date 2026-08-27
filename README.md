@@ -11,18 +11,22 @@ Admin control plane for a **personal** Jellyfin + Stremio stack.
 
 ## Deploy (Traefik + Let's Encrypt)
 
-Production compose is built for:
+Path on the server: **`/opt/JustOne`**
 
 - Host: **`resolver.vpn4u.cc`**
-- Docker network: **`media_net`** (external, Traefik already on it)
+- Docker network: **`media_net`**
 - TLS: Traefik cert resolver **`le`**
 
 See [docs/traefik.md](docs/traefik.md).
 
 ```bash
-cp .env.example .env   # TMDB_API_KEY + TRAEFIK_CERTRESOLVER
+cd /opt/JustOne
+cp .env.example .env   # TMDB_API_KEY
 docker compose up -d --build
+sudo cp traefik/justone.yml /opt/traefik/dynamic/justone.yml
 ```
+
+DNS for `resolver.vpn4u.cc` must point at this host.
 
 | URL | Use |
 | --- | --- |
