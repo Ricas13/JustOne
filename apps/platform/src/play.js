@@ -1,6 +1,5 @@
 import http from "node:http";
 import https from "node:https";
-import { spawn } from "node:child_process";
 import { config } from "./config.js";
 import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
 
@@ -40,59 +39,114 @@ export function playLivePath(channelId) {
   return `/play/live/${encodeURIComponent(id)}.ts`;
 }
 
-export function restreamMpegTs(req, res, inputUrl) {
-  const ua =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-  res.setHeader("Content-Type", "video/mp2t");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  const ff = spawn(
-    "ffmpeg",
-    [
-      "-hide_banner",
-      "-loglevel",
-      "warning",
-      "-nostdin",
-      "-user_agent",
-      ua,
-      "-reconnect",
-      "1",
-      "-reconnect_streamed",
-      "1",
-      "-reconnect_delay_max",
-      "2",
-      "-i",
-      inputUrl,
-      "-map",
-      "0:v:0?",
-      "-map",
-      "0:a:0?",
-      "-c",
-      "copy",
-      "-f",
-      "mpegts",
-      "-flush_packets",
-      "1",
-      "pipe:1",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  ff.stdout.pipe(res);
-  ff.stderr.on("data", (d) => log("ffmpeg", String(d).trim()));
-  const kill = () => {
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+function localUrl(url) {
+  let u = internalize(String(url));
+  u = u.replace(config.publicUrl, `http://127.0.0.1:${config.port}`);
+  u = u.replace("https://resolver.vpn4u.cc", `http://127.0.0.1:${config.port}`);
+  return u;
+}
+
+function hlsRefs(text, base) {
+  const out = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
     try {
-      ff.kill("SIGKILL");
+      out.push(new URL(t, base).href);
+    } catch {
+      /* skip */
+    }
+  }
+  return out;
+}
+
+async function fetchRes(url, signal) {
+  const dest = new URL(localUrl(url));
+  const lib = dest.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      dest,
+      {
+        method: "GET",
+        headers: { host: dest.host, "user-agent": UA, accept: "*/*" },
+        timeout: 20000,
+      },
+      (up) => {
+        const loc = up.headers.location;
+        if (loc && up.statusCode >= 300 && up.statusCode < 400) {
+          up.resume();
+          return resolve(fetchRes(new URL(loc, dest).href, signal));
+        }
+        const chunks = [];
+        up.on("data", (c) => chunks.push(c));
+        up.on("end", () =>
+          resolve({ status: up.statusCode, buf: Buffer.concat(chunks), href: dest.href }),
+        );
+        up.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    signal?.addEventListener("abort", () => req.destroy());
+    req.end();
+  });
+}
+
+export async function restreamMpegTs(req, res, inputUrl) {
+  const ac = new AbortController();
+  const stop = () => ac.abort();
+  req.on("close", stop);
+  res.on("close", stop);
+  let listUrl = localUrl(inputUrl);
+  const seen = [];
+  const known = new Set();
+  let started = false;
+  try {
+    for (let n = 0; n < 3600 && !ac.signal.aborted; n++) {
+      const pl = await fetchRes(listUrl, ac.signal);
+      const text = pl.buf.toString("utf8");
+      const refs = hlsRefs(text, pl.href);
+      if (/#EXT-X-STREAM-INF/i.test(text) && refs[0]) {
+        listUrl = refs[0];
+        continue;
+      }
+      if (!refs.length) throw new Error("empty hls");
+      for (const u of refs) {
+        if (known.has(u)) continue;
+        known.add(u);
+        seen.push(u);
+        if (seen.length > 60) {
+          known.delete(seen.shift());
+        }
+        const seg = await fetchRes(u, ac.signal);
+        if (!seg.buf?.length) continue;
+        if (!started) {
+          res.setHeader("Content-Type", "video/mp2t");
+          res.setHeader("Cache-Control", "no-store");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("X-Accel-Buffering", "no");
+          started = true;
+        }
+        if (!res.write(seg.buf)) {
+          await new Promise((r) => res.once("drain", r));
+        }
+      }
+      const td = Number(/#EXT-X-TARGETDURATION:(\d+)/i.exec(text)?.[1] || 2);
+      await new Promise((r) => setTimeout(r, Math.min(Math.max(td, 1), 4) * 400));
+    }
+  } catch (e) {
+    log("ts pump", String(e.message || e));
+    if (!started && !res.headersSent) res.status(502).end("live pump failed");
+  } finally {
+    try {
+      res.end();
     } catch {
       /* ignore */
     }
-  };
-  req.on("close", kill);
-  res.on("close", kill);
-  ff.on("error", (e) => {
-    log("ffmpeg spawn", e.message);
-    if (!res.headersSent) res.status(502).end("ffmpeg missing");
-  });
+  }
 }
 
 export function publicPlayUrl(pathAndQuery) {
