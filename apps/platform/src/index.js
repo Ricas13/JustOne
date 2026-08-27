@@ -37,11 +37,31 @@ app.use((req, res, next) => {
 });
 app.use(express.static(publicDir, { index: "index.html" }));
 
-function redirectTo(res, url, format) {
-  if (!url) return res.status(502).json({ error: "no source" });
-  if (format === "json") return res.json({ url, mode: "redirect" });
+function redirectTo(res, picked, format) {
+  if (!picked?.url) {
+    return res.status(404).json({
+      error: "no source",
+      wanted: picked?.wanted,
+      available: picked?.available || [],
+      diagnostics: picked?.diagnostics || [],
+    });
+  }
+  res.setHeader("x-justone-quality", picked.quality || "");
+  res.setHeader("x-justone-wanted", picked.wanted || "");
+  res.setHeader("x-justone-matched", picked.matched ? "1" : "0");
+  if (format === "json") {
+    return res.json({
+      url: picked.url,
+      mode: "redirect",
+      quality: picked.quality,
+      wanted: picked.wanted,
+      matched: picked.matched,
+      available: picked.available,
+      provider: picked.provider,
+    });
+  }
   res.setHeader("Cache-Control", "no-store");
-  return res.redirect(302, url);
+  return res.redirect(302, picked.url);
 }
 
 function proxyTo(base) {
