@@ -1,8 +1,5 @@
-# Put this in Traefik's file-provider directory. This host does NOT use Docker
-# labels for vpn4u.cc (vpn4u-site is 127.0.0.1:3000) — labels will never win.
-#
-# If Traefik uses network_mode: host (likely), keep 127.0.0.1:18080.
-# If Traefik is on media_net instead, use: http://justone-platform:8080
+# Host path: /opt/traefik/dynamic/justone.yml  (Traefik watches this)
+# Traefik shares media_net with justone-platform — do not use 127.0.0.1.
 
 http:
   routers:
@@ -12,10 +9,11 @@ http:
         - websecure
       service: justone-platform
       priority: 10000
-      tls: {}
+      tls:
+        certResolver: le
 
   services:
     justone-platform:
       loadBalancer:
         servers:
-          - url: http://127.0.0.1:18080
+          - url: http://justone-platform:8080
