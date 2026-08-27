@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 import { slugTvgId } from "./naming.js";
 import { loadAllExtra } from "./sources.js";
+import { withCountry } from "./country.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -67,7 +68,7 @@ function parseDlstreams247(html) {
     if (!id || id === "00" || seen.has(id)) continue;
     const name = decodeHtml(m[2]);
     const group = /18\+|adult/i.test(name) ? "18+" : "24/7";
-    seen.set(id, { id, name, group });
+    seen.set(id, withCountry({ id, name, group }));
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -92,7 +93,7 @@ function parseSchedule(html) {
     if (!id || id === "00") continue;
     const chName = decodeHtml(m[4] || `Channel ${id}`);
     const name = event ? `${event} — ${chName}` : chName;
-    list.push({ id, name, group: group || "Live" });
+    list.push(withCountry({ id, name, group: group || "Live" }));
   }
   return list;
 }
@@ -131,6 +132,10 @@ export async function loadChannels(force = false) {
     const extra = await loadAllExtra();
     log("extra m3u", extra.length);
     list = [...list, ...extra];
+    list = list.map(withCountry).sort((a, b) => {
+      const g = String(a.group || "").localeCompare(String(b.group || ""));
+      return g || String(a.name || "").localeCompare(String(b.name || ""));
+    });
   } catch (e) {
     log("dlstreams scrape failed, fallback dlhd", String(e.message || e));
     const r = await fetch(`${config.dlhdUrl}/api/channels`, {
