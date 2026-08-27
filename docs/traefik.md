@@ -1,47 +1,38 @@
 # Deploy behind Traefik — resolver.vpn4u.cc
 
-JustOne does **not** run Traefik. It joins your existing `media_net` and sets labels so Traefik issues a Let's Encrypt cert and routes HTTPS.
+Only **justone-platform** is attached to `media_net`. CinePro, live, and Stremio stay on the internal `justone` network with `traefik.enable=false`. That stops Fastify/CinePro from answering `GET /` on the public host.
 
-## What must already exist
-
-1. Traefik is running and attached to Docker network **`media_net`**.
-2. DNS: `resolver.vpn4u.cc` A/AAAA (or CNAME) → the Traefik host.
-3. Traefik entrypoint **`websecure`** (443) and a cert resolver named **`le`**. If yours is `letsencrypt` or `cloudflare`, set `TRAEFIK_CERTRESOLVER` in `.env`.
-4. Traefik must watch Docker (`providers.docker`) and use `media_net` (or set `traefik.docker.network`).
-
-## Routes
-
-| URL | Service |
-| --- | --- |
-| `https://resolver.vpn4u.cc/` | Admin + resolver (`/resolve/…`, `/live/playlist.m3u8`) |
-| `https://resolver.vpn4u.cc/stremio/manifest.json` | Stremio addon |
-| `https://resolver.vpn4u.cc/cinepro/` | CinePro (only if a 302 lands on CinePro itself) |
-
-Live backend stays internal. Video after a 302 goes to the CDN, not through JustOne.
+If you already saw JSON `Route GET:/ not found` at https://resolver.vpn4u.cc/ — that was CinePro (or another Fastify app) winning the Traefik router. Pull this compose, then recreate.
 
 ## Apply
 
 ```bash
-git clone https://github.com/Ricas13/JustOne.git
 cd JustOne
-cp .env.example .env
-# set TMDB_API_KEY; confirm TRAEFIK_CERTRESOLVER matches Traefik
-
-docker compose up -d --build
+git pull
+docker compose up -d --build --force-recreate --remove-orphans
 ```
 
-Then:
+Healthy admin UI is HTML (JustOne), not JSON. Confirm:
 
-- Admin: `https://resolver.vpn4u.cc/`
-- M3U (IPTVEditor / Jellyfin): `https://resolver.vpn4u.cc/live/playlist.m3u8`
-- Stremio: `https://resolver.vpn4u.cc/stremio/manifest.json`
-- STRM lines: `https://resolver.vpn4u.cc/resolve/movie/{tmdbId}?quality=4k`
+```bash
+curl -sI https://resolver.vpn4u.cc/ | grep -i x-justone
+# x-justone: platform
+```
 
-Point Jellyfin libraries at the same bind as `LIBRARY_BIND` (default `./data/library` on the compose host): `movies-1080p`, `movies-4k`, `tv-1080p`, `tv-4k`.
+If that header is missing, Traefik is still routing the host to another container. Check Traefik routers for `Host(resolver.vpn4u.cc)` and disable the old one (file provider or leftover labels).
 
-## If the cert never appears
+## What must already exist
 
-- Cert resolver name mismatch (`le` vs `letsencrypt`)
-- Traefik not on `media_net`
-- Missing `traefik.docker.network=media_net` (already in compose)
-- HTTP-01 needs port 80 on Traefik; DNS-01 needs the DNS provider token in Traefik
+1. Traefik on Docker network **`media_net`**
+2. DNS `resolver.vpn4u.cc` → Traefik host
+3. Entrypoint **`websecure`**, cert resolver **`le`** (override with `TRAEFIK_CERTRESOLVER`)
+
+## Routes (all on the platform container)
+
+| URL | Use |
+| --- | --- |
+| `https://resolver.vpn4u.cc/` | Admin |
+| `https://resolver.vpn4u.cc/health` | `{ "service": "justone-platform" }` |
+| `https://resolver.vpn4u.cc/resolve/movie/{id}?quality=4k` | 302 resolver |
+| `https://resolver.vpn4u.cc/live/playlist.m3u8` | IPTVEditor / Jellyfin |
+| `https://resolver.vpn4u.cc/stremio/manifest.json` | Stremio |

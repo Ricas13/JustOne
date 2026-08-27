@@ -1,4 +1,5 @@
 import express from "express";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
@@ -14,21 +15,41 @@ import { slugTvgId } from "./naming.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
 const TMDB = "https://api.themoviedb.org/3";
+const STREMIO_UPSTREAM = (process.env.STREMIO_UPSTREAM || "http://stremio-addon:7000").replace(/\/$/, "");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("x-justone", "platform");
   next();
 });
-app.use(express.static(publicDir));
+app.use(express.static(publicDir, { index: "index.html" }));
 
 function redirectTo(res, url, format) {
   if (!url) return res.status(502).json({ error: "no source" });
   if (format === "json") return res.json({ url, mode: "redirect" });
   res.setHeader("Cache-Control", "no-store");
   return res.redirect(302, url);
+}
+
+function proxyStremio(req, res) {
+  const target = new URL(req.originalUrl, STREMIO_UPSTREAM);
+  const headers = { ...req.headers, host: target.host };
+  delete headers.connection;
+  const p = http.request(
+    target,
+    { method: req.method, headers },
+    (up) => {
+      res.writeHead(up.statusCode || 502, up.headers);
+      up.pipe(res);
+    },
+  );
+  p.on("error", (e) => {
+    res.status(502).json({ error: "stremio upstream", detail: String(e.message || e) });
+  });
+  req.pipe(p);
 }
 
 async function tmdb(pathname, params = {}) {
@@ -232,23 +253,12 @@ app.post("/library/generate", async (req, res) => {
   }
 });
 
-const unifiedManifest = {
-  id: "com.justone.addon",
-  version: "1.0.0",
-  name: "JustOne",
-  description: "Resolver addon: catalogs plus direct stream URLs after CinePro/live resolve.",
-  resources: ["catalog", "meta", "stream"],
-  types: ["movie", "series", "tv"],
-  catalogs: [
-    { type: "movie", id: "justone-movies", name: "JustOne Movies" },
-    { type: "series", id: "justone-series", name: "JustOne Series" },
-    { type: "tv", id: "justone-live", name: "JustOne Live TV" },
-  ],
-  idPrefixes: ["tmdb:", "justone_live_"],
-};
+app.use("/stremio", proxyStremio);
 
-app.get("/stremio/manifest.json", (_req, res) => res.json(unifiedManifest));
-
+function sendIndex(_req, res) {
+  res.sendFile(path.join(publicDir, "index.html"));
+}
+app.get("/", sendIndex);
 app.get("*", (req, res, next) => {
   if (
     req.path.startsWith("/resolve") ||
@@ -259,7 +269,7 @@ app.get("*", (req, res, next) => {
   ) {
     return next();
   }
-  res.sendFile(path.join(publicDir, "index.html"));
+  sendIndex(req, res);
 });
 
 setInterval(() => {

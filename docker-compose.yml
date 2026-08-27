@@ -1,4 +1,5 @@
-# Traefik on external network media_net. No host ports — Traefik is the only ingress.
+# Only the platform container is on Traefik. CinePro/dlhd/stremio stay internal
+# so they cannot steal Host(resolver.vpn4u.cc) when exposedByDefault is true.
 
 services:
   cinepro:
@@ -7,24 +8,14 @@ services:
     restart: unless-stopped
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY}
-      STREMIO_ADDON: ${STREMIO_ADDON:-true}
+      STREMIO_ADDON: "false"
       HOST: "0.0.0.0"
       PORT: "3000"
       PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
+    labels:
+      - "traefik.enable=false"
     networks:
       - justone
-      - media_net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=${TRAEFIK_NETWORK:-media_net}"
-      - "traefik.http.routers.justone-cinepro.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/cinepro`)"
-      - "traefik.http.routers.justone-cinepro.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
-      - "traefik.http.routers.justone-cinepro.tls=true"
-      - "traefik.http.routers.justone-cinepro.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}"
-      - "traefik.http.routers.justone-cinepro.priority=100"
-      - "traefik.http.middlewares.justone-cinepro-strip.stripprefix.prefixes=/cinepro"
-      - "traefik.http.routers.justone-cinepro.middlewares=justone-cinepro-strip"
-      - "traefik.http.services.justone-cinepro.loadbalancer.server.port=3000"
 
   dlhd:
     build:
@@ -35,6 +26,8 @@ services:
     environment:
       PORT: "3000"
       DLHD_BASE: ${DLHD_BASE:-https://dlhd.st}
+    labels:
+      - "traefik.enable=false"
     networks:
       - justone
 
@@ -51,6 +44,7 @@ services:
       CINEPRO_URL: http://cinepro:3000
       CINEPRO_PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
       DLHD_URL: http://dlhd:3000
+      STREMIO_UPSTREAM: http://stremio-addon:7000
       LIBRARY_ROOT: /data/library
       EPG_URL: ${EPG_URL:-}
       LIVE_REFRESH_MIN: ${LIVE_REFRESH_MIN:-30}
@@ -68,12 +62,13 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=${TRAEFIK_NETWORK:-media_net}"
-      - "traefik.http.routers.justone.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`)"
-      - "traefik.http.routers.justone.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
-      - "traefik.http.routers.justone.tls=true"
-      - "traefik.http.routers.justone.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}"
-      - "traefik.http.routers.justone.priority=1"
-      - "traefik.http.services.justone.loadbalancer.server.port=8080"
+      - "traefik.http.routers.justone-platform.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`)"
+      - "traefik.http.routers.justone-platform.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.justone-platform.tls=true"
+      - "traefik.http.routers.justone-platform.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}"
+      - "traefik.http.routers.justone-platform.priority=1000"
+      - "traefik.http.routers.justone-platform.service=justone-platform"
+      - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
 
   stremio-addon:
     build:
@@ -87,20 +82,10 @@ services:
       CINEPRO_URL: http://cinepro:3000
       DLHD_URL: http://dlhd:3000
       TMDB_API_KEY: ${TMDB_API_KEY}
-    depends_on:
-      - platform
+    labels:
+      - "traefik.enable=false"
     networks:
       - justone
-      - media_net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=${TRAEFIK_NETWORK:-media_net}"
-      - "traefik.http.routers.justone-stremio.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/stremio`)"
-      - "traefik.http.routers.justone-stremio.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
-      - "traefik.http.routers.justone-stremio.tls=true"
-      - "traefik.http.routers.justone-stremio.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}"
-      - "traefik.http.routers.justone-stremio.priority=100"
-      - "traefik.http.services.justone-stremio.loadbalancer.server.port=7000"
 
 networks:
   justone:
