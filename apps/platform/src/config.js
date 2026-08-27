@@ -33,7 +33,14 @@ export const config = {
     .filter(Boolean),
   logLevel: process.env.LOG_LEVEL || "info",
   adminPassword: process.env.ADMIN_PASSWORD || "",
+  playlistKey: process.env.PLAYLIST_KEY || "",
 };
+
+export function withKey(url) {
+  if (!config.playlistKey) return url;
+  const sep = String(url).includes("?") ? "&" : "?";
+  return `${url}${sep}key=${encodeURIComponent(config.playlistKey)}`;
+}
 
 export function rootFor(kind, quality) {
   if (kind === "movie") return quality === "4k" ? config.movies4k : config.movies1080;

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, withKey } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 import { slugTvgId } from "./naming.js";
 import { loadAllExtra } from "./sources.js";
@@ -189,7 +189,7 @@ export function buildM3u(list, kind = "all") {
     );
     const play =
       ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.ts`;
-    lines.push(`${config.publicUrl}${play}`);
+    lines.push(`${withKey(config.publicUrl + play)}`);
   });
   return lines.join("\n") + "\n";
 }

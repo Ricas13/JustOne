@@ -53,7 +53,12 @@ function library(st) {
 }
 
 async function live() {
+  const links = await j("/live/links");
   const origin = location.origin;
+  const tv = links.tv || `${origin}/live/247.m3u8`;
+  const sports = links.sports || `${origin}/live/sports.m3u8`;
+  const extra = links.extra || `${origin}/live/extra.m3u8`;
+  const all = links.all || M3U;
   const sources = await j("/live/sources");
   const rows = (Array.isArray(sources) ? sources : []).map(
     (s) =>
@@ -61,20 +66,20 @@ async function live() {
   ).join("");
   app.innerHTML = `
     <h1>Live IPTV</h1>
-    <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches. Extra is Toonami / IPTV-org / pasted M3Us.</p>
+    <p class="muted">Use <b>24/7</b> as the main Jellyfin tuner (grouped by country). Add <b>Sports</b> as a second tuner if you want today’s matches. Extra is Toonami / IPTV-org / pasted M3Us.${links.locked ? " URLs include a secret key — don’t share them." : " Set PLAYLIST_KEY in .env to lock these URLs."}</p>
     <div class="panel">
       <p>24/7 (Jellyfin — start with this)</p>
-      <code>${origin}/live/247.m3u8</code>
-      <p><button type="button" data-copy="${origin}/live/247.m3u8">Copy</button></p>
+      <code>${esc(tv)}</code>
+      <p><button type="button" data-copy="${esc(tv)}">Copy</button></p>
       <p>Sports events</p>
-      <code>${origin}/live/sports.m3u8</code>
-      <p><button type="button" data-copy="${origin}/live/sports.m3u8">Copy</button></p>
+      <code>${esc(sports)}</code>
+      <p><button type="button" data-copy="${esc(sports)}">Copy</button></p>
       <p>Extra sources</p>
-      <code>${origin}/live/extra.m3u8</code>
-      <p><button type="button" data-copy="${origin}/live/extra.m3u8">Copy</button></p>
+      <code>${esc(extra)}</code>
+      <p><button type="button" data-copy="${esc(extra)}">Copy</button></p>
       <p>Everything</p>
-      <code>${M3U}</code>
-      <p><button type="button" data-copy="${M3U}">Copy</button>
+      <code>${esc(all)}</code>
+      <p><button type="button" data-copy="${esc(all)}">Copy</button>
          <button type="button" id="ref">Refresh all sources</button>
          <span id="c" class="muted"></span></p>
     </div>
@@ -136,9 +141,9 @@ async function live() {
 
 function esc(s) {
   return String(s || "")
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/"/g, """);
+    .replace(/&/g, "&" + "amp;")
+    .replace(/</g, "&" + "lt;")
+    .replace(/"/g, "&" + "quot;");
 }
 
 async function loadPreview() {

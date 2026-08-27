@@ -70,6 +70,7 @@ services:
       RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-900000}
       TMDB_API_KEY: ${TMDB_API_KEY}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
     volumes:
       - ${RESOLVER_FILES:-/mnt/resolver-files}:/mnt/resolver-files
     ports:

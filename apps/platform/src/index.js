@@ -2,7 +2,7 @@ import express from "express";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "./config.js";
+import { config, withKey } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 import {
   resolveMovie,
@@ -31,7 +31,7 @@ import {
   fixMediaType,
   restreamMpegTs,
 } from "./play.js";
-import { isAuthed, isPublicPath, setAuthCookie, clearAuthCookie } from "./auth.js";
+import { isAuthed, isPublicPath, isStreamPath, hasPlaylistKey, setAuthCookie, clearAuthCookie } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,7 +51,13 @@ app.use((req, res, next) => {
   next();
 });
 app.use((req, res, next) => {
-  if (req.method === "OPTIONS" || isPublicPath(req.path)) return next();
+  if (req.method === "OPTIONS") return next();
+  if (isPublicPath(req.path)) {
+    if (isStreamPath(req.path) && !hasPlaylistKey(req)) {
+      return res.status(401).json({ error: "key required" });
+    }
+    return next();
+  }
   if (isAuthed(req)) return next();
   if (
     req.path === "/" ||
@@ -357,6 +363,17 @@ app.post("/live/refresh", async (_req, res) => {
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
   }
+});
+
+app.get("/live/links", (_req, res) => {
+  const base = config.publicUrl;
+  res.json({
+    locked: Boolean(config.playlistKey),
+    all: withKey(`${base}/live/playlist.m3u8`),
+    tv: withKey(`${base}/live/247.m3u8`),
+    sports: withKey(`${base}/live/sports.m3u8`),
+    extra: withKey(`${base}/live/extra.m3u8`),
+  });
 });
 
 app.get("/live/sources", async (_req, res) => {

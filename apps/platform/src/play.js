@@ -1,6 +1,6 @@
 import http from "node:http";
 import https from "node:https";
-import { config } from "./config.js";
+import { config, withKey } from "./config.js";
 import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
 
 const TMDB = "https://api.themoviedb.org/3";
@@ -150,7 +150,7 @@ export async function restreamMpegTs(req, res, inputUrl) {
 }
 
 export function publicPlayUrl(pathAndQuery) {
-  return `${config.publicUrl}${pathAndQuery}`;
+  return withKey(`${config.publicUrl}${pathAndQuery}`);
 }
 
 async function tmdbGet(pathname) {
