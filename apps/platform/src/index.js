@@ -27,6 +27,7 @@ import {
   movieDownloadFilename,
   episodeDownloadFilename,
   proxyStream,
+  fixMediaType,
 } from "./play.js";
 import { isAuthed, isPublicPath, setAuthCookie, clearAuthCookie } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
@@ -100,7 +101,7 @@ function proxyTo(base) {
       target,
       { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
       (up) => {
-        const out = { ...up.headers };
+        const out = fixMediaType({ ...up.headers }, target.href);
         delete out.location;
         delete out.Location;
         res.writeHead(up.statusCode || 502, out);
@@ -126,11 +127,13 @@ function proxyOriginal(base) {
     const target = new URL(req.originalUrl, base.endsWith("/") ? base : `${base}/`);
     const headers = { ...req.headers, host: target.host };
     delete headers.connection;
+    headers["user-agent"] =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     const p = http.request(
       target,
       { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
       (up) => {
-        const out = { ...up.headers };
+        const out = fixMediaType({ ...up.headers }, req.originalUrl);
         delete out.location;
         delete out.Location;
         res.writeHead(up.statusCode || 502, out);
@@ -399,8 +402,8 @@ app.post("/library/episode", async (req, res) => {
 
 app.post("/library/generate", (req, res) => {
   if (job.running) return res.status(409).json({ error: "already running", ...libraryStatus() });
-  const moviePages = Math.min(Number(req.body?.moviePages || config.moviePages), 40);
-  const tvPages = Math.min(Number(req.body?.tvPages || config.tvPages), 30);
+  const moviePages = Math.min(Number(req.body?.moviePages || config.moviePages), 50);
+  const tvPages = Math.min(Number(req.body?.tvPages || config.tvPages), 40);
   const maxEpisodes = Math.min(Number(req.body?.maxEpisodes || config.tvMaxEpisodes), 40);
   generateLibrary({ moviePages, tvPages, maxEpisodes });
   res.status(202).json({ ok: true, started: true, ...libraryStatus() });

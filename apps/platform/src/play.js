@@ -88,6 +88,19 @@ function hopHeaders(req, host) {
   return headers;
 }
 
+export function fixMediaType(out, url) {
+  const ct = String(out["content-type"] || out["Content-Type"] || "").toLowerCase();
+  const u = String(url || "").toLowerCase();
+  if (ct.includes("mpegurl") || ct.includes("m3u8") || u.includes(".m3u8")) {
+    out["content-type"] = "application/vnd.apple.mpegurl";
+    return out;
+  }
+  if (ct.includes("zstd") || u.includes(".zst") || u.includes("zstd")) {
+    out["content-type"] = "video/mp2t";
+  }
+  return out;
+}
+
 function sanitizeOut(headers, filename, download) {
   const out = { ...headers };
   delete out.location;
@@ -100,10 +113,6 @@ function sanitizeOut(headers, filename, download) {
     const safe = filename.replace(/["\r\n]/g, "");
     const kind = download ? "attachment" : "inline";
     out["content-disposition"] = `${kind}; filename="${safe}"`;
-  }
-  const ct = String(out["content-type"] || out["Content-Type"] || "").toLowerCase();
-  if (ct.includes("mpegurl") || ct.includes("m3u8") || ct.includes("x-mpegurl")) {
-    out["content-type"] = "application/vnd.apple.mpegurl";
   }
   return out;
 }
@@ -127,7 +136,7 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
         up.resume();
         return proxyStream(req, res, next, { filename, download, hops: hops + 1 });
       }
-      const out = sanitizeOut(up.headers, filename, download);
+      const out = fixMediaType(sanitizeOut(up.headers, filename, download), dest.href);
       if (String(dest.pathname).includes(".m3u8") && !out["content-type"]) {
         out["content-type"] = "application/vnd.apple.mpegurl";
       }
