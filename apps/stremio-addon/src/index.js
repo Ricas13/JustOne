@@ -1,6 +1,7 @@
+import express from "express";
 import stremioSdk from "stremio-addon-sdk";
 
-const { addonBuilder, serveHTTP } = stremioSdk;
+const { addonBuilder, getRouter } = stremioSdk;
 
 const PORT = Number(process.env.PORT || 7000);
 const PLATFORM_URL = (process.env.PLATFORM_URL || "http://localhost:8080").replace(/\/$/, "");
@@ -160,5 +161,10 @@ builder.defineStreamHandler(async ({ type, id }) => {
   return { streams };
 });
 
-serveHTTP(builder.getInterface(), { port: PORT });
-console.log(`JustOne Stremio addon on :${PORT}`);
+const app = express();
+const router = getRouter(builder.getInterface());
+app.use("/", router);
+app.use("/stremio", router);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`JustOne Stremio addon on :${PORT} (/ and /stremio)`);
+});

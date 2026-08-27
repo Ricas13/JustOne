@@ -1,51 +1,47 @@
-# Traefik setup (resolver.vpn4u.cc)
+# Deploy behind Traefik — resolver.vpn4u.cc
 
-## Assumptions
+JustOne does **not** run Traefik. It joins your existing `media_net` and sets labels so Traefik issues a Let's Encrypt cert and routes HTTPS.
 
-- External Docker network: `media_net` (Traefik is already attached to it)
-- Host: `resolver.vpn4u.cc`
-- Entrypoint: `websecure` (change via `TRAEFIK_ENTRYPOINT`)
-- Cert resolver: `letsencrypt` (change via `TRAEFIK_CERTRESOLVER`)
+## What must already exist
 
-If your Traefik uses different names (e.g. `https`, `cloudflare`), set them in `.env`.
+1. Traefik is running and attached to Docker network **`media_net`**.
+2. DNS: `resolver.vpn4u.cc` A/AAAA (or CNAME) → the Traefik host.
+3. Traefik entrypoint **`websecure`** (443) and a cert resolver named **`le`**. If yours is `letsencrypt` or `cloudflare`, set `TRAEFIK_CERTRESOLVER` in `.env`.
+4. Traefik must watch Docker (`providers.docker`) and use `media_net` (or set `traefik.docker.network`).
 
 ## Routes
 
-| Path | Service |
-|------|---------|
-| `https://resolver.vpn4u.cc/` | platform (API, M3U, STRM, health) |
-| `https://resolver.vpn4u.cc/stremio-live/` | Live TV Stremio addon |
-| `https://resolver.vpn4u.cc/cinepro/` | CinePro Core |
-| `https://resolver.vpn4u.cc/dlhd/` | dlhd-web (optional) |
+| URL | Service |
+| --- | --- |
+| `https://resolver.vpn4u.cc/` | Admin + resolver (`/resolve/…`, `/live/playlist.m3u8`) |
+| `https://resolver.vpn4u.cc/stremio/manifest.json` | Stremio addon |
+| `https://resolver.vpn4u.cc/cinepro/` | CinePro (only if a 302 lands on CinePro itself) |
 
-## Stremio install URLs
-
-- Live: `https://resolver.vpn4u.cc/stremio-live/manifest.json`
-- VOD: `https://resolver.vpn4u.cc/cinepro/stremio/manifest.json`
-
-## Jellyfin Live TV
-
-M3U: `https://resolver.vpn4u.cc/live/playlist.m3u8`
-
-## .env essentials
-
-```bash
-PUBLIC_URL=https://resolver.vpn4u.cc
-CINEPRO_PUBLIC_URL=https://resolver.vpn4u.cc/cinepro
-TRAEFIK_HOST=resolver.vpn4u.cc
-TRAEFIK_ENTRYPOINT=websecure
-TRAEFIK_CERTRESOLVER=letsencrypt
-TMDB_API_KEY=...
-```
+Live backend stays internal. Video after a 302 goes to the CDN, not through JustOne.
 
 ## Apply
 
 ```bash
-cd /opt/JustOne
-git pull
-# update .env as above
-docker compose down
+git clone https://github.com/Ricas13/JustOne.git
+cd JustOne
+cp .env.example .env
+# set TMDB_API_KEY; confirm TRAEFIK_CERTRESOLVER matches Traefik
+
 docker compose up -d --build
 ```
 
-Confirm Traefik sees the containers (`traefik` dashboard or API). DNS for `resolver.vpn4u.cc` must point at the Traefik host.
+Then:
+
+- Admin: `https://resolver.vpn4u.cc/`
+- M3U (IPTVEditor / Jellyfin): `https://resolver.vpn4u.cc/live/playlist.m3u8`
+- Stremio: `https://resolver.vpn4u.cc/stremio/manifest.json`
+- STRM lines: `https://resolver.vpn4u.cc/resolve/movie/{tmdbId}?quality=4k`
+
+Point Jellyfin libraries at the same bind as `LIBRARY_BIND` (default `./data/library` on the compose host): `movies-1080p`, `movies-4k`, `tv-1080p`, `tv-4k`.
+
+## If the cert never appears
+
+- Cert resolver name mismatch (`le` vs `letsencrypt`)
+- Traefik not on `media_net`
+- Missing `traefik.docker.network=media_net` (already in compose)
+- HTTP-01 needs port 80 on Traefik; DNS-01 needs the DNS provider token in Traefik
