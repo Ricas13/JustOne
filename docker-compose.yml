@@ -53,6 +53,8 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY}
     volumes:
       - ${LIBRARY_BIND:-./data/library}:/data/library
+    ports:
+      - "127.0.0.1:18080:8080"
     depends_on:
       - cinepro
       - dlhd

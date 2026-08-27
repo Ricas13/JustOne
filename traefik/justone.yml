@@ -1,5 +1,8 @@
-# Copy onto Traefik's file-provider directory (e.g. /etc/traefik/dynamic/justone.yml)
-# then wait a few seconds. No certResolver — reuses the existing resolver.vpn4u.cc cert.
+# Put this in Traefik's file-provider directory. This host does NOT use Docker
+# labels for vpn4u.cc (vpn4u-site is 127.0.0.1:3000) — labels will never win.
+#
+# If Traefik uses network_mode: host (likely), keep 127.0.0.1:18080.
+# If Traefik is on media_net instead, use: http://justone-platform:8080
 
 http:
   routers:
@@ -15,4 +18,4 @@ http:
     justone-platform:
       loadBalancer:
         servers:
-          - url: http://justone-platform:8080
+          - url: http://127.0.0.1:18080
