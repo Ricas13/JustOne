@@ -45,14 +45,22 @@ services:
       CINEPRO_PUBLIC_URL: ${CINEPRO_PUBLIC_URL:-https://resolver.vpn4u.cc/cinepro}
       DLHD_URL: http://dlhd:3000
       STREMIO_UPSTREAM: http://stremio-addon:7000
-      LIBRARY_ROOT: /data/library
+      PATH_MOVIES_1080: ${PATH_MOVIES_1080:-/mnt/resolver-files/Movies/Movies}
+      PATH_MOVIES_4K: ${PATH_MOVIES_4K:-/mnt/resolver-files/Movies/Movies-4K}
+      PATH_TV_1080: ${PATH_TV_1080:-/mnt/resolver-files/TV/TV}
+      PATH_TV_4K: ${PATH_TV_4K:-/mnt/resolver-files/TV/TV-4K}
+      PATH_LIVE: ${PATH_LIVE:-/mnt/resolver-files/Live}
+      GENERATE_ON_START: ${GENERATE_ON_START:-true}
+      MOVIE_PAGES: ${MOVIE_PAGES:-25}
+      TV_PAGES: ${TV_PAGES:-15}
+      TV_MAX_EPISODES: ${TV_MAX_EPISODES:-24}
       EPG_URL: ${EPG_URL:-}
       LIVE_REFRESH_MIN: ${LIVE_REFRESH_MIN:-30}
       QUALITIES: ${QUALITIES:-1080p,4k}
       RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-900000}
       TMDB_API_KEY: ${TMDB_API_KEY}
     volumes:
-      - ${LIBRARY_BIND:-./data/library}:/data/library
+      - ${RESOLVER_FILES:-/mnt/resolver-files}:/mnt/resolver-files
     ports:
       - "127.0.0.1:18080:8080"
     depends_on:

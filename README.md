@@ -37,15 +37,20 @@ DNS for `resolver.vpn4u.cc` must point at this host.
 
 ## Libraries (TRaSH / Jellyfin)
 
+On first start (and `POST /library/generate`) JustOne writes:
+
 ```text
-data/library/
-  movies-1080p/Movie Title (2024) [tmdbid-123]/Movie Title (2024) [tmdbid-123].strm
-  movies-4k/...
-  tv-1080p/Show Name (2022) [tvdbid-456]/Season 01/Show Name (2022) - S01E01 - Episode Title.strm
-  tv-4k/...
+/mnt/resolver-files/Movies/Movies/Title (Year) [tmdbid-123]/Title (Year) [tmdbid-123].strm
+/mnt/resolver-files/Movies/Movies-4K/...
+/mnt/resolver-files/TV/TV/Show (Year) [tvdbid-456]/Season 01/Show (Year) - S01E01.strm
+/mnt/resolver-files/TV/TV-4K/...
+/mnt/resolver-files/Live/playlist.m3u8
 ```
 
-Each `.strm` is one line: `https://resolver.vpn4u.cc/resolve/movie/123?quality=4k`
+CinePro is not a catalog. Titles come from TMDB; at play the resolver asks CinePro for a working URL (all current providers) and 302s the player. Live M3U is every dlhd channel.
+
+Point four Jellyfin libraries at the four media folders. Tuner M3U: `https://resolver.vpn4u.cc/live/playlist.m3u8` or the file on disk.
+
 
 ## License
 

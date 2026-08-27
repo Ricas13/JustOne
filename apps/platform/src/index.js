@@ -10,12 +10,22 @@ import {
   resolveLive,
   cacheStats,
 } from "./resolve.js";
-import { slugTvgId } from "./naming.js";
+import {
+  loadChannels,
+  buildM3u,
+  writeLivePlaylist,
+  generateLibrary,
+  bootstrap,
+  libraryStatus,
+  job,
+} from "./generate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
-const TMDB = "https://api.themoviedb.org/3";
-const STREMIO_UPSTREAM = (process.env.STREMIO_UPSTREAM || "http://stremio-addon:7000").replace(/\/$/, "");
+const STREMIO_UPSTREAM = (process.env.STREMIO_UPSTREAM || "http://stremio-addon:7000").replace(
+  /\/$/,
+  "",
+);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -52,16 +62,6 @@ function proxyStremio(req, res) {
   req.pipe(p);
 }
 
-async function tmdb(pathname, params = {}) {
-  if (!config.tmdbKey) return null;
-  const url = new URL(TMDB + pathname);
-  url.searchParams.set("api_key", config.tmdbKey);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) return null;
-  return r.json();
-}
-
 app.get("/health", async (_req, res) => {
   const checks = {};
   for (const [name, url] of [
@@ -80,6 +80,7 @@ app.get("/health", async (_req, res) => {
     mode: "redirect-resolver",
     publicUrl: config.publicUrl,
     cache: cacheStats(),
+    library: libraryStatus(),
     checks,
   });
 });
@@ -119,20 +120,6 @@ app.get("/resolve/live/:channelId", async (req, res) => {
   }
 });
 
-let channelCache = { at: 0, list: [] };
-
-async function loadChannels(force = false) {
-  const stale = Date.now() - channelCache.at > config.liveRefreshMin * 60 * 1000;
-  if (!force && channelCache.list.length && !stale) return channelCache.list;
-  const r = await fetch(`${config.dlhdUrl}/api/channels`, {
-    signal: AbortSignal.timeout(20000),
-  });
-  const data = await r.json();
-  const list = Array.isArray(data) ? data : data.channels || [];
-  channelCache = { at: Date.now(), list };
-  return list;
-}
-
 app.get("/live/channels", async (_req, res) => {
   try {
     res.json(await loadChannels());
@@ -145,20 +132,10 @@ app.get("/live/playlist.m3u8", async (req, res) => {
   try {
     const force = req.query.refresh === "1";
     const list = await loadChannels(force);
-    const lines = [`#EXTM3U url-tvg="${config.epgUrl}" tvg-shift=0`];
-    list.forEach((ch, i) => {
-      const name = ch.name || `Channel ${ch.id}`;
-      const tvg = slugTvgId(name);
-      const logo = ch.logo || "";
-      const group = ch.group || ch.category || "Live";
-      lines.push(
-        `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
-      );
-      lines.push(`${config.publicUrl}/resolve/live/${ch.id}`);
-    });
+    const body = buildM3u(list);
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-cache");
-    res.send(lines.join("\n") + "\n");
+    res.send(body);
   } catch (e) {
     res.status(502).send(String(e.message || e));
   }
@@ -166,12 +143,14 @@ app.get("/live/playlist.m3u8", async (req, res) => {
 
 app.post("/live/refresh", async (_req, res) => {
   try {
-    const list = await loadChannels(true);
-    res.json({ ok: true, count: list.length });
+    const out = await writeLivePlaylist(true);
+    res.json({ ok: true, count: out.count, file: out.file });
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
   }
 });
+
+app.get("/library/status", (_req, res) => res.json(libraryStatus()));
 
 app.post("/library/movie", async (req, res) => {
   try {
@@ -205,52 +184,13 @@ app.post("/library/episode", async (req, res) => {
   }
 });
 
-app.post("/library/generate", async (req, res) => {
-  try {
-    const moviePages = Math.min(Number(req.body?.moviePages || 0), 50);
-    const tvPages = Math.min(Number(req.body?.tvPages || 0), 20);
-    const maxEpisodes = Math.min(Number(req.body?.maxEpisodes || 12), 40);
-    const qs = config.qualities;
-    let movies = 0;
-    let episodes = 0;
-    for (let page = 1; page <= moviePages; page++) {
-      const data = await tmdb("/trending/movie/week", { page });
-      for (const m of data?.results || []) {
-        const year = Number(String(m.release_date || "").slice(0, 4)) || 0;
-        for (const quality of qs) {
-          await writeMovieStrm({ title: m.title, year, tmdbId: m.id, quality });
-          movies += 1;
-        }
-      }
-    }
-    for (let page = 1; page <= tvPages; page++) {
-      const data = await tmdb("/trending/tv/week", { page });
-      for (const s of data?.results || []) {
-        const year = Number(String(s.first_air_date || "").slice(0, 4)) || 0;
-        const detail = await tmdb(`/tv/${s.id}`, { append_to_response: "external_ids" });
-        const tvdbId = detail?.external_ids?.tvdb_id;
-        const season = (detail?.seasons || []).find((x) => x.season_number === 1);
-        const count = Math.min(season?.episode_count || maxEpisodes, maxEpisodes);
-        for (let ep = 1; ep <= count; ep++) {
-          for (const quality of qs) {
-            await writeEpisodeStrm({
-              showTitle: s.name,
-              year,
-              tmdbId: s.id,
-              tvdbId,
-              season: 1,
-              episode: ep,
-              quality,
-            });
-            episodes += 1;
-          }
-        }
-      }
-    }
-    res.json({ ok: true, movies, episodes });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
+app.post("/library/generate", (req, res) => {
+  if (job.running) return res.status(409).json({ error: "already running", ...libraryStatus() });
+  const moviePages = Math.min(Number(req.body?.moviePages || config.moviePages), 40);
+  const tvPages = Math.min(Number(req.body?.tvPages || config.tvPages), 30);
+  const maxEpisodes = Math.min(Number(req.body?.maxEpisodes || config.tvMaxEpisodes), 40);
+  generateLibrary({ moviePages, tvPages, maxEpisodes });
+  res.status(202).json({ ok: true, started: true, ...libraryStatus() });
 });
 
 app.use("/stremio", proxyStremio);
@@ -273,9 +213,10 @@ app.get("*", (req, res, next) => {
 });
 
 setInterval(() => {
-  loadChannels(true).catch(() => {});
+  writeLivePlaylist(true).catch(() => {});
 }, Math.max(config.liveRefreshMin, 5) * 60 * 1000).unref?.();
 
 app.listen(config.port, "0.0.0.0", () => {
   console.log(`JustOne platform on :${config.port} (redirect resolver)`);
+  bootstrap().catch((e) => console.error("bootstrap", e));
 });
