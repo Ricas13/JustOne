@@ -99,7 +99,7 @@ services:
 
 networks:
   justone:
-    name: justone
+    name: justone_internal
   media_net:
     name: ${TRAEFIK_NETWORK:-media_net}
     external: true
