@@ -28,6 +28,7 @@ import {
   episodeDownloadFilename,
   proxyStream,
 } from "./play.js";
+import { isAuthed, isPublicPath, setAuthCookie, clearAuthCookie } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -38,13 +39,27 @@ const STREMIO_UPSTREAM = (process.env.STREMIO_UPSTREAM || "http://stremio-addon:
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: false }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
   res.setHeader("x-justone", "platform");
   next();
 });
-app.use(express.static(publicDir, { index: "index.html" }));
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS" || isPublicPath(req.path)) return next();
+  if (isAuthed(req)) return next();
+  if (
+    req.path === "/" ||
+    req.path.endsWith(".html") ||
+    req.path.endsWith(".js") ||
+    req.path.endsWith(".css")
+  ) {
+    return res.redirect("/login");
+  }
+  return res.status(401).json({ error: "auth required" });
+});
+app.use(express.static(publicDir, { index: false }));
 
 function redirectTo(res, picked, format, playPath) {
   if (!picked?.url) {
@@ -74,29 +89,83 @@ function redirectTo(res, picked, format, playPath) {
 
 function proxyTo(base) {
   return (req, res) => {
-    const target = new URL(req.url, base.endsWith("/") ? base : base + "/");
+    const root = base.endsWith("/") ? base : `${base}/`;
+    const rel = (req.url.startsWith("/") ? req.url.slice(1) : req.url) || "";
+    const target = new URL(rel, root);
     const headers = { ...req.headers, host: target.host };
     delete headers.connection;
     delete headers["content-length"];
     const p = http.request(
       target,
-      { method: req.method, headers, timeout: 120000 },
+      { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
       (up) => {
         const out = { ...up.headers };
+        delete out.location;
+        delete out.Location;
         res.writeHead(up.statusCode || 502, out);
+        if (req.method === "HEAD") {
+          up.resume();
+          res.end();
+          return;
+        }
         up.pipe(res);
       },
     );
-    p.on("error", (e) => {
-      if (!res.headersSent) {
-        res.status(502).json({ error: "upstream", detail: String(e.message || e) });
-      } else {
-        res.destroy();
-      }
+    p.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "upstream" });
+      else res.destroy();
     });
-    req.pipe(p);
+    if (req.method === "HEAD") p.end();
+    else req.pipe(p);
   };
 }
+
+function proxyOriginal(base) {
+  return (req, res) => {
+    const target = new URL(req.originalUrl, base.endsWith("/") ? base : `${base}/`);
+    const headers = { ...req.headers, host: target.host };
+    delete headers.connection;
+    const p = http.request(
+      target,
+      { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
+      (up) => {
+        const out = { ...up.headers };
+        delete out.location;
+        delete out.Location;
+        res.writeHead(up.statusCode || 502, out);
+        if (req.method === "HEAD") {
+          up.resume();
+          res.end();
+          return;
+        }
+        up.pipe(res);
+      },
+    );
+    p.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "upstream" });
+      else res.destroy();
+    });
+    if (req.method === "HEAD") p.end();
+    else req.pipe(p);
+  };
+}
+
+app.get("/login", (_req, res) => {
+  res.sendFile(path.join(publicDir, "login.html"));
+});
+app.post("/login", (req, res) => {
+  const pass = String(req.body?.password || req.body?.pass || "");
+  if (!config.adminPassword) return res.redirect("/");
+  if (pass && pass === config.adminPassword) {
+    setAuthCookie(res);
+    return res.redirect("/");
+  }
+  res.redirect("/login?e=1");
+});
+app.post("/logout", (_req, res) => {
+  clearAuthCookie(res);
+  res.redirect("/login");
+});
 
 app.get("/health", async (_req, res) => {
   const checks = {};
@@ -153,9 +222,9 @@ app.get("/resolve/episode/:tmdbId/:season/:episode", async (req, res) => {
 
 app.get("/resolve/live/:channelId", async (req, res) => {
   try {
-    const force = req.query.refresh === "1";
-    const picked = await resolveLive(req.params.channelId, { force });
-    return redirectTo(res, picked, req.query.format, playLivePath(req.params.channelId));
+    const id = String(req.params.channelId).replace(/\.m3u8$/i, "");
+    const picked = await resolveLive(id, { force: req.query.refresh === "1" });
+    return redirectTo(res, picked, req.query.format, playLivePath(id));
   } catch (e) {
     res.status(502).send(String(e.message || e));
   }
@@ -212,10 +281,10 @@ app.get("/play/episode/:tmdbId/:season/:episode", async (req, res) => {
 
 app.get("/play/live/:channelId", async (req, res) => {
   try {
-    const picked = await resolveLive(req.params.channelId, { force: req.query.refresh === "1" });
-    if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(req.params.channelId));
-    const filename = `live-${req.params.channelId}.m3u8`;
-    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+    const id = String(req.params.channelId).replace(/\.m3u8$/i, "");
+    const picked = await resolveLive(id, { force: req.query.refresh === "1" });
+    if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(id));
+    proxyStream(req, res, picked.url, { filename: null, download: false });
   } catch (e) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });
   }
@@ -231,8 +300,7 @@ app.get("/live/channels", async (_req, res) => {
 
 app.get("/live/playlist.m3u8", async (req, res) => {
   try {
-    const force = req.query.refresh === "1";
-    const list = await loadChannels(force);
+    const list = await loadChannels(req.query.refresh === "1");
     const body = buildM3u(list);
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-cache");
@@ -296,6 +364,8 @@ app.post("/library/generate", (req, res) => {
 
 app.use("/cinepro", proxyTo(config.cineproUrl));
 app.use("/stremio", proxyTo(STREMIO_UPSTREAM));
+app.use("/api/proxy", proxyOriginal(config.dlhdUrl));
+app.use("/api/stream", proxyOriginal(config.dlhdUrl));
 
 function sendIndex(_req, res) {
   res.sendFile(path.join(publicDir, "index.html"));
@@ -309,7 +379,9 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/library") ||
     req.path.startsWith("/health") ||
     req.path.startsWith("/cinepro") ||
-    req.path.startsWith("/stremio")
+    req.path.startsWith("/stremio") ||
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/login")
   ) {
     return next();
   }
@@ -322,5 +394,6 @@ setInterval(() => {
 
 app.listen(config.port, "0.0.0.0", () => {
   process.stdout.write(`JustOne platform on :${config.port} (redirect resolver)\n`);
+  if (!config.adminPassword) process.stdout.write("WARN: ADMIN_PASSWORD is empty — dashboard is open\n");
   bootstrap().catch((e) => process.stdout.write("bootstrap " + String(e) + "\n"));
 });

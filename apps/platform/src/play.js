@@ -35,7 +35,8 @@ export function playEpisodePath(tmdbId, season, episode, quality) {
 }
 
 export function playLivePath(channelId) {
-  return `/play/live/${encodeURIComponent(channelId)}`;
+  const id = String(channelId).replace(/\.m3u8$/i, "");
+  return `/play/live/${encodeURIComponent(id)}.m3u8`;
 }
 
 export function publicPlayUrl(pathAndQuery) {

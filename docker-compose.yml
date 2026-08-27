@@ -26,6 +26,8 @@ services:
     environment:
       PORT: "3000"
       DLHD_BASE: ${DLHD_BASE:-https://dlhd.st}
+      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      HOST: "0.0.0.0"
     labels:
       - "traefik.enable=false"
     networks:
@@ -59,6 +61,7 @@ services:
       QUALITIES: ${QUALITIES:-1080p,4k}
       RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-900000}
       TMDB_API_KEY: ${TMDB_API_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
       - ${RESOLVER_FILES:-/mnt/resolver-files}:/mnt/resolver-files
     ports:

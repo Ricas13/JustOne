@@ -69,7 +69,7 @@ export function buildM3u(list) {
     lines.push(
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
     );
-    lines.push(`${config.publicUrl}/play/live/${ch.id}`);
+    lines.push(`${config.publicUrl}/play/live/${ch.id}.m3u8`);
   });
   return lines.join("\n") + "\n";
 }

@@ -24,6 +24,7 @@ export const config = {
     .map((s) => s.trim())
     .filter(Boolean),
   logLevel: process.env.LOG_LEVEL || "info",
+  adminPassword: process.env.ADMIN_PASSWORD || "",
 };
 
 export function rootFor(kind, quality) {

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JustOne · Login</title>
+  <style>
+    :root { --bg:#09090b; --fg:#f4f4f0; --muted:#a1a19a; --line:rgba(244,244,240,.12); --surface:#121214; --accent:#e8e4dc; --accent-fg:#0a0a0b; }
+    html,body { margin:0; min-height:100%; background:var(--bg); color:var(--fg); font-family:Outfit,system-ui,sans-serif; }
+    body { display:grid; place-items:center; }
+    form { width:min(380px,92vw); border:1px solid var(--line); background:var(--surface); border-radius:20px; padding:28px; }
+    h1 { font-family:Fraunces,Georgia,serif; font-weight:500; margin:0 0 8px; }
+    p { color:var(--muted); margin:0 0 20px; font-size:14px; }
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+    input { width:100%; height:44px; border-radius:12px; border:1px solid var(--line); background:#0c0c0e; color:var(--fg); padding:0 12px; font:inherit; }
+    button { margin-top:16px; width:100%; height:44px; border:0; border-radius:999px; background:var(--accent); color:var(--accent-fg); font:inherit; cursor:pointer; }
+    .err { color:#f0a8a8; font-size:13px; margin-bottom:12px; display:none; }
+  </style>
+</head>
+<body>
+  <form method="post" action="/login">
+    <h1>JustOne</h1>
+    <p>Admin sign-in. Streams stay public for Jellyfin / VLC.</p>
+    <p class="err" id="err">Wrong password.</p>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required />
+    <button type="submit">Enter</button>
+  </form>
+  <script>
+    if (new URLSearchParams(location.search).get("e")) document.getElementById("err").style.display = "block";
+  </script>
+</body>
+</html>
