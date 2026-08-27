@@ -6,6 +6,10 @@ import { slugTvgId } from "./naming.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 
+function log(...args) {
+  process.stdout.write(args.map(String).join(" ") + "\n");
+}
+
 export const job = {
   running: false,
   phase: "idle",
@@ -15,6 +19,7 @@ export const job = {
   error: null,
   startedAt: null,
   finishedAt: null,
+  detail: "",
 };
 
 function sleep(ms) {
@@ -26,10 +31,18 @@ async function tmdb(pathname, params = {}) {
   const url = new URL(TMDB + pathname);
   url.searchParams.set("api_key", config.tmdbKey);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
-  if (!r.ok) return null;
-  await sleep(280);
-  return r.json();
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) {
+      log("tmdb", r.status, pathname);
+      return null;
+    }
+    await sleep(200);
+    return r.json();
+  } catch (e) {
+    log("tmdb fail", pathname, String(e.message || e));
+    return null;
+  }
 }
 
 let channelCache = { at: 0, list: [] };
@@ -38,7 +51,7 @@ export async function loadChannels(force = false) {
   const stale = Date.now() - channelCache.at > config.liveRefreshMin * 60 * 1000;
   if (!force && channelCache.list.length && !stale) return channelCache.list;
   const r = await fetch(`${config.dlhdUrl}/api/channels`, {
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(12000),
   });
   const data = await r.json();
   const list = Array.isArray(data) ? data : data.channels || data.items || [];
@@ -76,6 +89,8 @@ async function uniqueMovies(pages) {
   const lists = ["/trending/movie/week", "/movie/popular", "/movie/top_rated"];
   for (const endpoint of lists) {
     for (let page = 1; page <= pages; page++) {
+      job.detail = `${endpoint} p${page}`;
+      log("tmdb", job.detail);
       const data = await tmdb(endpoint, { page });
       for (const m of data?.results || []) {
         if (m?.id && !seen.has(m.id)) seen.set(m.id, m);
@@ -90,6 +105,8 @@ async function uniqueShows(pages) {
   const lists = ["/trending/tv/week", "/tv/popular"];
   for (const endpoint of lists) {
     for (let page = 1; page <= pages; page++) {
+      job.detail = `${endpoint} p${page}`;
+      log("tmdb", job.detail);
       const data = await tmdb(endpoint, { page });
       for (const s of data?.results || []) {
         if (s?.id && !seen.has(s.id)) seen.set(s.id, s);
@@ -114,16 +131,21 @@ export async function generateLibrary({
   job.finishedAt = null;
   const qs = config.qualities.length ? config.qualities : ["1080p", "4k"];
   try {
+    log("generate: fetching movie lists");
     const movies = await uniqueMovies(Math.min(moviePages, 40));
+    log("generate: writing", movies.length, "movies ×", qs.join(","));
     for (const m of movies) {
       const year = Number(String(m.release_date || "").slice(0, 4)) || 0;
       for (const quality of qs) {
         await writeMovieStrm({ title: m.title, year, tmdbId: m.id, quality });
         job.movies += 1;
       }
+      if (job.movies % 100 === 0) log("generate movies", job.movies);
     }
     job.phase = "tv";
+    log("generate: fetching tv lists");
     const shows = await uniqueShows(Math.min(tvPages, 30));
+    log("generate: writing", shows.length, "shows");
     for (const s of shows) {
       const year = Number(String(s.first_air_date || "").slice(0, 4)) || 0;
       const detail = await tmdb(`/tv/${s.id}`, { append_to_response: "external_ids" });
@@ -144,9 +166,15 @@ export async function generateLibrary({
           job.episodes += 1;
         }
       }
+      if (job.episodes % 200 === 0) log("generate episodes", job.episodes);
     }
     job.phase = "live";
-    await writeLivePlaylist(true);
+    try {
+      const live = await writeLivePlaylist(true);
+      log("generate live", live.count, live.file);
+    } catch (e) {
+      log("generate live skipped", String(e.message || e));
+    }
     job.phase = "done";
     await fs.mkdir(config.liveDir, { recursive: true });
     await fs.writeFile(
@@ -165,61 +193,73 @@ export async function generateLibrary({
   } catch (e) {
     job.error = String(e.message || e);
     job.phase = "error";
-    console.error("generate failed", e);
+    log("generate failed", job.error);
   } finally {
     job.running = false;
     job.finishedAt = Date.now();
+    job.detail = "";
   }
   return job;
 }
 
-async function waitUp(url, tries = 30) {
-  for (let i = 0; i < tries; i++) {
+async function waitUp(name, url, tries = 8) {
+  for (let i = 1; i <= tries; i++) {
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
-      if (r.ok || r.status < 500) return true;
-    } catch {
-      /* retry */
+      const r = await fetch(url, { signal: AbortSignal.timeout(2500) });
+      if (r.ok || r.status < 500) {
+        log("up", name, r.status);
+        return true;
+      }
+      log("wait", name, r.status, i + "/" + tries);
+    } catch (e) {
+      log("wait", name, String(e.message || e), i + "/" + tries);
     }
-    await sleep(2000);
+    await sleep(1500);
   }
+  log("down", name, url);
   return false;
 }
 
 export async function bootstrap() {
-  console.log("bootstrap: waiting for cinepro + dlhd");
-  await waitUp(config.cineproUrl);
-  await waitUp(`${config.dlhdUrl}/api/channels`);
-  try {
-    const live = await writeLivePlaylist(true);
-    console.log(`bootstrap: live m3u ${live.count} channels → ${live.file}`);
-  } catch (e) {
-    console.error("bootstrap live failed", e);
+  log("bootstrap start");
+  const cine = await waitUp("cinepro", config.cineproUrl);
+  const liveOk = await waitUp("dlhd", `${config.dlhdUrl}/api/channels`);
+  if (liveOk) {
+    try {
+      const live = await writeLivePlaylist(true);
+      log("bootstrap live m3u", live.count, live.file);
+    } catch (e) {
+      log("bootstrap live failed", String(e.message || e));
+    }
+  } else {
+    log("bootstrap: dlhd not up — STRM will still run; live later");
   }
-  if (!config.generateOnStart) return;
+  if (!config.generateOnStart) {
+    log("bootstrap: GENERATE_ON_START=false");
+    return;
+  }
   if (!config.tmdbKey) {
-    console.warn("bootstrap: no TMDB_API_KEY, skip STRM");
+    log("bootstrap: no TMDB_API_KEY, skip STRM");
     return;
   }
   const marker = path.join(config.liveDir, ".justone-first-run.json");
   try {
     await fs.access(marker);
-    console.log("bootstrap: STRM already generated, skip (POST /library/generate to redo)");
+    log("bootstrap: STRM already generated");
     return;
   } catch {
     /* first run */
   }
-  console.log(
-    `bootstrap: first-run STRM movies×${config.moviePages} pages, tv×${config.tvPages} pages`,
-  );
+  log("bootstrap first-run STRM", "moviePages=" + config.moviePages, "tvPages=" + config.tvPages);
   generateLibrary().then(() => {
-    console.log(`bootstrap done movies=${job.movies} episodes=${job.episodes} live=${job.channels}`);
+    log("bootstrap done movies=" + job.movies, "episodes=" + job.episodes, "live=" + job.channels);
   });
 }
 
 export function libraryStatus() {
   return {
     ...job,
+    cinepro: config.cineproUrl,
     paths: {
       movies1080: config.movies1080,
       movies4k: config.movies4k,

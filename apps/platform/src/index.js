@@ -217,6 +217,6 @@ setInterval(() => {
 }, Math.max(config.liveRefreshMin, 5) * 60 * 1000).unref?.();
 
 app.listen(config.port, "0.0.0.0", () => {
-  console.log(`JustOne platform on :${config.port} (redirect resolver)`);
-  bootstrap().catch((e) => console.error("bootstrap", e));
+  process.stdout.write(`JustOne platform on :${config.port} (redirect resolver)\n`);
+  bootstrap().catch((e) => process.stdout.write("bootstrap " + String(e) + "\n"));
 });
