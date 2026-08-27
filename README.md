@@ -1,114 +1,74 @@
 # JustOne
 
-**One personal media hub** for movies, series, and live TV — with Stremio addons and Jellyfin-ready `.strm` libraries.
+**One personal media hub** for movies, series, and live TV — with a web UI, a unified Stremio addon, and Jellyfin-ready `.strm` files.
 
-> **Personal / educational use only.** JustOne does not host or store video files. It resolves third-party stream URLs and writes lightweight pointer files (`.strm`) or playlist endpoints. You are responsible for complying with applicable laws and provider terms.
+> **Personal / educational use only.** JustOne does not host or store video files. It talks to resolvers you run, writes pointer files (`.strm`), and exposes playlist / addon endpoints. You are responsible for complying with applicable laws and provider terms.
 
-## What it does
+## What you get
 
-| Feature | Description |
-|--------|-------------|
-| **VOD** | Talks to [CinePro Core](https://github.com/cinepro-org/core) (OMSS) for movie/series sources |
-| **Live TV** | Talks to [dlhd-web](https://github.com/Lunatic16/dlhd-web) for DaddyLive/DLHD-style channels |
-| **Stremio** | Unified addon catalogs for movies, series, and live TV |
-| **Jellyfin** | Writes `.strm` files (and optional M3U) so Jellyfin can scan and play remote streams |
-| **Docker** | One `docker compose up` for the control plane + backends |
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     JustOne Platform                     │
-│  (API · STRM writer · proxy · Stremio addon · web UI)    │
-└────────────┬─────────────────────────────┬───────────────┘
-             │                             │
-     ┌───────▼───────┐             ┌───────▼───────┐
-     │  CinePro Core │             │   dlhd-web    │
-     │  (movies/TV)  │             │  (live TV)    │
-     └───────────────┘             └───────────────┘
-             │                             │
-             ▼                             ▼
-        Stremio / Jellyfin (.strm + M3U)
-```
+| Piece | What it is |
+| --- | --- |
+| **Web UI** | Browse movies, series, live channels, play, write STRM |
+| **CinePro** | Optional VOD resolver (official image) |
+| **dlhd-web** | Optional live-TV resolver |
+| **Stremio** | One addon: movies + series + live TV |
+| **Jellyfin** | `.strm` library + live M3U |
+| **Docker** | `docker compose up -d` |
 
 ## Quick start
 
-### Prerequisites
-
-- Docker + Docker Compose
-- Free [TMDB API key](https://www.themoviedb.org/settings/api)
-
-### 1. Configure
+1. Copy env and set a [TMDB API key](https://www.themoviedb.org/settings/api):
 
 ```bash
 cp .env.example .env
-# Edit .env — set at least TMDB_API_KEY
 ```
 
-### 2. Run
+2. Start:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-Services (defaults):
+3. Open the hub at `http://localhost:8080`
 
 | Service | URL |
-|---------|-----|
-| JustOne API / UI | http://localhost:8080 |
-| Stremio manifest | http://localhost:8080/stremio/manifest.json |
-| CinePro Core | http://localhost:3000 |
-| dlhd-web | http://localhost:3001 |
+| --- | --- |
+| Hub UI | http://localhost:8080 |
+| Health | http://localhost:8080/health |
+| Stremio (unified) | http://localhost:7000/manifest.json |
+| CinePro native Stremio | http://localhost:3000/stremio/manifest.json |
 | Live M3U | http://localhost:8080/live/playlist.m3u8 |
 
-### 3. Stremio
+## Stremio
 
-Install addon URL:
-
-```text
-http://YOUR_HOST:8080/stremio/manifest.json
-```
-
-(Use a reachable host/HTTPS if not on the same machine.)
-
-### 4. Jellyfin `.strm` library
-
-1. In `.env`, set library paths (or use the defaults under `./data/library`).
-2. Use the API or UI to resolve a title → JustOne writes:
-   - `data/library/movies/Title (Year)/Title (Year).strm`
-   - `data/library/tv/Show Name/Season XX/Show Name - SxxExx.strm`
-3. In Jellyfin, add those folders as **Movies** / **Shows** libraries.
-4. Optionally enable the refresh job to re-resolve dead streams.
-
-Point Jellyfin Live TV at:
+Add this addon URL in Stremio:
 
 ```text
-http://YOUR_HOST:8080/live/playlist.m3u8
+http://YOUR_HOST:7000/manifest.json
 ```
 
-## Project layout
+That one addon catalogs movies, series, and live TV. You can still also install CinePro’s own `/stremio/manifest.json` if you prefer.
+
+## Jellyfin STRM
+
+1. In the UI, open a title → **Write STRM**.
+2. Files land in `data/library/movies` and `data/library/tv`.
+3. Add those folders as Jellyfin libraries.
+4. For live TV, add `http://YOUR_HOST:8080/live/playlist.m3u8` as an M3U tuner.
+
+## Layout
 
 ```text
 JustOne/
 ├── docker-compose.yml
-├── .env.example
-├── apps/
-│   ├── platform/          # Control API, STRM manager, proxy, config
-│   └── stremio-addon/     # Stremio manifest + catalog/stream handlers
-├── data/
-│   └── library/           # .strm output (gitignored content)
-├── docs/
-│   ├── architecture.md
-│   └── jellyfin.md
-└── README.md
+├── apps/platform/          # UI + API + STRM + proxies
+├── apps/stremio-addon/     # unified Stremio addon
+├── docker/dlhd/            # builds upstream dlhd-web
+└── data/library/           # .strm output
 ```
 
-CinePro and dlhd-web run as **external images/services** in Compose (not vendored). This keeps updates simple when upstream scrapers change.
+CinePro and dlhd-web are **not vendored**. They run as Compose services so you can update them independently.
 
-## Status
-
-**Scaffold / early development.** Core wiring, STRM writer, and Stremio handlers are being built out. Scrapers depend on third-party sites and may break without warning.
-
-## License & disclaimer
+## License
 
 See [LICENSE](LICENSE). Not affiliated with CinePro, DaddyLive/DLHD, Stremio, or Jellyfin.

@@ -1,9 +1,20 @@
 import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config, publicizeStreamUrl } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, "..", "public");
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  next();
+});
+app.use(express.static(publicDir));
 
 app.get("/health", async (_req, res) => {
   const checks = {};
@@ -26,22 +37,24 @@ app.get("/health", async (_req, res) => {
   });
 });
 
-app.get("/", (_req, res) => {
-  res.type("html").send(`<!doctype html>
-<html><head><meta charset="utf-8"/><title>JustOne</title>
-<style>body{font-family:system-ui;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.5}
-code{background:#f4f4f5;padding:.1rem .3rem;border-radius:4px}</style></head>
-<body>
-<h1>JustOne</h1>
-<p>Public: <code>${config.publicUrl}</code></p>
-<ul>
-<li><a href="/health">/health</a></li>
-<li><a href="/live/playlist.m3u8">/live/playlist.m3u8</a></li>
-<li>Live Stremio: <code>${config.publicUrl}/stremio-live/manifest.json</code></li>
-<li>VOD Stremio (CinePro): <code>${config.cineproPublicUrl}/stremio/manifest.json</code></li>
-</ul>
-<p><strong>Personal use only.</strong></p>
-</body></html>`);
+const unifiedManifest = {
+  id: "com.justone.addon",
+  version: "1.0.0",
+  name: "JustOne",
+  description: "Movies, series, and live TV from your personal JustOne hub.",
+  resources: ["catalog", "meta", "stream"],
+  types: ["movie", "series", "tv"],
+  catalogs: [
+    { type: "movie", id: "justone-movies", name: "JustOne Movies" },
+    { type: "series", id: "justone-series", name: "JustOne Series" },
+    { type: "tv", id: "justone-live", name: "JustOne Live TV" },
+  ],
+  idPrefixes: ["tmdb:", "justone_live_"],
+  behaviorHints: { configurable: false, configurationRequired: false },
+};
+
+app.get("/stremio/manifest.json", (_req, res) => {
+  res.json(unifiedManifest);
 });
 
 app.get("/proxy/vod", async (req, res) => {
@@ -50,7 +63,6 @@ app.get("/proxy/vod", async (req, res) => {
     return res.status(400).send("url query required");
   }
   target = publicizeStreamUrl(target);
-  // If still an internal cinepro URL, force public
   res.redirect(302, target);
 });
 
@@ -66,7 +78,7 @@ app.get("/live/playlist.m3u8", async (_req, res) => {
       signal: AbortSignal.timeout(15000),
     });
     if (!r.ok) {
-      return res.status(502).send(`dlhd playlist error: ${r.status}`);
+      return res.status(502).send(`live playlist error: ${r.status}`);
     }
     let text = await r.text();
     text = text.replace(
@@ -139,10 +151,10 @@ app.post("/resolve/movie", async (req, res) => {
   try {
     const { tmdbId, title, year, writeStrm = false } = req.body || {};
     if (!tmdbId) {
-      return res.status(400).json({ error: "tmdbId required (CinePro uses TMDB ids)" });
+      return res.status(400).json({ error: "tmdbId required" });
     }
-    const path = `${config.cineproUrl}/v1/movies/${tmdbId}`;
-    const r = await fetch(path, { signal: AbortSignal.timeout(90000) });
+    const pathUrl = `${config.cineproUrl}/v1/movies/${tmdbId}`;
+    const r = await fetch(pathUrl, { signal: AbortSignal.timeout(90000) });
     const body = await r.text();
     let data;
     try {
@@ -166,12 +178,12 @@ app.post("/resolve/movie", async (req, res) => {
     });
     let strm = null;
     if (writeStrm && sources.length && title) {
-      const streamUrl = sourceUrl(sources[0]);
-      if (streamUrl) {
-        strm = await writeMovieStrm({ title, year, streamUrl, tmdbId });
+      const stream = sourceUrl(sources[0]);
+      if (stream) {
+        strm = await writeMovieStrm({ title, year, streamUrl: stream, tmdbId });
       }
     }
-    res.json({ ok: true, path, sources, strm });
+    res.json({ ok: true, path: pathUrl, sources, strm });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -190,8 +202,8 @@ app.post("/resolve/episode", async (req, res) => {
     if (!tmdbId || season == null || episode == null) {
       return res.status(400).json({ error: "tmdbId, season, episode required" });
     }
-    const path = `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`;
-    const r = await fetch(path, { signal: AbortSignal.timeout(90000) });
+    const pathUrl = `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`;
+    const r = await fetch(pathUrl, { signal: AbortSignal.timeout(90000) });
     const body = await r.text();
     let data;
     try {
@@ -215,19 +227,19 @@ app.post("/resolve/episode", async (req, res) => {
     });
     let strm = null;
     if (writeStrm && sources.length && showTitle) {
-      const streamUrl = sourceUrl(sources[0]);
-      if (streamUrl) {
+      const stream = sourceUrl(sources[0]);
+      if (stream) {
         strm = await writeEpisodeStrm({
           showTitle,
           season,
           episode,
           episodeTitle,
-          streamUrl,
+          streamUrl: stream,
           tmdbId,
         });
       }
     }
-    res.json({ ok: true, path, sources, strm });
+    res.json({ ok: true, path: pathUrl, sources, strm });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -243,6 +255,13 @@ app.get("/live/channels", async (_req, res) => {
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
   }
+});
+
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api") || req.path.startsWith("/proxy") || req.path.startsWith("/live") || req.path.startsWith("/stremio") || req.path.startsWith("/library") || req.path.startsWith("/resolve") || req.path.startsWith("/health")) {
+    return next();
+  }
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.listen(config.port, "0.0.0.0", () => {

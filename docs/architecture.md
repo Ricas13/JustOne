@@ -1,39 +1,29 @@
 # Architecture
 
+JustOne is the **control plane**. Scrapers stay in their own containers.
+
+```
+Browser / Stremio / Jellyfin
+            │
+     JustOne platform (UI, API, STRM, proxy, M3U)
+        │                    │
+   CinePro Core          dlhd-web
+   (movies/series)       (live TV)
+            │
+     Stremio addon (catalog + stream)
+```
+
 ## Services
 
-1. **cinepro** — OMSS backend for movie/series stream resolution (official image).
-2. **dlhd** — Live channel list + HLS resolver (dlhd-web).
-3. **platform** — JustOne control plane:
-   - Health / config
-   - Stream proxy (stable URLs for `.strm` and players)
-   - STRM library writer + refresh hooks
-   - Live M3U export
-4. **stremio-addon** — Stremio protocol handlers (catalog / meta / stream).
+1. **platform** — Hub UI, health, VOD/live proxy, STRM writer, live M3U, unified Stremio manifest pointer.
+2. **stremio-addon** — Catalog / meta / stream for movies, series, and live TV.
+3. **cinepro** — Official OMSS image. Optional but required for VOD resolve.
+4. **dlhd** — Live channel list + HLS resolve. Optional but required for a full live grid.
 
-## Data flow
+## STRM
 
-### VOD → Jellyfin
+`.strm` files contain a **JustOne proxy URL**, not a raw third-party link. When a token dies, you re-resolve without rewriting Jellyfin’s library layout.
 
-1. Client asks platform to add a title (TMDB id or search).
-2. Platform queries CinePro for sources.
-3. Platform selects a source (or user picks one).
-4. Platform writes a `.strm` whose URL points at **JustOne proxy** (not the raw third-party URL), e.g. `http://platform:8080/proxy/vod/{jobId}`.
-5. Jellyfin scans the library folder and plays via that URL.
+## Local vs Traefik
 
-### Live TV → Jellyfin / Stremio
-
-1. Platform fetches channel list from dlhd-web.
-2. M3U entries point at `http://platform:8080/proxy/live/{channelId}`.
-3. Stremio stream handler returns the same proxied URLs.
-
-## Why proxy?
-
-- Inject required referers / headers
-- Swap upstream URLs when tokens expire without rewriting every `.strm`
-- Central logging and failover across players
-
-## Extending
-
-- Add providers only inside CinePro or dlhd-web upstreams when possible.
-- Keep JustOne as the orchestration layer so scrapers can be swapped.
+Compose publishes ports 8080 / 3000 / 3001 / 7000 for local use. Traefik labels are included if you already run a reverse proxy; the `justone` network is created by Compose (no external network required).
