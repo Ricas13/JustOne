@@ -53,23 +53,79 @@ function library(st) {
 }
 
 async function live() {
+  const sources = await j("/live/sources");
+  const rows = (Array.isArray(sources) ? sources : []).map(
+    (s) =>
+      `<tr><td>${esc(s.name)}</td><td class="muted">${esc(s.url)}</td><td><button type="button" data-del="${esc(s.id)}">Remove</button></td></tr>`,
+  ).join("");
   app.innerHTML = `
     <h1>Live IPTV</h1>
-    <p class="muted">Paste this URL in VLC (Media → Open Network) or IPTVEditor / Jellyfin as an M3U tuner.</p>
+    <p class="muted">One playlist for VLC / IPTVEditor / Jellyfin. DLStreams is scraped automatically. Extra sources are M3U URLs you paste (SVT, PLTV, VAVOO, …) — those vaults are not public pages we can scrape.</p>
     <div class="panel">
       <code>${M3U}</code>
       <p><button type="button" id="copy">Copy M3U URL</button>
-         <button type="button" id="ref">Refresh channels</button>
+         <button type="button" id="ref">Refresh all sources</button>
          <span id="c" class="muted"></span></p>
+    </div>
+    <div class="panel">
+      <h2>Extra M3U sources</h2>
+      <p class="muted">Add a playlist URL. Group title becomes the source name. Playback still goes through /play so the origin stays hidden.</p>
+      <form id="add">
+        <input name="name" list="hints" placeholder="Name (e.g. VAVOO)" required />
+        <input name="url" type="url" placeholder="https://…/playlist.m3u8" required />
+        <button type="submit">Add source</button>
+      </form>
+      <datalist id="hints">
+        <option value="Strong Vault TV (SVT)"></option>
+        <option value="Premium Live TV Vault (PLTV1)"></option>
+        <option value="Premium Live TV Vault 2 (PLTV2)"></option>
+        <option value="TV247US"></option>
+        <option value="SharkStreams"></option>
+        <option value="VAVOO"></option>
+        <option value="Live Sports"></option>
+        <option value="Libre Futbol"></option>
+        <option value="Free Live Sports"></option>
+        <option value="Pirates IPTV"></option>
+        <option value="CNCVerse"></option>
+        <option value="Toonami Aftermath"></option>
+      </datalist>
+      <table>${rows || "<tr><td class=muted>No extra sources yet. Toonami Aftermath is added on first run.</td></tr>"}</table>
     </div>
     <pre id="preview">Loading…</pre>`;
   document.getElementById("copy").onclick = () => copy(M3U);
   document.getElementById("ref").onclick = async () => {
     const x = await j("/live/refresh", { method: "POST" });
-    document.getElementById("c").textContent = `${x.count || 0} channels`;
+    document.getElementById("c").textContent = `${x.count || 0} entries`;
     loadPreview();
   };
+  document.getElementById("add").onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await j("/live/sources", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: fd.get("name"), url: fd.get("url") }),
+    });
+    live();
+  };
+  app.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.onclick = async () => {
+      await j("/live/sources/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: btn.getAttribute("data-del") }),
+      });
+      live();
+    };
+  });
   loadPreview();
+}
+
+function esc(s) {
+  return String(s || "")
+    .replace(/&/g, "&")
+    .replace(/</g, "<")
+    .replace(/"/g, """);
 }
 
 async function loadPreview() {

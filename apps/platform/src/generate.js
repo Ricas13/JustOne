@@ -3,6 +3,7 @@ import path from "node:path";
 import { config } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 import { slugTvgId } from "./naming.js";
+import { loadAllExtra } from "./sources.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -127,6 +128,9 @@ export async function loadChannels(force = false) {
   let list = [];
   try {
     list = await scrapeAll();
+    const extra = await loadAllExtra();
+    log("extra m3u", extra.length);
+    list = [...list, ...extra];
   } catch (e) {
     log("dlstreams scrape failed, fallback dlhd", String(e.message || e));
     const r = await fetch(`${config.dlhdUrl}/api/channels`, {
@@ -149,7 +153,9 @@ export function buildM3u(list) {
     lines.push(
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
     );
-    lines.push(`${config.publicUrl}/play/live/${ch.id}.m3u8`);
+    const play =
+      ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.m3u8`;
+    lines.push(`${config.publicUrl}${play}`);
   });
   return lines.join("\n") + "\n";
 }

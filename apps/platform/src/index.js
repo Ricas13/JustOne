@@ -29,6 +29,7 @@ import {
   proxyStream,
 } from "./play.js";
 import { isAuthed, isPublicPath, setAuthCookie, clearAuthCookie } from "./auth.js";
+import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -290,6 +291,20 @@ app.get("/play/live/:channelId", async (req, res) => {
   }
 });
 
+app.get("/play/ext/:id", async (req, res) => {
+  try {
+    let ch = getExtChannel(req.params.id);
+    if (!ch) {
+      await loadAllExtra();
+      ch = getExtChannel(req.params.id);
+    }
+    if (!ch?.url) return res.status(404).json({ error: "no source" });
+    proxyStream(req, res, ch.url, { filename: null, download: false });
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: "play failed" });
+  }
+});
+
 app.get("/live/channels", async (_req, res) => {
   try {
     res.json(await loadChannels());
@@ -317,6 +332,35 @@ app.post("/live/refresh", async (_req, res) => {
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
   }
+});
+
+app.get("/live/sources", async (_req, res) => {
+  res.json(await readSources());
+});
+
+app.post("/live/sources", async (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const url = String(req.body?.url || "").trim();
+    if (!name || !/^https?:\/\//i.test(url)) {
+      return res.status(400).json({ error: "name and http(s) url required" });
+    }
+    const list = await readSources();
+    const id = String(req.body?.id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-")).slice(0, 40);
+    const next = list.filter((s) => s.id !== id);
+    next.push({ id, name, url, enabled: req.body?.enabled !== false });
+    await writeSources(next);
+    res.json({ ok: true, sources: next });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/live/sources/delete", async (req, res) => {
+  const id = String(req.body?.id || "");
+  const next = (await readSources()).filter((s) => s.id !== id);
+  await writeSources(next);
+  res.json({ ok: true, sources: next });
 });
 
 app.get("/library/status", (_req, res) => res.json(libraryStatus()));
