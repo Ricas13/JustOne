@@ -63,7 +63,7 @@ function parseDlstreams247(html) {
   let m;
   while ((m = re.exec(html))) {
     const id = m[1];
-    if (seen.has(id)) continue;
+    if (!id || id === "00" || seen.has(id)) continue;
     const name = decodeHtml(m[2]);
     const group = /18\+|adult/i.test(name) ? "18+" : "24/7";
     seen.set(id, { id, name, group });
@@ -71,20 +71,53 @@ function parseDlstreams247(html) {
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function scrape247() {
-  const r = await fetch(config.dlstreams247, {
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      accept: "text/html",
-    },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!r.ok) throw new Error("dlstreams " + r.status);
-  const html = await r.text();
-  const list = parseDlstreams247(html);
+function parseSchedule(html) {
+  const list = [];
+  let group = "Live";
+  let event = "";
+  const re =
+    /card__meta">([^<]+)<|schedule__eventTitle">([^<]+)<|href="\/watch\.php\?id=(\d+)"[^>]*title="([^"]*)"/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (m[1]) {
+      group = decodeHtml(m[1]).slice(0, 60) || "Live";
+      continue;
+    }
+    if (m[2]) {
+      event = decodeHtml(m[2]);
+      continue;
+    }
+    const id = m[3];
+    if (!id || id === "00") continue;
+    const chName = decodeHtml(m[4] || `Channel ${id}`);
+    const name = event ? `${event} — ${chName}` : chName;
+    list.push({ id, name, group: group || "Live" });
+  }
+  return list;
+}
+
+const UA = {
+  "user-agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  accept: "text/html",
+};
+
+async function fetchHtml(url) {
+  const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(25000) });
+  if (!r.ok) throw new Error(url + " " + r.status);
+  return r.text();
+}
+
+async function scrapeAll() {
+  const [homeHtml, tvHtml] = await Promise.all([
+    fetchHtml(config.dlstreamsHome),
+    fetchHtml(config.dlstreams247),
+  ]);
+  const sports = parseSchedule(homeHtml);
+  const tv = parseDlstreams247(tvHtml);
+  log("scraped schedule", sports.length, "streams;", "24/7", tv.length, "channels");
+  const list = [...sports, ...tv];
   if (!list.length) throw new Error("dlstreams parse empty");
-  log("scraped 24/7", list.length, "from", config.dlstreams247);
   return list;
 }
 
@@ -93,9 +126,9 @@ export async function loadChannels(force = false) {
   if (!force && channelCache.list.length && !stale) return channelCache.list;
   let list = [];
   try {
-    list = await scrape247();
+    list = await scrapeAll();
   } catch (e) {
-    log("24/7 scrape failed, fallback dlhd", String(e.message || e));
+    log("dlstreams scrape failed, fallback dlhd", String(e.message || e));
     const r = await fetch(`${config.dlhdUrl}/api/channels`, {
       signal: AbortSignal.timeout(12000),
     });
