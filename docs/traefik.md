@@ -1,38 +1,70 @@
 # Deploy behind Traefik — resolver.vpn4u.cc
 
-Only **justone-platform** is attached to `media_net`. CinePro, live, and Stremio stay on the internal `justone` network with `traefik.enable=false`. That stops Fastify/CinePro from answering `GET /` on the public host.
+## What is answering the host today
 
-If you already saw JSON `Route GET:/ not found` at https://resolver.vpn4u.cc/ — that was CinePro (or another Fastify app) winning the Traefik router. Pull this compose, then recreate.
+`https://resolver.vpn4u.cc/health` currently returns:
 
-## Apply
+```json
+{"status":"ok","providers":17}
+```
+
+That is **CinePro** (Fastify). JustOne's health is `{"service":"justone-platform",...}` and `/` is HTML. Until those change, Traefik is still sending the host to the old CinePro container — compose labels never reached it.
+
+## 1. Start JustOne (platform must exist)
 
 ```bash
 cd JustOne
 git pull
 docker compose up -d --build --force-recreate --remove-orphans
+docker compose ps
 ```
 
-Healthy admin UI is HTML (JustOne), not JSON. Confirm:
+You need a running container named **`justone-platform`**, on network **`media_net`**.
+
+```bash
+docker inspect justone-platform --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+# must include media_net
+```
+
+## 2. Find who still owns the hostname
+
+```bash
+docker ps --format '{{.Names}}\t{{.Image}}'
+```
+
+Look for an older `cinepro` / OMSS container. Inspect Traefik labels:
+
+```bash
+docker ps -q | xargs -I{} docker inspect {} \
+  --format '{{.Name}} {{index .Config.Labels "traefik.http.routers"}}' 
+# or:
+docker ps -q | while read id; do
+  echo "==== $(docker inspect -f '{{.Name}}' $id)"
+  docker inspect "$id" --format '{{range $k,$v := .Config.Labels}}{{println $k "=" $v}}{{end}}' \
+    | grep -i traefik || true
+done
+```
+
+Anything with `Host(\`resolver.vpn4u.cc\`)` that is **not** `justone-platform` must lose those labels (or be stopped).
+
+If Traefik uses a **file** router for this host, edit/remove that YAML. File routers ignore Docker labels.
+
+## 3. Force the route (file provider)
+
+Copy [traefik/justone.yml](../traefik/justone.yml) into Traefik's dynamic directory (often `/etc/traefik/dynamic/`). Reload Traefik.
+
+Priority is 10000 so it wins over leftover CinePro routers. Change `certResolver: le` if yours is `letsencrypt`.
+
+Traefik and `justone-platform` must both be on `media_net` so Traefik can reach `http://justone-platform:8080`.
+
+## 4. Confirm
 
 ```bash
 curl -sI https://resolver.vpn4u.cc/ | grep -i x-justone
 # x-justone: platform
+
+curl -s https://resolver.vpn4u.cc/health
+# {"service":"justone-platform", ...}
 ```
 
-If that header is missing, Traefik is still routing the host to another container. Check Traefik routers for `Host(resolver.vpn4u.cc)` and disable the old one (file provider or leftover labels).
-
-## What must already exist
-
-1. Traefik on Docker network **`media_net`**
-2. DNS `resolver.vpn4u.cc` → Traefik host
-3. Entrypoint **`websecure`**, cert resolver **`le`** (override with `TRAEFIK_CERTRESOLVER`)
-
-## Routes (all on the platform container)
-
-| URL | Use |
-| --- | --- |
-| `https://resolver.vpn4u.cc/` | Admin |
-| `https://resolver.vpn4u.cc/health` | `{ "service": "justone-platform" }` |
-| `https://resolver.vpn4u.cc/resolve/movie/{id}?quality=4k` | 302 resolver |
-| `https://resolver.vpn4u.cc/live/playlist.m3u8` | IPTVEditor / Jellyfin |
-| `https://resolver.vpn4u.cc/stremio/manifest.json` | Stremio |
+`{"providers":17}` means you are still on CinePro.
