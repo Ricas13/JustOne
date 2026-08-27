@@ -143,13 +143,22 @@ export async function loadChannels(force = false) {
   return list;
 }
 
+function forM3u(s) {
+  return String(s || "")
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
+    .replace(/[\u2600-\u27BF]/g, "")
+    .replace(/["\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function buildM3u(list) {
   const lines = [`#EXTM3U url-tvg="${config.epgUrl}" tvg-shift=0`];
   list.forEach((ch, i) => {
-    const name = String(ch.name || `Channel ${ch.id}`).replace(/[\r\n"]/g, " ");
+    const name = forM3u(ch.name || `Channel ${ch.id}`);
     const tvg = slugTvgId(name) || `dlhd-${ch.id}`;
     const logo = ch.logo || ch.image || "";
-    const group = ch.group || ch.category || "Live";
+    const group = forM3u(ch.group || ch.category || "Live") || "Live";
     lines.push(
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${i + 1}" group-title="${group}",${name}`,
     );

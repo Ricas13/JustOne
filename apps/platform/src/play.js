@@ -82,6 +82,9 @@ function hopHeaders(req, host) {
   delete headers.connection;
   delete headers["content-length"];
   delete headers["accept-encoding"];
+  headers["user-agent"] =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  headers.accept = "*/*";
   return headers;
 }
 
@@ -98,6 +101,10 @@ function sanitizeOut(headers, filename, download) {
     const kind = download ? "attachment" : "inline";
     out["content-disposition"] = `${kind}; filename="${safe}"`;
   }
+  const ct = String(out["content-type"] || out["Content-Type"] || "").toLowerCase();
+  if (ct.includes("mpegurl") || ct.includes("m3u8") || ct.includes("x-mpegurl")) {
+    out["content-type"] = "application/vnd.apple.mpegurl";
+  }
   return out;
 }
 
@@ -112,7 +119,7 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
   const lib = dest.protocol === "https:" ? https : http;
   const p = lib.request(
     dest,
-    { method: req.method === "HEAD" ? "HEAD" : "GET", headers: hopHeaders(req, dest.host), timeout: 120000 },
+    { method: "GET", headers: hopHeaders(req, dest.host), timeout: 120000 },
     (up) => {
       const loc = up.headers.location;
       if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
@@ -121,6 +128,16 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
         return proxyStream(req, res, next, { filename, download, hops: hops + 1 });
       }
       const out = sanitizeOut(up.headers, filename, download);
+      if (String(dest.pathname).includes(".m3u8") && !out["content-type"]) {
+        out["content-type"] = "application/vnd.apple.mpegurl";
+      }
+      if (req.method === "HEAD") {
+        delete out["content-length"];
+        res.writeHead(up.statusCode && up.statusCode < 400 ? up.statusCode : 200, out);
+        up.resume();
+        res.end();
+        return;
+      }
       res.writeHead(up.statusCode || 502, out);
       up.pipe(res);
     },
@@ -130,8 +147,7 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
     if (!res.headersSent) res.status(502).json({ error: "stream failed" });
     else res.destroy();
   });
-  if (req.method !== "HEAD") req.pipe(p);
-  else p.end();
+  p.end();
 }
 
 export { cleanTitle };
