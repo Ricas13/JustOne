@@ -44,22 +44,30 @@ function redirectTo(res, url, format) {
   return res.redirect(302, url);
 }
 
-function proxyStremio(req, res) {
-  const target = new URL(req.originalUrl, STREMIO_UPSTREAM);
-  const headers = { ...req.headers, host: target.host };
-  delete headers.connection;
-  const p = http.request(
-    target,
-    { method: req.method, headers },
-    (up) => {
-      res.writeHead(up.statusCode || 502, up.headers);
-      up.pipe(res);
-    },
-  );
-  p.on("error", (e) => {
-    res.status(502).json({ error: "stremio upstream", detail: String(e.message || e) });
-  });
-  req.pipe(p);
+function proxyTo(base) {
+  return (req, res) => {
+    const target = new URL(req.url, base.endsWith("/") ? base : base + "/");
+    const headers = { ...req.headers, host: target.host };
+    delete headers.connection;
+    delete headers["content-length"];
+    const p = http.request(
+      target,
+      { method: req.method, headers, timeout: 120000 },
+      (up) => {
+        const out = { ...up.headers };
+        res.writeHead(up.statusCode || 502, out);
+        up.pipe(res);
+      },
+    );
+    p.on("error", (e) => {
+      if (!res.headersSent) {
+        res.status(502).json({ error: "upstream", detail: String(e.message || e) });
+      } else {
+        res.destroy();
+      }
+    });
+    req.pipe(p);
+  };
 }
 
 app.get("/health", async (_req, res) => {
@@ -193,7 +201,8 @@ app.post("/library/generate", (req, res) => {
   res.status(202).json({ ok: true, started: true, ...libraryStatus() });
 });
 
-app.use("/stremio", proxyStremio);
+app.use("/cinepro", proxyTo(config.cineproUrl));
+app.use("/stremio", proxyTo(STREMIO_UPSTREAM));
 
 function sendIndex(_req, res) {
   res.sendFile(path.join(publicDir, "index.html"));
@@ -205,6 +214,7 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/live") ||
     req.path.startsWith("/library") ||
     req.path.startsWith("/health") ||
+    req.path.startsWith("/cinepro") ||
     req.path.startsWith("/stremio")
   ) {
     return next();

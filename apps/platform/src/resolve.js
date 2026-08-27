@@ -46,9 +46,13 @@ function qualityScore(source, want) {
 
 export function pickSource(sources, quality) {
   if (!sources?.length) return null;
-  const ranked = [...sources].sort(
-    (a, b) => qualityScore(b, quality) - qualityScore(a, quality),
-  );
+  const ranked = [...sources].sort((a, b) => {
+    const qs = qualityScore(b, quality) - qualityScore(a, quality);
+    if (qs) return qs;
+    const ua = sourceUrl(a) || "";
+    const ub = sourceUrl(b) || "";
+    return Number(ub.includes("/v1/proxy")) - Number(ua.includes("/v1/proxy"));
+  });
   const best = ranked.find((s) => qualityScore(s, quality) > 0) || ranked[0];
   const url = sourceUrl(best);
   return url ? publicizeStreamUrl(url) : null;
