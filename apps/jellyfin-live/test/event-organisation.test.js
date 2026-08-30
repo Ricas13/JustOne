@@ -10,6 +10,8 @@ test("event rows do not leak into country TV groups", () => {
     { id: "league-one", kind: "static", name: "England - League One : AFC Wimbledon vs Wigan Athletic - Sky Sports+", country: "GB", group: "UK", url: url("league-one") },
     { id: "afl", kind: "static", name: "AFL Women : Collingwood Magpies W vs Hawthorn Hawks W - TNT Sports 1", country: "GB", group: "UK", url: url("afl") },
     { id: "f1", kind: "static", name: "Formula 1 Gran Premio de España | Madrid, Spain | 11 - 13 September 2026 - Sky Sports F1", country: "GB", group: "UK", url: url("f1") },
+    { id: "season", kind: "static", name: "Start of 2026 | 27 Premier League Season UK | 22 August 2026 - Sky Sports Football", country: "GB", group: "UK", url: url("season") },
+    { id: "us-open", kind: "static", name: "US Open | New York, USA | 23 August - 13 September 2026 - ESPN", country: "US", group: "USA", url: url("us-open") },
     { id: "rtp", kind: "static", name: "RTP 2 Portugal", country: "PT", group: "Portugal", url: url("rtp") },
     { id: "canoe", kind: "static", name: "ICF Canoe Slalom World Championships - Poznań 2026 : Day 5 Session 1 - RTP 2", country: "PT", group: "Portugal", url: url("canoe") },
     { id: "surf", kind: "static", name: "WSL Tour Surf : Patin Classic Galicia Pro QS 6000 - World Surf League - Sport TV6", country: "PT", group: "Portugal", url: url("surf") },
@@ -21,13 +23,16 @@ test("event rows do not leak into country TV groups", () => {
   assert.equal(byId.get("bbc").group, "TV | UK");
   assert.equal(byId.get("rtp").group, "TV | Portugal");
 
-  for (const id of ["league-one", "afl", "f1", "canoe", "surf"]) {
+  for (const id of ["league-one", "afl", "f1", "season", "us-open", "canoe", "surf"]) {
     assert.match(byId.get(id).group, /^Sports \| /, id);
     assert.equal(byId.get(id).kind, "sport-slot", id);
   }
 
   assert.equal(byId.get("league-one").group, "Sports | Football");
+  assert.equal(byId.get("afl").group, "Sports | Australian Football");
   assert.equal(byId.get("f1").group, "Sports | Motorsport");
+  assert.equal(byId.get("us-open").group, "Sports | Tennis");
+  assert.equal(byId.get("canoe").group, "Sports | Water Sports");
 });
 
 test("real linear sports networks remain country channels", () => {
@@ -37,6 +42,7 @@ test("real linear sports networks remain country channels", () => {
     { id: "espn", kind: "static", name: "ESPN USA", country: "US", group: "USA", url: url("espn") },
     { id: "sporttv", kind: "static", name: "Sport TV6 Portugal", country: "PT", group: "Portugal", url: url("sporttv") },
     { id: "dazn", kind: "static", name: "DAZN 1 Portugal", country: "PT", group: "Portugal", url: url("dazn") },
+    { id: "v-sport", kind: "static", name: "V Sport Motor Sweden", country: "SE", group: "Sweden", url: url("v-sport") },
   ];
 
   const out = organizeLineup(input);
@@ -46,6 +52,7 @@ test("real linear sports networks remain country channels", () => {
   assert.equal(byId.get("espn").group, "TV | USA");
   assert.equal(byId.get("sporttv").group, "TV | Portugal");
   assert.equal(byId.get("dazn").group, "TV | Portugal");
+  assert.equal(byId.get("v-sport").group, "TV | Sweden");
 });
 
 test("moving events changes metadata only and preserves every URL", () => {
