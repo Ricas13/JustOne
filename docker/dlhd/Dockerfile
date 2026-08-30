@@ -1,10 +1,12 @@
-# Clone upstream dlhd-web and inject the missing m3u8 helper.
+# Clone upstream dlhd-web and inject the local compatibility helpers.
 FROM node:22-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache git
 RUN git clone --depth 1 https://github.com/Lunatic16/dlhd-web.git /app
 COPY m3u8.ts /app/src/channels/m3u8.ts
-RUN npm ci && npm run build
+COPY channels.ts /app/src/server/channels.ts
+RUN npm ci && npm run build \
+  && grep -q 'X-DLHD-Delivery' /app/dist/server/channels.js
 
 FROM node:22-alpine AS runner
 WORKDIR /app
