@@ -46,6 +46,55 @@ test("duplicate event sources become one sports programme", () => {
   assert.equal(lineup.some((x) => /18\+/.test(x.name)), false);
 });
 
+test("IPTV metadata matching tolerates provider-style ids and punctuation", () => {
+  const iptvOrg = {
+    channels: [
+      { id: "ITV1.uk", name: "ITV1", alt_names: ["ITV 1"], country: "GB", is_nsfw: false },
+      { id: "RTP3.pt", name: "RTP 3", alt_names: [], country: "PT", is_nsfw: false },
+      { id: "AandE.us", name: "A&E", alt_names: ["A and E"], country: "US", is_nsfw: false },
+    ],
+    logos: [
+      { channel: "ITV1.uk", url: "https://logos.example/itv1.png", format: "PNG", width: 800, tags: ["horizontal"] },
+      { channel: "RTP3.pt", url: "https://logos.example/rtp3.png", format: "PNG", width: 800, tags: ["horizontal"] },
+      { channel: "AandE.us", url: "https://logos.example/ae.png", format: "PNG", width: 800, tags: ["horizontal"] },
+    ],
+  };
+
+  const lineup = buildLineup([
+    { name: "ITV 1 UK", tvgId: "ITV1.HD.uk", group: "UK", url: "https://itv" },
+    { name: "RTP 3 Portugal", tvgId: "RTP.3.HD.pt", group: "Portugal", url: "https://rtp" },
+    { name: "A&E USA", tvgId: "A.and.E.HD.us2", group: "USA", url: "https://ae" },
+  ], { iptvOrg });
+
+  const byName = new Map(lineup.filter((x) => x.kind === "static").map((x) => [x.name, x]));
+  assert.equal(byName.get("ITV 1 UK")?.iptvOrgId, "ITV1.uk");
+  assert.equal(byName.get("ITV 1 UK")?.logo, "https://logos.example/itv1.png");
+  assert.equal(byName.get("RTP 3 Portugal")?.iptvOrgId, "RTP3.pt");
+  assert.equal(byName.get("RTP 3 Portugal")?.logo, "https://logos.example/rtp3.png");
+  assert.equal(byName.get("A&E USA")?.iptvOrgId, "AandE.us");
+  assert.equal(byName.get("A&E USA")?.logo, "https://logos.example/ae.png");
+});
+
+test("ambiguous metadata names are not guessed across a country", () => {
+  const iptvOrg = {
+    channels: [
+      { id: "ExampleEast.us", name: "Example", alt_names: [], country: "US", is_nsfw: false },
+      { id: "ExampleWest.us", name: "Example", alt_names: [], country: "US", is_nsfw: false },
+    ],
+    logos: [
+      { channel: "ExampleEast.us", url: "https://logos.example/east.png", format: "PNG" },
+      { channel: "ExampleWest.us", url: "https://logos.example/west.png", format: "PNG" },
+    ],
+  };
+
+  const [channel] = buildLineup([
+    { name: "Example USA", group: "USA", url: "https://example" },
+  ], { iptvOrg }).filter((x) => x.kind === "static");
+
+  assert.equal(channel.iptvOrgId, "");
+  assert.match(channel.logo, /\/jellyfin\/artwork\/channel\//);
+});
+
 test("Jellyfin M3U and XMLTV use matching ids and programme icons", () => {
   const lineup = buildLineup([{ name: "BBC One UK", tvgId: "BBCOne.uk", group: "UK", url: "https://c" }]);
   const m3u = buildM3u(lineup);
