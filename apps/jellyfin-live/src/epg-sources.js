@@ -2,7 +2,6 @@ const EPGSHARE_BASE = "https://epgshare01.online/epgshare01/";
 const INDEX_TTL_MS = 12 * 60 * 60 * 1000;
 const COUNTRY_ALIAS = new Map([["GB", "UK"]]);
 const PRIORITY_COUNTRIES = ["US", "UK", "PT"];
-const PRIORITY_SUPPLEMENT_PACKS = ["US_SPORTS1"];
 
 let indexCache = { at: 0, files: [] };
 
@@ -52,9 +51,9 @@ function countryOrder(counts) {
 function packPriority(pack, cc) {
   if (pack === `${cc}1`) return 0;
   if (pack === `${cc}2`) return 1;
-  if (pack.startsWith(`${cc}_SPORTS`)) return 2;
+  if (pack.startsWith(`${cc}_SPORTS`)) return 3;
   if (pack.startsWith(`${cc}_`)) return 4;
-  return 3;
+  return 2;
 }
 
 export function selectEpgShareUrls(lineup, availableFiles, maxSources = 12) {
@@ -63,11 +62,9 @@ export function selectEpgShareUrls(lineup, availableFiles, maxSources = 12) {
   const counts = countryCounts(lineup);
   const countries = countryOrder(counts);
   const byCountry = new Map();
-  const byPack = new Map();
 
   for (const row of availableFiles || []) {
     const pack = String(row.pack || "").toUpperCase();
-    byPack.set(pack, row);
     for (const [cc] of countries) {
       if (!pack.startsWith(cc)) continue;
       const arr = byCountry.get(cc) || [];
@@ -89,23 +86,15 @@ export function selectEpgShareUrls(lineup, availableFiles, maxSources = 12) {
     selected.push(`${EPGSHARE_BASE}${row.file}`);
   };
 
-  // First guarantee a primary guide for USA, UK and Portugal.
+  // Always spend the first slots on the three countries most important to this deployment.
   for (const cc of PRIORITY_COUNTRIES) {
     if (counts.has(cc)) add(byCountry.get(cc)?.[0]);
-  }
-
-  // Reserve cheap, high-value supplemental packs for priority countries before
-  // spending the source budget on the long tail. US_SPORTS1 is small and covers
-  // channels that are often absent from the main US pack.
-  for (const pack of PRIORITY_SUPPLEMENT_PACKS) {
-    const cc = pack.slice(0, 2);
-    if (counts.has(cc)) add(byPack.get(pack));
   }
 
   // Then cover the remaining represented countries, largest first.
   for (const [cc] of countries) add(byCountry.get(cc)?.[0]);
 
-  // Use spare budget on secondary packs, still preferring the priority countries.
+  // Use spare budget on secondary packs, preferring USA/UK/Portugal first.
   if (selected.length < limit) {
     for (const [cc, count] of countries) {
       if (count < 20 && !PRIORITY_COUNTRIES.includes(cc)) continue;
