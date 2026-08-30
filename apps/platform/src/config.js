@@ -104,8 +104,14 @@ export const config = {
 
   strmIoDelayMs: Math.max(0, Number(process.env.STRM_IO_DELAY_MS || 20)),
   qualityFallback: String(process.env.QUALITY_FALLBACK || "true") !== "false",
+  // A 4K library must mean 4K. Normal playback may still fall back between
+  // non-4K qualities, but a 4K request does not silently degrade to 1080p.
+  quality4kFallback: String(process.env.QUALITY_4K_FALLBACK || "false") === "true",
   discoverFromYear: Math.max(1900, Number(process.env.DISCOVER_FROM_YEAR || 1900)),
-  qualities: String(process.env.QUALITIES || "1080p,4k")
+
+  // The incremental crawler writes the broad normal library only. The 4K
+  // auditor promotes titles into the 4K roots after source-resolver evidence.
+  qualities: String(process.env.QUALITIES || "1080p")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),

@@ -5,6 +5,7 @@ import { slugTvgId } from "./naming.js";
 import { loadAllExtra } from "./sources.js";
 import { withCountry } from "./country.js";
 import { growCatalog, sweepCatalogHealth, catalogStatus } from "./catalog.js";
+import { runQualityAudit, qualityAuditStatus } from "./services/qualityAudit.js";
 
 function log(...args) {
   process.stdout.write(args.map(String).join(" ") + "\n");
@@ -18,6 +19,7 @@ export const job = {
   shows: 0,
   episodes: 0,
   channels: 0,
+  quality: null,
   health: null,
   error: null,
   startedAt: null,
@@ -197,6 +199,7 @@ export async function generateLibrary(_options = {}) {
   job.movieTitles = 0;
   job.shows = 0;
   job.episodes = 0;
+  job.quality = null;
   job.health = null;
   job.startedAt = Date.now();
   job.finishedAt = null;
@@ -218,6 +221,13 @@ export async function generateLibrary(_options = {}) {
       `shows=${job.shows}`,
       `episodeStrms=${job.episodes}`,
     );
+
+    job.phase = "quality";
+    job.quality = await runQualityAudit({
+      progress: (detail) => {
+        job.detail = detail;
+      },
+    });
 
     job.phase = "health";
     job.health = await sweepCatalogHealth({
@@ -246,6 +256,7 @@ export async function generateLibrary(_options = {}) {
           shows: job.shows,
           episodes: job.episodes,
           channels: job.channels,
+          quality: qualityAuditStatus(),
           catalog: catalogStatus(),
         },
         null,
@@ -305,9 +316,6 @@ export async function bootstrap() {
     return;
   }
 
-  // The marker only distinguishes a first deployment from an established
-  // library. Established libraries grow on the scheduled catalog tick instead
-  // of adding another batch on every container restart.
   const marker = path.join(config.liveDir, ".justone-first-run.json");
   try {
     await fs.access(marker);
@@ -346,6 +354,7 @@ export function libraryStatus() {
       catalogState: config.catalogStateDir,
     },
     catalog: catalogStatus(),
+    qualityAudit: qualityAuditStatus(),
     incremental: {
       initialMoviesTarget: config.initialMoviesTarget,
       initialShowsTarget: config.initialShowsTarget,
@@ -364,5 +373,6 @@ export function libraryStatus() {
     },
     generateOnStart: config.generateOnStart,
     qualityFallback: config.qualityFallback,
+    quality4kFallback: config.quality4kFallback,
   };
 }

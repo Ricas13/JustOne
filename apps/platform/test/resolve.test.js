@@ -5,6 +5,7 @@ import {
   mergeCandidates,
   validateCandidate,
   checkMovieAvailability,
+  pickSource,
 } from "../src/resolve.js";
 
 test("source candidates are deduplicated by URL and keep the existing resolver first at equal quality", () => {
@@ -32,6 +33,16 @@ test("source candidates are deduplicated by URL and keep the existing resolver f
   assert.equal(rows[0].resolver, "primary");
   assert.equal(rows[0].requestHeaders.Referer, "https://media.example/");
   assert.equal(rows[1].resolver, "secondary");
+});
+
+test("4K selection does not silently choose a 1080p source", () => {
+  const picked = pickSource(
+    [{ url: "https://media.example/only-1080.mp4", quality: "1080p" }],
+    "4k",
+  );
+  assert.equal(picked.url, null);
+  assert.equal(picked.matched, false);
+  assert.deepEqual(picked.available, ["1080p"]);
 });
 
 test("validation tries HEAD first and falls back to a tiny ranged GET", async () => {
