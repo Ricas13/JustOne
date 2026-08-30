@@ -2,6 +2,9 @@ import { chooseChannelLogo } from "./channel-logos.js";
 import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
+const HOUR = 60 * 60 * 1000;
+export const EPG_HORIZON_HOURS = 24;
+const EPG_HORIZON_MS = EPG_HORIZON_HOURS * HOUR;
 
 const EXPLICIT_ALIASES = new Map([
   ["PT|rtp 3", ["rtp noticias"]],
@@ -244,6 +247,28 @@ function xmltvTime(ms) {
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`;
 }
 
+export function parseXmltvTime(value) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?/.exec(String(value || "").trim());
+  if (!m) return Number.NaN;
+  const utc = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  if (!m[7]) return utc;
+  const offset = (Number(m[8]) * 60 + Number(m[9])) * 60 * 1000;
+  return m[7] === "+" ? utc - offset : utc + offset;
+}
+
+export function externalProgramBounds(full) {
+  const start = parseXmltvTime(/\bstart="([^"]+)"/i.exec(String(full || ""))?.[1]);
+  const stop = parseXmltvTime(/\bstop="([^"]+)"/i.exec(String(full || ""))?.[1]);
+  return { start, stop };
+}
+
+export function programmeInWindow(full, now, horizonEnd = now + EPG_HORIZON_MS) {
+  const { start, stop } = externalProgramBounds(full);
+  if (!Number.isFinite(start)) return false;
+  const effectiveStop = Number.isFinite(stop) && stop > start ? stop : start + HOUR;
+  return effectiveStop > now && start < horizonEnd;
+}
+
 function localArtwork(ch, variant = "program") {
   return withKey(`${config.publicUrl}/jellyfin/artwork/${variant}/${encodeURIComponent(ch.id)}.png`);
 }
@@ -285,7 +310,7 @@ function generatedSportsProgramXml(ch, p) {
 }
 
 function fallbackLiveProgramXml(ch, now = Date.now()) {
-  const blockMs = 6 * 60 * 60 * 1000;
+  const blockMs = 6 * HOUR;
   const start = Math.floor(now / blockMs) * blockMs;
   const end = start + blockMs;
   const title = decodeEntities(ch.name) || "Live TV";
@@ -374,13 +399,16 @@ export function guideCoverage(lineup, docs) {
   };
 }
 
-export function buildXmlTv(lineup, docs = []) {
+export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours = EPG_HORIZON_HOURS } = {}) {
+  const horizonEnd = now + Math.max(1, Number(horizonHours || EPG_HORIZON_HOURS)) * HOUR;
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<tv generator-info-name="JustOne Jellyfin Live">',
   ];
   const hits = new Map();
 
+  // Only final lineup channels are emitted. Upstream guide-only channels never
+  // enter the final XMLTV, which keeps M3U and EPG identities in lockstep.
   for (const ch of lineup || []) {
     const hit = ch.kind === "static" ? matchGuideChannel(ch, docs) : null;
     if (hit) hits.set(ch.id, hit);
@@ -393,19 +421,29 @@ export function buildXmlTv(lineup, docs = []) {
 
   for (const ch of lineup || []) {
     if (ch.kind === "sport-slot") {
-      for (const p of ch.programmes || []) lines.push(generatedSportsProgramXml(ch, p));
+      const programmes = (ch.programmes || []).filter((p) => {
+        const start = Number(p?.start);
+        const stop = Number(p?.end);
+        return Number.isFinite(start) && Number.isFinite(stop) && stop > now && start < horizonEnd;
+      });
+      if (programmes.length) {
+        for (const p of programmes) lines.push(generatedSportsProgramXml(ch, p));
+      } else {
+        lines.push(fallbackLiveProgramXml(ch, now));
+      }
       continue;
     }
 
     const hit = hits.get(ch.id);
-    const external = hit?.doc?.programmes?.get(hit.id) || [];
+    const external = (hit?.doc?.programmes?.get(hit.id) || [])
+      .filter((p) => programmeInWindow(p, now, horizonEnd));
     if (external.length) {
       for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
     } else {
-      // Jellyfin renders an empty guide badly. Give unmatched channels an
-      // explicitly-labelled fallback block with artwork, while keeping real
-      // EPG coverage metrics honest and never pretending to know a schedule.
-      lines.push(fallbackLiveProgramXml(ch));
+      // Jellyfin renders an empty guide badly. Give unmatched/out-of-window
+      // channels an explicitly-labelled current block without inventing a
+      // detailed schedule.
+      lines.push(fallbackLiveProgramXml(ch, now));
     }
   }
 
