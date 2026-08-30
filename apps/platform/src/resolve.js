@@ -71,8 +71,11 @@ function qualityRank(q, want) {
   return 1;
 }
 
+function allowQualityFallback(quality) {
+  return quality === "4k" ? config.quality4kFallback : config.qualityFallback;
+}
+
 function resolverRank(candidate) {
-  // Preserve the existing resolver as the first choice when quality is equal.
   return candidate.resolver === "primary" ? 2 : 1;
 }
 
@@ -113,8 +116,6 @@ export function mergeCandidates(primarySources, secondarySources, quality) {
   for (const row of rows) {
     const existing = byUrl.get(row.url);
     if (existing) {
-      // If two resolvers found the same stream, retain the first resolver's
-      // ordering/identity but merge any host-specific request headers.
       existing.requestHeaders = { ...row.requestHeaders, ...existing.requestHeaders };
       continue;
     }
@@ -149,8 +150,7 @@ function resultFromCandidate(candidate, candidates, quality, { validated = false
 export function pickSource(sources, quality) {
   const candidates = mergeCandidates(sources, [], quality);
   const exact = candidates.find((s) => qualityRank(s.quality, quality) === 3);
-  const allowFallback = config.qualityFallback || quality !== "4k";
-  const fallback = allowFallback ? candidates[0] : null;
+  const fallback = allowQualityFallback(quality) ? candidates[0] : null;
   return resultFromCandidate(exact || fallback, candidates, quality, { validated: false });
 }
 
@@ -191,15 +191,12 @@ async function probeRequest(candidate, method, deadline) {
 export async function validateCandidate(candidate, deadline = Date.now() + config.sourceResolveTimeoutMs) {
   if (!candidate?.probeUrl) return false;
   if (await probeRequest(candidate, "HEAD", deadline)) return true;
-  // A number of media hosts reject HEAD even though the stream is playable.
-  // A one-byte ranged GET prevents those hosts from becoming false negatives.
   return probeRequest(candidate, "GET", deadline);
 }
 
 async function chooseWorkingCandidate(candidates, quality, deadline) {
-  const allowFallback = config.qualityFallback || quality !== "4k";
   const eligible = (candidates || []).filter(
-    (candidate) => allowFallback || qualityRank(candidate.quality, quality) === 3,
+    (candidate) => allowQualityFallback(quality) || qualityRank(candidate.quality, quality) === 3,
   );
 
   for (let offset = 0; offset < eligible.length && remainingMs(deadline); offset += PROBE_BATCH_SIZE) {
@@ -233,8 +230,7 @@ function runProviderCall(call) {
   });
 }
 
-// Existing primary resolver integration is intentionally kept intact. The new
-// discovery layer applies its own external budget via runProviderCall().
+// Existing primary resolver integration is intentionally kept intact.
 async function cineproMovie(tmdbId) {
   const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
     signal: AbortSignal.timeout(90000),
@@ -250,9 +246,6 @@ async function cineproEpisode(tmdbId, season, episode) {
   return r.json();
 }
 
-// Health checks use a separate strict HTTP owner. We intentionally do not
-// change the existing CinePro playback calls above; pruning needs to know the
-// difference between "zero sources" and "the resolver itself returned 5xx".
 async function healthCineproRequest(pathname) {
   const response = await fetch(`${config.cineproUrl}${pathname}`, {
     signal: AbortSignal.timeout(config.sourceProviderTimeoutMs),
@@ -287,9 +280,9 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
 
   let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
 
-  // Backwards-compatibility guard: if probing is inconclusive, keep the old
-  // primary resolver behavior instead of breaking a title that used to play.
-  if (!picked.url && primarySources.length) {
+  // Keep the legacy primary-only fallback for ordinary playback, but never use
+  // it to turn a strict 4K library item into a lower-resolution stream.
+  if (!picked.url && primarySources.length && allowQualityFallback(quality)) {
     picked = pickSource(primarySources, quality);
     picked.resolver = picked.url ? "primary" : null;
     picked.validationFallback = Boolean(picked.url);
@@ -297,8 +290,14 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
 
   picked.diagnostics = (primaryData?.diagnostics || []).slice(0, 8);
   picked.providerErrors = {
-    primary: primaryResult.status === "rejected" ? String(primaryResult.reason?.message || primaryResult.reason) : null,
-    secondary: secondaryResult.status === "rejected" ? String(secondaryResult.reason?.message || secondaryResult.reason) : null,
+    primary:
+      primaryResult.status === "rejected"
+        ? String(primaryResult.reason?.message || primaryResult.reason)
+        : null,
+    secondary:
+      secondaryResult.status === "rejected"
+        ? String(secondaryResult.reason?.message || secondaryResult.reason)
+        : null,
   };
 
   if (picked.url) cacheSet(key, picked);
@@ -311,8 +310,6 @@ async function inspectVodAvailability({ primaryCall, secondaryCall, strict = fal
     runProviderCall(secondaryCall),
   ]);
 
-  // Catalog pruning must be much more conservative than playback. If either
-  // resolver is unavailable, do not count the check as a missing title.
   if (primaryResult.status !== "fulfilled" || secondaryResult.status !== "fulfilled") {
     return {
       state: "indeterminate",
@@ -337,9 +334,6 @@ async function inspectVodAvailability({ primaryCall, secondaryCall, strict = fal
     return { state: "unavailable", reason: "no-direct-sources", candidates: 0 };
   }
 
-  // Bulk catalog health defaults to advertised-source presence so a 100k-title
-  // library does not HEAD/GET thousands of media hosts every day. Strict mode
-  // can be enabled for smaller deployments or occasional deeper sweeps.
   if (!strict) {
     return { state: "available", reason: "source-advertised", candidates: candidates.length };
   }
