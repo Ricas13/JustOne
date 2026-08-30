@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
 import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
+import { sourceHeadersFor } from "./services/sourceHeaders.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 const titleCache = new Map();
@@ -187,14 +188,19 @@ export async function episodeDownloadFilename(tmdbId, season, episode, ext = "mp
   return downloadName(file, ext);
 }
 
-function hopHeaders(req, host) {
+function hopHeaders(req, host, upstreamHeaders = {}) {
   const headers = { ...req.headers, host };
   delete headers.connection;
   delete headers["content-length"];
   delete headers["accept-encoding"];
-  headers["user-agent"] =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  // Preserve the existing proxy defaults, then allow a selected stream to
+  // override them only when its resolver explicitly requires custom headers.
+  headers["user-agent"] = UA;
   headers.accept = "*/*";
+  for (const [key, value] of Object.entries(upstreamHeaders || {})) {
+    if (!key || value == null) continue;
+    headers[String(key).toLowerCase()] = String(value);
+  }
   return headers;
 }
 
@@ -227,7 +233,12 @@ function sanitizeOut(headers, filename, download) {
   return out;
 }
 
-export function proxyStream(req, res, targetUrl, { filename, download = false, hops = 0 } = {}) {
+export function proxyStream(
+  req,
+  res,
+  targetUrl,
+  { filename, download = false, hops = 0, upstreamHeaders = {} } = {},
+) {
   let dest;
   try {
     dest = new URL(internalize(targetUrl));
@@ -235,16 +246,23 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
     if (!res.headersSent) res.status(502).json({ error: "bad upstream" });
     return;
   }
+  const rememberedHeaders = sourceHeadersFor(targetUrl);
+  const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
   const lib = dest.protocol === "https:" ? https : http;
   const p = lib.request(
     dest,
-    { method: "GET", headers: hopHeaders(req, dest.host), timeout: 120000 },
+    { method: "GET", headers: hopHeaders(req, dest.host, effectiveHeaders), timeout: 120000 },
     (up) => {
       const loc = up.headers.location;
       if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
         const next = new URL(loc, dest).href;
         up.resume();
-        return proxyStream(req, res, next, { filename, download, hops: hops + 1 });
+        return proxyStream(req, res, next, {
+          filename,
+          download,
+          hops: hops + 1,
+          upstreamHeaders: effectiveHeaders,
+        });
       }
       const out = fixMediaType(sanitizeOut(up.headers, filename, download), dest.href);
       if (String(dest.pathname).includes(".m3u8") && !out["content-type"]) {
