@@ -44,7 +44,7 @@ const SPORT_GROUPS = [
 const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
 const LINEAR_SPORTS_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes)\b/i;
 const SOURCE_SUFFIX_RE = /\b(?:backup|event|stream|feed|ppv|main\s+event)\b/i;
-const EVENT_SIGNAL_RE = /(?:\b(?:vs\.?|v\.?|at)\b|\s:\s|\b(?:day|stage|round|session|heat|race|qualifying|practice)\s*\d+\b|\b(?:semi-?final|quarter-?final|final)\b|\bworld championships?\b|\bchampionship tour\b|\bvarious events\b|\bgrand prix\b|\bgran premio\b|\bmain event\b|\bppv\b)/i;
+const EVENT_SIGNAL_RE = /(?:\b(?:vs\.?|v\.?)\b|@|\s:\s|\b(?:day|stage|round|session|heat|race|qualifying|practice)\s*\d+\b|\b(?:semi-?final|quarter-?final|final)\b|\bworld championships?\b|\bchampionship tour\b|\bvarious events\b|\bgrand prix\b|\bgran premio\b|\bppv\b)/i;
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 const displayNames = typeof Intl.DisplayNames === "function"
@@ -150,9 +150,6 @@ function sportGroup(channel) {
     return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
   }
 
-  // True linear networks remain normal country channels. Event rows can use a
-  // linear network as their source suffix, but EVENT_SIGNAL_RE distinguishes
-  // those from the actual network channel.
   if (isLinearSportsChannel(channel)) return null;
 
   const direct = SPORT_GROUPS.find((item) => item.re.test(hay));
