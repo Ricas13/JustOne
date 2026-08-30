@@ -64,7 +64,7 @@ test("guide matcher considers alternate source labels after channel dedupe", () 
   assert.equal(matchGuideChannel(channel, [usDoc])?.id, "NESN.HD.us2");
 });
 
-test("coverage counts channels with real programmes and reports countries", () => {
+test("coverage counts only channels with real programmes and reports countries", () => {
   const lineup = [
     { id: "a", kind: "static", name: "NESN USA", country: "US", tvgId: "justone.a", logo: "" },
     { id: "b", kind: "static", name: "Unknown USA", country: "US", tvgId: "justone.b", logo: "" },
@@ -81,7 +81,7 @@ test("coverage counts channels with real programmes and reports countries", () =
   assert.equal(stats.byCountry.UK, undefined);
 });
 
-test("unmatched static channels do not get fake Live channel programmes", () => {
+test("unmatched static channels get an honest EPG fallback with artwork", () => {
   const lineup = [{
     id: "unknown",
     kind: "static",
@@ -92,8 +92,27 @@ test("unmatched static channels do not get fake Live channel programmes", () => 
   }];
   const xml = buildXmlTv(lineup, [ukDoc]);
   assert.match(xml, /<channel id="justone\.unknown">/);
-  assert.doesNotMatch(xml, /<programme[^>]+channel="justone\.unknown"/);
-  assert.doesNotMatch(xml, /Live channel/i);
+  assert.match(xml, /<programme[^>]+channel="justone\.unknown"/);
+  assert.match(xml, /<title>Unknown Channel<\/title>/);
+  assert.match(xml, /<sub-title>Live TV<\/sub-title>/);
+  assert.match(xml, /Detailed programme schedule is currently unavailable/);
+  assert.match(xml, /<icon src="https:\/\/example\/channel\.png" \/>/);
+  assert.match(xml, /<image type="backdrop"[^>]*>https:\/\/example\/channel\.png<\/image>/);
+});
+
+test("real external programmes still win over the fallback", () => {
+  const lineup = [{
+    id: "itv",
+    kind: "static",
+    tvgId: "justone.itv",
+    name: "ITV 1 UK",
+    country: "GB",
+    logo: "https://example/itv.png",
+  }];
+  const xml = buildXmlTv(lineup, [ukDoc]);
+  assert.match(xml, /Good Morning Britain/);
+  assert.doesNotMatch(xml, /Detailed programme schedule is currently unavailable/);
+  assert.match(xml, /<programme[^>]+channel="justone\.itv"/);
 });
 
 test("sports XMLTV decodes nested entities and keeps event title searchable", () => {
