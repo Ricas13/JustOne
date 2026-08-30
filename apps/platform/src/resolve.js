@@ -230,7 +230,6 @@ function runProviderCall(call) {
   });
 }
 
-// Existing primary resolver integration is intentionally kept intact.
 async function cineproMovie(tmdbId) {
   const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
     signal: AbortSignal.timeout(90000),
@@ -280,8 +279,6 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
 
   let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
 
-  // Keep the legacy primary-only fallback for ordinary playback, but never use
-  // it to turn a strict 4K library item into a lower-resolution stream.
   if (!picked.url && primarySources.length && allowQualityFallback(quality)) {
     picked = pickSource(primarySources, quality);
     picked.resolver = picked.url ? "primary" : null;
@@ -349,7 +346,7 @@ export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
   return inspectVodAvailability({
     strict,
     primaryCall: () => healthCineproMovie(tmdbId),
-    secondaryCall: () => fetchMovieStreams(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId, { background: true }),
   });
 }
 
@@ -357,25 +354,31 @@ export function checkEpisodeAvailability(tmdbId, season, episode, { strict = fal
   return inspectVodAvailability({
     strict,
     primaryCall: () => healthCineproEpisode(tmdbId, season, episode),
-    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background: true }),
   });
 }
 
-export function resolveMovie(tmdbId, quality = "1080p") {
+export function resolveMovie(tmdbId, quality = "1080p", { background = false } = {}) {
   return resolveVod({
     key: `movie:${tmdbId}:${quality}`,
     quality,
     primaryCall: () => cineproMovie(tmdbId),
-    secondaryCall: () => fetchMovieStreams(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId, { background }),
   });
 }
 
-export function resolveEpisode(tmdbId, season, episode, quality = "1080p") {
+export function resolveEpisode(
+  tmdbId,
+  season,
+  episode,
+  quality = "1080p",
+  { background = false } = {},
+) {
   return resolveVod({
     key: `ep:${tmdbId}:${season}:${episode}:${quality}`,
     quality,
     primaryCall: () => cineproEpisode(tmdbId, season, episode),
-    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
   });
 }
 
