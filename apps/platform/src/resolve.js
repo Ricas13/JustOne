@@ -1,4 +1,5 @@
 import { config, publicizeStreamUrl } from "./config.js";
+import { rememberSourceHeaders } from "./services/sourceHeaders.js";
 import { fetchMovieStreams, fetchEpisodeStreams } from "./services/webStreamrClient.js";
 
 const cache = new Map();
@@ -17,6 +18,7 @@ function cacheGet(key) {
 
 function cacheSet(key, value) {
   cache.set(key, { value, exp: Date.now() + TTL_MS });
+  rememberSourceHeaders(value?.url, value?.requestHeaders, TTL_MS);
 }
 
 function extractSources(data) {
