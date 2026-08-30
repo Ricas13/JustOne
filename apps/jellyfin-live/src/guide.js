@@ -82,10 +82,6 @@ export function canonicalGuideName(value, country = "") {
   return s;
 }
 
-function tokens(value) {
-  return canonicalGuideName(value).split(" ").filter(Boolean);
-}
-
 function addAlias(map, key, id) {
   if (!key) return;
   const set = map.get(key) || new Set();
@@ -126,6 +122,7 @@ function channelVariants(ch) {
     ch.tvgId,
     ch.iptvOrgId,
     ...(ch.sourceTvgIds || []),
+    ...(ch.candidates || []).map((candidate) => candidate?.label),
   ].filter((v) => v && !/^justone\./i.test(v) && !/^dlhd-/i.test(v))
     .map((v) => canonicalGuideName(v, ch.country))
     .filter(Boolean))];
@@ -280,19 +277,40 @@ export function guideCoverage(lineup, docs) {
   let staticChannels = 0;
   let matchedChannels = 0;
   let channelsWithPrograms = 0;
+  const countryBuckets = new Map();
+
   for (const ch of lineup || []) {
     if (ch.kind !== "static") continue;
     staticChannels += 1;
+    const country = String(ch.country || "INTL").toUpperCase() || "INTL";
+    const bucket = countryBuckets.get(country) || { staticChannels: 0, matchedChannels: 0, channelsWithPrograms: 0 };
+    bucket.staticChannels += 1;
+
     const hit = matchGuideChannel(ch, docs);
-    if (!hit) continue;
-    matchedChannels += 1;
-    if ((hit.doc.programmes?.get(hit.id) || []).length) channelsWithPrograms += 1;
+    if (hit) {
+      matchedChannels += 1;
+      bucket.matchedChannels += 1;
+      if ((hit.doc.programmes?.get(hit.id) || []).length) {
+        channelsWithPrograms += 1;
+        bucket.channelsWithPrograms += 1;
+      }
+    }
+    countryBuckets.set(country, bucket);
   }
+
+  const byCountry = Object.fromEntries([...countryBuckets.entries()]
+    .sort((a, b) => b[1].staticChannels - a[1].staticChannels || a[0].localeCompare(b[0]))
+    .map(([country, row]) => [country, {
+      ...row,
+      coveragePercent: row.staticChannels ? Math.round((row.channelsWithPrograms / row.staticChannels) * 1000) / 10 : 0,
+    }]));
+
   return {
     staticChannels,
     matchedChannels,
     channelsWithPrograms,
     coveragePercent: staticChannels ? Math.round((channelsWithPrograms / staticChannels) * 1000) / 10 : 0,
+    byCountry,
   };
 }
 
