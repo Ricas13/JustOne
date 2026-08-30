@@ -25,6 +25,7 @@ export const config = {
   tvMaxSeasons: Number(process.env.TV_MAX_SEASONS || 4),
   maxMovies: Number(process.env.MAX_MOVIES || 5000),
   maxShows: Number(process.env.MAX_SHOWS || 1500),
+  strmIoDelayMs: Math.max(0, Number(process.env.STRM_IO_DELAY_MS || 20)),
   qualityFallback: String(process.env.QUALITY_FALLBACK || "true") !== "false",
   discoverFromYear: Number(process.env.DISCOVER_FROM_YEAR || 1980),
   qualities: String(process.env.QUALITIES || "1080p,4k")
