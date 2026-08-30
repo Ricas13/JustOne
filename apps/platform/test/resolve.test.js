@@ -10,7 +10,11 @@ test("source candidates are deduplicated by URL and keep the existing resolver f
       { url: "https://media.example/low.mp4", quality: "720p", provider: "existing" },
     ],
     [
-      { url: "https://media.example/a.mp4", name: "Source Resolver 1080p" },
+      {
+        url: "https://media.example/a.mp4",
+        name: "Source Resolver 1080p",
+        requestHeaders: { Referer: "https://media.example/" },
+      },
       { url: "https://media.example/b.mp4", name: "Source Resolver 1080p" },
     ],
     "1080p",
@@ -22,6 +26,7 @@ test("source candidates are deduplicated by URL and keep the existing resolver f
     "https://media.example/low.mp4",
   ]);
   assert.equal(rows[0].resolver, "primary");
+  assert.equal(rows[0].requestHeaders.Referer, "https://media.example/");
   assert.equal(rows[1].resolver, "secondary");
 });
 
