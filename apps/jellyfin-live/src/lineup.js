@@ -1,3 +1,5 @@
+import { compareCountryChannels } from "./country-order.js";
+
 const PRIORITY_COUNTRIES = ["US", "GB", "PT"];
 const SPECIAL_NAMES = new Map([
   ["US", "USA"],
@@ -63,7 +65,7 @@ export function organizeLineup(lineup) {
   countries.forEach((country, countryIndex) => {
     const rows = statics
       .filter((ch) => ch.country === country)
-      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      .sort((a, b) => compareCountryChannels(country, a, b));
     const base = (countryIndex + 1) * 1000;
     rows.forEach((ch, i) => {
       ordered.push({
