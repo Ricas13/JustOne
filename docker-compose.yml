@@ -207,6 +207,8 @@ services:
       - "traefik.http.routers.justone-jellyfin.tls.certresolver=le"
       - "traefik.http.routers.justone-jellyfin.priority=11000"
       - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
+      - "traefik.http.routers.justone-jellyfin.middlewares=justone-jellyfin-compress"
+      - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
       - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
 
   stremio-addon:
