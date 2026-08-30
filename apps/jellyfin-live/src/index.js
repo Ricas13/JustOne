@@ -1,14 +1,15 @@
 import crypto from "node:crypto";
 import zlib from "node:zlib";
 import express from "express";
+import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
 import { discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
+import { buildXmlTv, guideCoverage } from "./guide.js";
+import { organizeLineup } from "./lineup.js";
 import {
-  artworkPng,
   buildLineup,
   buildM3u,
-  buildXmlTv,
   getCurrentCandidates,
   guideSourceUrlsForLineup,
   parseM3u,
@@ -108,6 +109,7 @@ async function loadXmlGuide(url) {
     if (!/<tv[\s>]/i.test(body)) throw new Error("not xmltv");
     const doc = parseXmlTv(body);
     if (!doc.channels.size) throw new Error("xmltv contained no channels");
+    doc.sourceUrl = url;
     xmlCache.set(url, { at: Date.now(), doc });
     log("xmltv loaded", `channels=${doc.channels.size}`, url);
     return doc;
@@ -182,7 +184,7 @@ async function refresh(force = false) {
     const filtered = filterJellyfinRows(raw);
     const schedule = scheduleHtml ? respectScheduleTimezone(scheduleHtml, parseScheduleMetadata(scheduleHtml)) : null;
     const safeRaw = keepScheduledEvents(filtered, schedule);
-    const lineup = buildLineup(safeRaw, { schedule, iptvOrg });
+    const lineup = organizeLineup(buildLineup(safeRaw, { schedule, iptvOrg }));
 
     const manualUrls = [...new Set(config.epgSourceUrls)];
     const iptvUrls = config.autoEpg
@@ -199,6 +201,7 @@ async function refresh(force = false) {
     const epgSources = [...new Set([...baseSources, ...fallbackUrls])];
     const docs = (await mapLimit(epgSources, EPG_CONCURRENCY, loadXmlGuide)).filter(Boolean);
     const matchedChannels = lineup.filter((x) => x.kind === "static" && x.iptvOrgId).length;
+    const coverage = guideCoverage(lineup, docs);
     const epgStats = {
       iptvChannels: iptvOrg.channels.length,
       iptvGuideRows: iptvOrg.guides.length,
@@ -208,6 +211,7 @@ async function refresh(force = false) {
       fallbackSources: fallbackUrls.length,
       selectedSources: epgSources.length,
       loadedSources: docs.length,
+      ...coverage,
     };
 
     cache = {
@@ -226,7 +230,8 @@ async function refresh(force = false) {
       `filtered=${filtered.length}`,
       `jellyfin=${lineup.length}`,
       `epg=${docs.length}/${epgSources.length}`,
-      `matched=${matchedChannels}`,
+      `matched=${coverage.channelsWithPrograms}/${coverage.staticChannels}`,
+      `coverage=${coverage.coveragePercent}%`,
       `iptv-guides=${iptvOrg.guides.length}`,
       `fallback=${fallbackUrls.length}`,
     );
@@ -276,9 +281,10 @@ app.get("/jellyfin/guide.xml", async (req, res) => {
 
 app.get("/jellyfin/artwork/:variant/:token.png", (req, res) => {
   const variant = req.params.variant === "channel" ? "channel" : "program";
+  const context = artworkContext(cache.lineup, req.params.token);
   res.setHeader("Content-Type", "image/png");
   res.setHeader("Cache-Control", "public, max-age=86400");
-  res.send(artworkPng(req.params.token, variant));
+  res.send(artworkPng(req.params.token, variant, context));
 });
 
 app.get("/jellyfin/play/:id", async (req, res) => {
