@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: docker/webstreamr-mbg/Dockerfile
       args:
-        WEBSTREAMR_MBG_REF: ${WEBSTREAMR_MBG_REF:-main}
+        WEBSTREAMR_MBG_REF: ${WEBSTREAMR_MBG_REF:-v0.73.2}
     container_name: justone-stream-provider
     restart: unless-stopped
     environment:
