@@ -9,8 +9,22 @@ const displayNames = typeof Intl.DisplayNames === "function"
   ? new Intl.DisplayNames(["en"], { type: "region" })
   : null;
 
-export function countryLabel(code) {
+export function normalizeCountryCode(code, name = "") {
+  const title = String(name || "").trim();
+
+  // These names are easy to misclassify from the word "USA" / source grouping.
+  // 5USA is a UK channel, while BBC America is a US channel.
+  if (/^5\s*USA$/i.test(title)) return "GB";
+  if (/^BBC\s+America\b/i.test(title)) return "US";
+
   const cc = String(code || "").trim().toUpperCase();
+  if (cc === "UK") return "GB";
+  if (cc === "USA") return "US";
+  return cc;
+}
+
+export function countryLabel(code) {
+  const cc = normalizeCountryCode(code);
   if (!cc) return "International";
   if (SPECIAL_NAMES.has(cc)) return SPECIAL_NAMES.get(cc);
   try {
@@ -21,7 +35,7 @@ export function countryLabel(code) {
 }
 
 function countryRank(code) {
-  const cc = String(code || "").toUpperCase();
+  const cc = normalizeCountryCode(code);
   const preferred = PRIORITY_COUNTRIES.indexOf(cc);
   return preferred >= 0 ? preferred : 100;
 }
@@ -31,8 +45,11 @@ export function organizeLineup(lineup) {
     .filter((ch) => ch.kind === "sport-slot")
     .sort((a, b) => Number(a.number || 0) - Number(b.number || 0) || String(a.name).localeCompare(String(b.name)));
 
-  const statics = (lineup || []).filter((ch) => ch.kind === "static");
-  const countries = [...new Set(statics.map((ch) => String(ch.country || "").toUpperCase()))]
+  const statics = (lineup || [])
+    .filter((ch) => ch.kind === "static")
+    .map((ch) => ({ ...ch, country: normalizeCountryCode(ch.country, ch.name) }));
+
+  const countries = [...new Set(statics.map((ch) => ch.country))]
     .sort((a, b) => {
       const ra = countryRank(a);
       const rb = countryRank(b);
@@ -45,7 +62,7 @@ export function organizeLineup(lineup) {
   const ordered = [];
   countries.forEach((country, countryIndex) => {
     const rows = statics
-      .filter((ch) => String(ch.country || "").toUpperCase() === country)
+      .filter((ch) => ch.country === country)
       .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
     const base = (countryIndex + 1) * 1000;
     rows.forEach((ch, i) => {
