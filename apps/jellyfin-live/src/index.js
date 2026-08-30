@@ -7,6 +7,7 @@ import { discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
 import { buildXmlTv, guideCoverage, matchGuideChannel } from "./guide.js";
 import { organizeLineup } from "./lineup.js";
+import { applyEpgIdentityLogos } from "./logo-bridge.js";
 import {
   buildLineup,
   buildM3u,
@@ -238,6 +239,9 @@ async function refresh(force = false) {
     const docs = (await mapLimit(epgSources, EPG_CONCURRENCY, loadXmlGuide)).filter(Boolean);
     const matchedChannels = lineup.filter((x) => x.kind === "static" && x.iptvOrgId).length;
     const coverage = guideCoverage(lineup, docs);
+    const identityLogos = applyEpgIdentityLogos(lineup, docs, iptvOrg);
+    const generatedLogosRemaining = Math.max(0, coverage.generatedLogosRemaining - identityLogos.applied);
+    const realLogosTotal = coverage.existingLogosKept + coverage.guideLogosApplied + identityLogos.applied;
     const epgStats = {
       iptvChannels: iptvOrg.channels.length,
       iptvGuideRows: iptvOrg.guides.length,
@@ -248,6 +252,10 @@ async function refresh(force = false) {
       selectedSources: epgSources.length,
       loadedSources: docs.length,
       ...coverage,
+      iptvIdentityLogosApplied: identityLogos.applied,
+      iptvIdentityLogoCandidates: identityLogos.candidates,
+      generatedLogosRemaining,
+      realLogosTotal,
     };
 
     cache = {
@@ -273,6 +281,8 @@ async function refresh(force = false) {
       `matched=${coverage.channelsWithPrograms}/${coverage.staticChannels}`,
       `coverage=${coverage.coveragePercent}%`,
       `priority=${priorityCoverage}`,
+      `logos=${realLogosTotal}/${coverage.staticChannels}`,
+      `identity-logos=${identityLogos.applied}`,
       `iptv-guides=${iptvOrg.guides.length}`,
       `fallback=${fallbackUrls.length}`,
     );
