@@ -21,7 +21,7 @@ const PLAYBACK_READY_TARGETS = Math.max(
   1,
   Math.min(10, Number(process.env.PLAYBACK_SOURCE_FAILOVER_ATTEMPTS || 4)),
 );
-const MATERIALIZE_BATCH_SIZE = 3;
+const MATERIALIZE_BATCH_SIZE = 4;
 
 let cooldownUntil = 0;
 let lastRateLimitAt = null;
@@ -115,6 +115,15 @@ function isLazyExtractUrl(value) {
   } catch {
     return false;
   }
+}
+
+function qualityBucket(stream) {
+  const text = `${stream?.quality || ""} ${stream?.name || ""} ${stream?.title || ""}`.toLowerCase();
+  if (/2160|\b4k\b|\buhd\b|3840/.test(text)) return "4k";
+  if (/1080/.test(text)) return "1080p";
+  if (/720/.test(text)) return "720p";
+  if (/480|360|240/.test(text)) return "sd";
+  return "unknown";
 }
 
 async function readPrefix(response, maxBytes = PLAYBACK_PROBE_BYTES) {
@@ -217,8 +226,19 @@ async function materializeLazyStream(stream) {
 }
 
 async function materializeInteractiveStreams(rows) {
+  const lazyTotals = new Map();
+  for (const row of rows) {
+    if (!isLazyExtractUrl(row.url)) continue;
+    const bucket = qualityBucket(row);
+    lazyTotals.set(bucket, (lazyTotals.get(bucket) || 0) + 1);
+  }
+  if (!lazyTotals.size) return rows;
+
+  const targets = new Map(
+    [...lazyTotals].map(([bucket, count]) => [bucket, Math.min(PLAYBACK_READY_TARGETS, count)]),
+  );
+  const ready = new Map();
   const out = [];
-  let readyLazyTargets = 0;
 
   for (let offset = 0; offset < rows.length; offset += MATERIALIZE_BATCH_SIZE) {
     const batch = rows.slice(offset, offset + MATERIALIZE_BATCH_SIZE);
@@ -231,11 +251,21 @@ async function materializeInteractiveStreams(rows) {
       const after = resolved[i];
       if (!after) continue;
       out.push(after);
-      if (isLazyExtractUrl(before.url)) readyLazyTargets += 1;
+      if (isLazyExtractUrl(before.url)) {
+        const bucket = qualityBucket(before);
+        ready.set(bucket, (ready.get(bucket) || 0) + 1);
+      }
     }
 
-    if (readyLazyTargets >= PLAYBACK_READY_TARGETS) {
-      out.push(...rows.slice(offset + batch.length));
+    const satisfied = [...targets].every(
+      ([bucket, target]) => (ready.get(bucket) || 0) >= target,
+    );
+    if (satisfied) {
+      out.push(
+        ...rows
+          .slice(offset + batch.length)
+          .filter((row) => !isLazyExtractUrl(row.url)),
+      );
       break;
     }
   }
