@@ -42,5 +42,5 @@ test("HLS manifest leaves non-http key schemes untouched", () => {
   const output = rewriteHlsManifest(manifest, "https://cdn.example/master.m3u8", () => {
     throw new Error("mapper should not be called");
   });
-  assert.equal(output, manifest.trimEnd());
+  assert.equal(output, manifest);
 });
