@@ -284,6 +284,24 @@ function generatedSportsProgramXml(ch, p) {
   ].filter(Boolean).join("\n");
 }
 
+function fallbackLiveProgramXml(ch, now = Date.now()) {
+  const blockMs = 6 * 60 * 60 * 1000;
+  const start = Math.floor(now / blockMs) * blockMs;
+  const end = start + blockMs;
+  const title = decodeEntities(ch.name) || "Live TV";
+  const image = ch.logo || localArtwork(ch, "program");
+  return [
+    `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xml(ch.tvgId)}">`,
+    `    <title>${xml(title)}</title>`,
+    "    <sub-title>Live TV</sub-title>",
+    "    <desc>Live channel. Detailed programme schedule is currently unavailable.</desc>",
+    "    <category>Live TV</category>",
+    `    <icon src="${xml(image)}" />`,
+    `    <image type="backdrop" size="3" orient="L">${xml(image)}</image>`,
+    "  </programme>",
+  ].join("\n");
+}
+
 function adaptExternalProgram(full, ch, hit) {
   let out = String(full).replace(/\bchannel="[^"]+"/i, `channel="${xml(ch.tvgId)}"`);
   const fallback = ch.logo || hit?.meta?.icon || localArtwork(ch, "program");
@@ -383,9 +401,12 @@ export function buildXmlTv(lineup, docs = []) {
     const external = hit?.doc?.programmes?.get(hit.id) || [];
     if (external.length) {
       for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
+    } else {
+      // Jellyfin renders an empty guide badly. Give unmatched channels an
+      // explicitly-labelled fallback block with artwork, while keeping real
+      // EPG coverage metrics honest and never pretending to know a schedule.
+      lines.push(fallbackLiveProgramXml(ch));
     }
-    // Do not invent generic "Live channel" programmes. A blank guide cell is
-    // preferable to misleading EPG data when no real upstream schedule exists.
   }
 
   lines.push("</tv>");
