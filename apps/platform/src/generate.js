@@ -6,6 +6,7 @@ import { loadAllExtra } from "./sources.js";
 import { withCountry } from "./country.js";
 import { growCatalog, sweepCatalogHealth, catalogStatus } from "./catalog.js";
 import { runQualityAudit, qualityAuditStatus } from "./services/qualityAudit.js";
+import { webStreamrStatus } from "./services/webStreamrClient.js";
 
 function log(...args) {
   process.stdout.write(args.map(String).join(" ") + "\n");
@@ -25,6 +26,17 @@ export const job = {
   startedAt: null,
   finishedAt: null,
   detail: "",
+};
+
+const maintenance = {
+  running: false,
+  phase: "idle",
+  startedAt: null,
+  finishedAt: null,
+  detail: "",
+  quality: null,
+  health: null,
+  error: null,
 };
 
 function sleep(ms) {
@@ -190,6 +202,58 @@ export async function writeLivePlaylist(force = true) {
   return { file: files[0], count: list.length, files };
 }
 
+export function maintenanceStatus() {
+  return {
+    ...maintenance,
+    webStreamr: webStreamrStatus(),
+  };
+}
+
+export function triggerMaintenance() {
+  if (maintenance.running) {
+    return { started: false, reason: "already-running", ...maintenanceStatus() };
+  }
+
+  maintenance.running = true;
+  maintenance.phase = "quality";
+  maintenance.startedAt = Date.now();
+  maintenance.finishedAt = null;
+  maintenance.detail = "";
+  maintenance.error = null;
+
+  Promise.resolve()
+    .then(async () => {
+      maintenance.quality = await runQualityAudit({
+        progress: (detail) => {
+          maintenance.detail = detail;
+        },
+      });
+      job.quality = maintenance.quality;
+
+      maintenance.phase = "health";
+      maintenance.detail = "";
+      maintenance.health = await sweepCatalogHealth({
+        progress: (detail) => {
+          maintenance.detail = detail;
+        },
+      });
+      job.health = maintenance.health;
+      maintenance.phase = "done";
+    })
+    .catch((error) => {
+      maintenance.error = String(error?.message || error);
+      maintenance.phase = "error";
+      log("maintenance failed", maintenance.error);
+    })
+    .finally(() => {
+      maintenance.running = false;
+      maintenance.finishedAt = Date.now();
+      maintenance.detail = "";
+    });
+
+  return { started: true, ...maintenanceStatus() };
+}
+
 export async function generateLibrary(_options = {}) {
   if (job.running) return job;
   job.running = true;
@@ -199,8 +263,6 @@ export async function generateLibrary(_options = {}) {
   job.movieTitles = 0;
   job.shows = 0;
   job.episodes = 0;
-  job.quality = null;
-  job.health = null;
   job.startedAt = Date.now();
   job.finishedAt = null;
 
@@ -221,20 +283,6 @@ export async function generateLibrary(_options = {}) {
       `shows=${job.shows}`,
       `episodeStrms=${job.episodes}`,
     );
-
-    job.phase = "quality";
-    job.quality = await runQualityAudit({
-      progress: (detail) => {
-        job.detail = detail;
-      },
-    });
-
-    job.phase = "health";
-    job.health = await sweepCatalogHealth({
-      progress: (detail) => {
-        job.detail = detail;
-      },
-    });
 
     job.phase = "live";
     try {
@@ -263,6 +311,9 @@ export async function generateLibrary(_options = {}) {
         2,
       ),
     );
+
+    const started = triggerMaintenance();
+    log("background maintenance", started.started ? "started" : started.reason || "skipped");
   } catch (e) {
     job.error = String(e.message || e);
     job.phase = "error";
@@ -355,6 +406,7 @@ export function libraryStatus() {
     },
     catalog: catalogStatus(),
     qualityAudit: qualityAuditStatus(),
+    maintenance: maintenanceStatus(),
     incremental: {
       initialMoviesTarget: config.initialMoviesTarget,
       initialShowsTarget: config.initialShowsTarget,
