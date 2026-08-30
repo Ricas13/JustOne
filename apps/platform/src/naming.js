@@ -1,9 +1,22 @@
 export function cleanTitle(name) {
-  return String(name)
+  return String(name || "")
     .replace(/:/g, " -")
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/[. ]+$/g, "");
+}
+
+function cleanTitleWithoutYear(name, year) {
+  let out = cleanTitle(name);
+  const y = String(year || "").trim();
+  if (/^\d{4}$/.test(y)) {
+    out = out
+      .replace(new RegExp(`\\s*\\(${y}\\)\\s*$`), "")
+      .replace(new RegExp(`\\s+${y}\\s*$`), "")
+      .trim();
+  }
+  return out;
 }
 
 function pad(n, w = 2) {
@@ -11,19 +24,21 @@ function pad(n, w = 2) {
 }
 
 export function movieFolder(title, year, tmdbId) {
-  const base = `${cleanTitle(title)} (${year}) [tmdbid-${tmdbId}]`;
-  return { folder: base, file: `${base}.strm` };
+  const clean = cleanTitle(title);
+  const folder = `${clean} (${year}) [tmdbid-${tmdbId}]`;
+  return { folder, file: `${clean} (${year}).strm` };
 }
 
-export function seriesFolder(title, year, { tvdbId, tmdbId }) {
-  const id = tvdbId ? `[tvdbid-${tvdbId}]` : `[tmdbid-${tmdbId}]`;
-  return `${cleanTitle(title)} (${year}) ${id}`;
+export function seriesFolder(title, year, { tvdbId } = {}) {
+  const base = `${cleanTitleWithoutYear(title, year)} (${year})`;
+  return tvdbId ? `${base} [tvdbid-${tvdbId}]` : base;
 }
 
 export function episodeFile(seriesTitle, year, season, episode, episodeTitle) {
-  const show = cleanTitle(seriesTitle);
+  const show = cleanTitleWithoutYear(seriesTitle, year);
   const code = `S${pad(season)}E${pad(episode)}`;
-  const ep = episodeTitle ? ` - ${cleanTitle(episodeTitle)}` : "";
+  const cleanedEpisode = cleanTitle(episodeTitle).slice(0, 90).trim();
+  const ep = cleanedEpisode ? ` - ${cleanedEpisode}` : "";
   return `${show} (${year}) - ${code}${ep}.strm`;
 }
 
