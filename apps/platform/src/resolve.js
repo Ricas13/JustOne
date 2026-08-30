@@ -286,6 +286,68 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
   return picked;
 }
 
+async function inspectVodAvailability({ primaryCall, secondaryCall, strict = false }) {
+  const [primaryResult, secondaryResult] = await Promise.allSettled([
+    runProviderCall(primaryCall),
+    runProviderCall(secondaryCall),
+  ]);
+
+  // Catalog pruning must be much more conservative than playback. If either
+  // resolver is unavailable, do not count the check as a missing title.
+  if (primaryResult.status !== "fulfilled" || secondaryResult.status !== "fulfilled") {
+    return {
+      state: "indeterminate",
+      reason: "provider-error",
+      providerErrors: {
+        primary:
+          primaryResult.status === "rejected"
+            ? String(primaryResult.reason?.message || primaryResult.reason)
+            : null,
+        secondary:
+          secondaryResult.status === "rejected"
+            ? String(secondaryResult.reason?.message || secondaryResult.reason)
+            : null,
+      },
+    };
+  }
+
+  const primarySources = extractSources(primaryResult.value);
+  const secondarySources = secondaryResult.value || [];
+  const candidates = mergeCandidates(primarySources, secondarySources, "1080p");
+  if (!candidates.length) {
+    return { state: "unavailable", reason: "no-direct-sources", candidates: 0 };
+  }
+
+  // Bulk catalog health defaults to advertised-source presence so a 100k-title
+  // library does not HEAD/GET thousands of media hosts every day. Strict mode
+  // can be enabled for smaller deployments or occasional deeper sweeps.
+  if (!strict) {
+    return { state: "available", reason: "source-advertised", candidates: candidates.length };
+  }
+
+  const deadline = Date.now() + config.sourceResolveTimeoutMs;
+  const working = await chooseWorkingCandidate(candidates, "1080p", deadline);
+  return working
+    ? { state: "available", reason: "source-validated", candidates: candidates.length }
+    : { state: "unavailable", reason: "sources-failed-validation", candidates: candidates.length };
+}
+
+export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
+  return inspectVodAvailability({
+    strict,
+    primaryCall: () => cineproMovie(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId),
+  });
+}
+
+export function checkEpisodeAvailability(tmdbId, season, episode, { strict = false } = {}) {
+  return inspectVodAvailability({
+    strict,
+    primaryCall: () => cineproEpisode(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+  });
+}
+
 export function resolveMovie(tmdbId, quality = "1080p") {
   return resolveVod({
     key: `movie:${tmdbId}:${quality}`,
