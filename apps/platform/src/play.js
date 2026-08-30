@@ -54,7 +54,7 @@ export function playEpisodePath(tmdbId, season, episode, quality) {
 
 export function playLivePath(channelId) {
   const id = String(channelId).replace(/\.(m3u8|ts)$/i, "");
-  return `/play/live/${encodeURIComponent(id)}.ts`;
+  return `/play/live/${encodeURIComponent(id)}.m3u8`;
 }
 
 const UA =
@@ -204,8 +204,6 @@ export async function restreamMpegTs(req, res, inputUrl) {
         lastMediaSequence != null &&
         parsed.mediaSequence < lastMediaSequence
       ) {
-        // Some live origins reset/restart their sequence counters. Sequence keys
-        // from the previous epoch must not block the new live window.
         knownKeys.clear();
         seenKeys.length = 0;
       }
@@ -220,10 +218,6 @@ export async function restreamMpegTs(req, res, inputUrl) {
         if (segment.key) {
           rememberBounded(seenKeys, knownKeys, segment.key);
         } else {
-          // A few origins omit MEDIA-SEQUENCE and reuse a small set of segment
-          // filenames. URL-based dedupe freezes those streams after one window.
-          // Fingerprinting lets a reused filename carry fresh video while still
-          // suppressing an unchanged playlist snapshot.
           const hash = crypto.createHash("sha1").update(seg.buf).digest("hex");
           if (!rememberBounded(seenHashes, knownHashes, hash)) continue;
         }
@@ -495,8 +489,14 @@ function externalHandoffUrl(value, providerUrl = config.streamProviderUrl) {
     const provider = new URL(providerUrl);
     const publicOrigin = new URL(config.publicUrl).origin;
     const cineproOrigin = new URL(config.cineproUrl).origin;
+    const dlhdOrigin = new URL(config.dlhdUrl).origin;
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.origin === provider.origin || url.origin === publicOrigin || url.origin === cineproOrigin) {
+    if (
+      url.origin === provider.origin ||
+      url.origin === publicOrigin ||
+      url.origin === cineproOrigin ||
+      url.origin === dlhdOrigin
+    ) {
       return null;
     }
     if (privateHostname(url.hostname)) return null;
@@ -630,10 +630,12 @@ export async function proxyStream(
   }
   const rememberedHeaders = sourceHeadersFor(targetUrl);
   const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
+  const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
 
   if (hops === 0) {
+    const isLiveRequest = String(req.path || "").startsWith("/play/live/");
     const directUrl = await resolveDirectHandoffTarget(targetUrl, {
-      filename,
+      filename: filename || (isLiveRequest && likelyHls ? "live.m3u8" : null),
       download,
       upstreamHeaders: effectiveHeaders,
     });
@@ -647,7 +649,6 @@ export async function proxyStream(
   }
 
   const lib = dest.protocol === "https:" ? https : http;
-  const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
   const p = lib.request(
     dest,
     {
