@@ -1,7 +1,9 @@
 import { config, publicizeStreamUrl } from "./config.js";
+import { fetchMovieStreams, fetchEpisodeStreams } from "./services/webStreamrClient.js";
 
 const cache = new Map();
-const TTL_MS = Number(process.env.RESOLVE_TTL_MS || 15 * 60 * 1000);
+const TTL_MS = Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000);
+const PROBE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JustOne source resolver";
 
 function cacheGet(key) {
   const hit = cache.get(key);
@@ -47,6 +49,17 @@ function sourceQuality(s) {
   return raw || "unknown";
 }
 
+function sourceHeaders(s) {
+  if (!s || typeof s === "string") return {};
+  const raw = s.requestHeaders || s.behaviorHints?.proxyHeaders?.request;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => key && value != null)
+      .map(([key, value]) => [String(key), String(value)]),
+  );
+}
+
 function qualityRank(q, want) {
   if (want === "4k") return q === "4k" ? 3 : 0;
   if (q === "1080p") return 3;
@@ -55,33 +68,138 @@ function qualityRank(q, want) {
   return 1;
 }
 
-export function pickSource(sources, quality) {
-  const list = (sources || []).map((s) => ({
-    url: sourceUrl(s) ? publicizeStreamUrl(sourceUrl(s)) : null,
-    quality: sourceQuality(s),
-    provider: s?.provider?.id || s?.provider || "",
-    raw: s,
-  })).filter((s) => s.url);
-  const available = [...new Set(list.map((s) => s.quality))];
-  const ranked = [...list].sort((a, b) => qualityRank(b.quality, quality) - qualityRank(a.quality, quality));
-  const exact = ranked.find((s) => qualityRank(s.quality, quality) === 3);
-  const allowFallback = config.qualityFallback || quality !== "4k";
-  const fallback = allowFallback ? ranked[0] : null;
-  const best = exact || fallback;
+function resolverRank(candidate) {
+  // Preserve the existing resolver as the first choice when quality is equal.
+  return candidate.resolver === "primary" ? 2 : 1;
+}
+
+function primaryProbeUrl(url) {
+  let out = String(url || "");
+  for (const from of [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    config.cineproPublicUrl,
+  ]) {
+    if (out.includes(from)) out = out.split(from).join(config.cineproUrl);
+  }
+  return out;
+}
+
+function normalizeCandidate(s, resolver) {
+  const rawUrl = sourceUrl(s);
+  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) return null;
   return {
-    url: best?.url || null,
-    quality: best?.quality || null,
-    provider: best?.provider || null,
-    type: best?.raw?.type || "",
+    url: publicizeStreamUrl(rawUrl),
+    probeUrl: resolver === "primary" ? primaryProbeUrl(rawUrl) : rawUrl,
+    quality: sourceQuality(s),
+    provider: s?.provider?.id || s?.provider || resolver,
+    resolver,
+    requestHeaders: sourceHeaders(s),
+    raw: s,
+  };
+}
+
+export function mergeCandidates(primarySources, secondarySources, quality) {
+  const rows = [
+    ...(primarySources || []).map((s) => normalizeCandidate(s, "primary")),
+    ...(secondarySources || []).map((s) => normalizeCandidate(s, "secondary")),
+  ].filter(Boolean);
+
+  const deduped = [];
+  const seen = new Set();
+  for (const row of rows) {
+    if (seen.has(row.url)) continue;
+    seen.add(row.url);
+    deduped.push(row);
+  }
+
+  return deduped.sort((a, b) => {
+    const qualityDiff = qualityRank(b.quality, quality) - qualityRank(a.quality, quality);
+    if (qualityDiff) return qualityDiff;
+    return resolverRank(b) - resolverRank(a);
+  });
+}
+
+function resultFromCandidate(candidate, candidates, quality, { validated = false } = {}) {
+  const available = [...new Set((candidates || []).map((s) => s.quality))];
+  const matched = Boolean(candidate && qualityRank(candidate.quality, quality) === 3);
+  return {
+    url: candidate?.url || null,
+    quality: candidate?.quality || null,
+    provider: candidate?.provider || null,
+    resolver: candidate?.resolver || null,
+    requestHeaders: candidate?.requestHeaders || {},
+    type: candidate?.raw?.type || "",
     available,
     wanted: quality,
-    matched: Boolean(exact),
+    matched,
+    validated,
   };
+}
+
+export function pickSource(sources, quality) {
+  const candidates = mergeCandidates(sources, [], quality);
+  const exact = candidates.find((s) => qualityRank(s.quality, quality) === 3);
+  const allowFallback = config.qualityFallback || quality !== "4k";
+  const fallback = allowFallback ? candidates[0] : null;
+  return resultFromCandidate(exact || fallback, candidates, quality, { validated: false });
+}
+
+function remainingMs(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+async function probeRequest(candidate, method, deadline) {
+  const remaining = remainingMs(deadline);
+  if (!remaining) return false;
+  const timeout = Math.min(config.sourceProbeTimeoutMs, remaining);
+  const headers = {
+    "user-agent": PROBE_UA,
+    accept: "*/*",
+    ...candidate.requestHeaders,
+  };
+  if (method === "GET" && !headers.range && !headers.Range) headers.Range = "bytes=0-0";
+
+  try {
+    const response = await fetch(candidate.probeUrl, {
+      method,
+      headers,
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeout),
+    });
+    const ok = response.status >= 200 && response.status < 400;
+    try {
+      await response.body?.cancel();
+    } catch {
+      /* ignore cleanup errors */
+    }
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function validateCandidate(candidate, deadline = Date.now() + config.sourceResolveTimeoutMs) {
+  if (!candidate?.probeUrl) return false;
+  if (await probeRequest(candidate, "HEAD", deadline)) return true;
+  // A number of media hosts reject HEAD even though the stream is playable.
+  // A one-byte ranged GET prevents those hosts from becoming false negatives.
+  return probeRequest(candidate, "GET", deadline);
+}
+
+async function chooseWorkingCandidate(candidates, quality, deadline) {
+  const allowFallback = config.qualityFallback || quality !== "4k";
+  for (const candidate of candidates) {
+    if (!allowFallback && qualityRank(candidate.quality, quality) !== 3) continue;
+    if (!remainingMs(deadline)) break;
+    if (await validateCandidate(candidate, deadline)) return candidate;
+  }
+  return null;
 }
 
 async function cineproMovie(tmdbId) {
   const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(config.sourceProviderTimeoutMs),
   });
   return r.json();
 }
@@ -89,31 +207,63 @@ async function cineproMovie(tmdbId) {
 async function cineproEpisode(tmdbId, season, episode) {
   const r = await fetch(
     `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`,
-    { signal: AbortSignal.timeout(90000) },
+    { signal: AbortSignal.timeout(config.sourceProviderTimeoutMs) },
   );
   return r.json();
 }
 
-export async function resolveMovie(tmdbId, quality = "1080p") {
-  const key = `movie:${tmdbId}:${quality}`;
+async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
   const cached = cacheGet(key);
   if (cached) return cached;
-  const data = await cineproMovie(tmdbId);
-  const picked = pickSource(extractSources(data), quality);
-  picked.diagnostics = (data?.diagnostics || []).slice(0, 8);
+
+  const deadline = Date.now() + config.sourceResolveTimeoutMs;
+  const [primaryResult, secondaryResult] = await Promise.allSettled([
+    primaryCall(),
+    secondaryCall(),
+  ]);
+
+  const primaryData = primaryResult.status === "fulfilled" ? primaryResult.value : null;
+  const primarySources = extractSources(primaryData);
+  const secondarySources = secondaryResult.status === "fulfilled" ? secondaryResult.value : [];
+  const candidates = mergeCandidates(primarySources, secondarySources, quality);
+  const working = await chooseWorkingCandidate(candidates, quality, deadline);
+
+  let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
+
+  // Backwards-compatibility guard: if probing is inconclusive, keep the old
+  // primary resolver behavior instead of breaking a title that used to play.
+  if (!picked.url && primarySources.length) {
+    picked = pickSource(primarySources, quality);
+    picked.resolver = picked.url ? "primary" : null;
+    picked.validationFallback = Boolean(picked.url);
+  }
+
+  picked.diagnostics = (primaryData?.diagnostics || []).slice(0, 8);
+  picked.providerErrors = {
+    primary: primaryResult.status === "rejected" ? String(primaryResult.reason?.message || primaryResult.reason) : null,
+    secondary: secondaryResult.status === "rejected" ? String(secondaryResult.reason?.message || secondaryResult.reason) : null,
+  };
+
   if (picked.url) cacheSet(key, picked);
   return picked;
 }
 
-export async function resolveEpisode(tmdbId, season, episode, quality = "1080p") {
-  const key = `ep:${tmdbId}:${season}:${episode}:${quality}`;
-  const cached = cacheGet(key);
-  if (cached) return cached;
-  const data = await cineproEpisode(tmdbId, season, episode);
-  const picked = pickSource(extractSources(data), quality);
-  picked.diagnostics = (data?.diagnostics || []).slice(0, 8);
-  if (picked.url) cacheSet(key, picked);
-  return picked;
+export function resolveMovie(tmdbId, quality = "1080p") {
+  return resolveVod({
+    key: `movie:${tmdbId}:${quality}`,
+    quality,
+    primaryCall: () => cineproMovie(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId),
+  });
+}
+
+export function resolveEpisode(tmdbId, season, episode, quality = "1080p") {
+  return resolveVod({
+    key: `ep:${tmdbId}:${season}:${episode}:${quality}`,
+    quality,
+    primaryCall: () => cineproEpisode(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+  });
 }
 
 export async function resolveLive(channelId, { force = false } = {}) {
@@ -134,5 +284,5 @@ export async function resolveLive(channelId, { force = false } = {}) {
 }
 
 export function cacheStats() {
-  return { size: cache.size };
+  return { size: cache.size, ttlMs: TTL_MS };
 }
