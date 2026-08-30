@@ -1,6 +1,8 @@
 export function isGeneratedChannelLogo(value) {
   const url = String(value || "").trim();
-  return !url || /\/jellyfin\/artwork\/channel\//i.test(url);
+  return !url
+    || /\/jellyfin\/artwork\/channel\//i.test(url)
+    || /[?&]justone-rebrand=1(?:&|$)/i.test(url);
 }
 
 export function chooseChannelLogo(currentLogo, guideLogo) {
