@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mergeCandidates, validateCandidate } from "../src/resolve.js";
+import {
+  mergeCandidates,
+  validateCandidate,
+  checkMovieAvailability,
+} from "../src/resolve.js";
 
 test("source candidates are deduplicated by URL and keep the existing resolver first at equal quality", () => {
   const rows = mergeCandidates(
@@ -57,5 +61,58 @@ test("validation tries HEAD first and falls back to a tiny ranged GET", async ()
     assert.equal(ranges[1], "bytes=0-0");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("catalog availability is indeterminate when either source resolver itself fails", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/")) {
+      return new Response(JSON.stringify({ error: "temporary" }), { status: 500 });
+    }
+    if (value.includes("/stream/movie/")) {
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const result = await checkMovieAvailability("123");
+    assert.equal(result.state, "indeterminate");
+    assert.equal(result.reason, "provider-error");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("catalog availability records unavailable only when both resolvers answer with no direct sources", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/")) {
+      return new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (value.includes("/stream/movie/")) {
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const result = await checkMovieAvailability("456");
+    assert.equal(result.state, "unavailable");
+    assert.equal(result.reason, "no-direct-sources");
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

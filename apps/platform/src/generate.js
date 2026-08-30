@@ -1,12 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config, withKey } from "./config.js";
-import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
 import { slugTvgId } from "./naming.js";
 import { loadAllExtra } from "./sources.js";
 import { withCountry } from "./country.js";
-
-const TMDB = "https://api.themoviedb.org/3";
+import { growCatalog, sweepCatalogHealth, catalogStatus } from "./catalog.js";
 
 function log(...args) {
   process.stdout.write(args.map(String).join(" ") + "\n");
@@ -16,8 +14,11 @@ export const job = {
   running: false,
   phase: "idle",
   movies: 0,
+  movieTitles: 0,
+  shows: 0,
   episodes: 0,
   channels: 0,
+  health: null,
   error: null,
   startedAt: null,
   finishedAt: null,
@@ -26,25 +27,6 @@ export const job = {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function tmdb(pathname, params = {}) {
-  if (!config.tmdbKey) return null;
-  const url = new URL(TMDB + pathname);
-  url.searchParams.set("api_key", config.tmdbKey);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) {
-      log("tmdb", r.status, pathname);
-      return null;
-    }
-    await sleep(200);
-    return r.json();
-  } catch (e) {
-    log("tmdb fail", pathname, String(e.message || e));
-    return null;
-  }
 }
 
 let channelCache = { at: 0, list: [] };
@@ -179,16 +161,14 @@ export function buildM3u(list, kind = "all") {
     kind === "sports" ? 5000 : kind === "extra" ? 8000 : kind === "247" ? 1000 : 1;
   rows.forEach((ch, i) => {
     const name = forM3u(ch.name || `Channel ${ch.id}`);
-    const tvg =
-      ch.kind === "ext" ? slugTvgId(name) || ch.id : `dlhd-${ch.id}`;
+    const tvg = ch.kind === "ext" ? slugTvgId(name) || ch.id : `dlhd-${ch.id}`;
     const logo = ch.logo || ch.image || "";
     const group = forM3u(ch.group || ch.category || "Live") || "Live";
     const n = base + i;
     lines.push(
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${n}" group-title="${group}",${name}`,
     );
-    const play =
-      ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.ts`;
+    const play = ch.kind === "ext" ? `/play/ext/${ch.id}` : `/play/live/${ch.id}.ts`;
     lines.push(`${withKey(config.publicUrl + play)}`);
   });
   return lines.join("\n") + "\n";
@@ -208,144 +188,44 @@ export async function writeLivePlaylist(force = true) {
   return { file: files[0], count: list.length, files };
 }
 
-async function uniqueMovies(pages) {
-  const seen = new Map();
-  const add = (rows) => {
-    for (const m of rows || []) {
-      if (m?.id && !seen.has(m.id)) seen.set(m.id, m);
-    }
-  };
-  const lists = [
-    "/trending/movie/week",
-    "/trending/movie/day",
-    "/movie/popular",
-    "/movie/top_rated",
-    "/movie/now_playing",
-    "/movie/upcoming",
-  ];
-  const p = Math.min(pages, 50);
-  for (const endpoint of lists) {
-    for (let page = 1; page <= p; page++) {
-      job.detail = `${endpoint} p${page}`;
-      log("tmdb", job.detail, "n=" + seen.size);
-      const data = await tmdb(endpoint, { page });
-      add(data?.results);
-      if (seen.size >= config.maxMovies) return [...seen.values()];
-    }
-  }
-  const discPages = Math.min(p, 20);
-  for (let page = 1; page <= discPages; page++) {
-    job.detail = `discover/movie p${page}`;
-    const data = await tmdb("/discover/movie", {
-      page,
-      sort_by: "vote_count.desc",
-      "vote_count.gte": 50,
-      include_adult: "false",
-    });
-    add(data?.results);
-    if (seen.size >= config.maxMovies) return [...seen.values()];
-  }
-  const now = new Date().getFullYear();
-  const from = Math.max(1950, config.discoverFromYear);
-  for (let year = now; year >= from; year--) {
-    job.detail = `discover ${year}`;
-    const data = await tmdb("/discover/movie", {
-      page: 1,
-      sort_by: "popularity.desc",
-      primary_release_year: year,
-      include_adult: "false",
-    });
-    add(data?.results);
-    if (seen.size >= config.maxMovies) break;
-  }
-  return [...seen.values()];
-}
-
-async function uniqueShows(pages) {
-  const seen = new Map();
-  const add = (rows) => {
-    for (const s of rows || []) {
-      if (s?.id && !seen.has(s.id)) seen.set(s.id, s);
-    }
-  };
-  const lists = [
-    "/trending/tv/week",
-    "/trending/tv/day",
-    "/tv/popular",
-    "/tv/top_rated",
-    "/tv/on_the_air",
-  ];
-  const p = Math.min(pages, 40);
-  for (const endpoint of lists) {
-    for (let page = 1; page <= p; page++) {
-      job.detail = `${endpoint} p${page}`;
-      log("tmdb", job.detail, "n=" + seen.size);
-      const data = await tmdb(endpoint, { page });
-      add(data?.results);
-      if (seen.size >= config.maxShows) return [...seen.values()];
-    }
-  }
-  return [...seen.values()];
-}
-
-export async function generateLibrary({
-  moviePages = config.moviePages,
-  tvPages = config.tvPages,
-  maxEpisodes = config.tvMaxEpisodes,
-} = {}) {
+export async function generateLibrary(_options = {}) {
   if (job.running) return job;
   job.running = true;
-  job.phase = "movies";
+  job.phase = "catalog";
   job.error = null;
   job.movies = 0;
+  job.movieTitles = 0;
+  job.shows = 0;
   job.episodes = 0;
+  job.health = null;
   job.startedAt = Date.now();
   job.finishedAt = null;
-  const qs = config.qualities.length ? config.qualities : ["1080p", "4k"];
+
   try {
-    log("generate: fetching movie lists");
-    const movies = await uniqueMovies(Math.min(moviePages, 50));
-    log("generate: writing", movies.length, "movies ×", qs.join(","));
-    for (const m of movies) {
-      const year = Number(String(m.release_date || "").slice(0, 4)) || 0;
-      for (const quality of qs) {
-        await writeMovieStrm({ title: m.title, year, tmdbId: m.id, quality });
-        job.movies += 1;
-      }
-      if (job.movies % 100 === 0) log("generate movies", job.movies);
-    }
-    job.phase = "tv";
-    log("generate: fetching tv lists");
-    const shows = await uniqueShows(Math.min(tvPages, 40));
-    log("generate: writing", shows.length, "shows");
-    const maxSeasons = config.tvMaxSeasons;
-    for (const s of shows) {
-      const year = Number(String(s.first_air_date || "").slice(0, 4)) || 0;
-      const detail = await tmdb(`/tv/${s.id}`, { append_to_response: "external_ids" });
-      const tvdbId = detail?.external_ids?.tvdb_id;
-      const seasons = (detail?.seasons || [])
-        .filter((x) => x.season_number > 0)
-        .slice(0, maxSeasons);
-      for (const sn of seasons) {
-        const seasonNum = sn.season_number;
-        const count = Math.min(sn.episode_count || maxEpisodes, maxEpisodes);
-        for (let ep = 1; ep <= count; ep++) {
-          for (const quality of qs) {
-            await writeEpisodeStrm({
-              showTitle: s.name,
-              year,
-              tmdbId: s.id,
-              tvdbId,
-              season: seasonNum,
-              episode: ep,
-              quality,
-            });
-            job.episodes += 1;
-          }
-        }
-      }
-      if (job.episodes % 200 === 0) log("generate episodes", job.episodes);
-    }
+    const growth = await growCatalog({
+      progress: (detail) => {
+        job.detail = detail;
+      },
+    });
+    job.movies = growth.movieStrmsWritten;
+    job.movieTitles = growth.movieTitlesAdded;
+    job.shows = growth.showTitlesAdded;
+    job.episodes = growth.episodeStrmsWritten;
+    log(
+      "generate catalog",
+      `movieTitles=${job.movieTitles}`,
+      `movieStrms=${job.movies}`,
+      `shows=${job.shows}`,
+      `episodeStrms=${job.episodes}`,
+    );
+
+    job.phase = "health";
+    job.health = await sweepCatalogHealth({
+      progress: (detail) => {
+        job.detail = detail;
+      },
+    });
+
     job.phase = "live";
     try {
       const live = await writeLivePlaylist(true);
@@ -353,6 +233,7 @@ export async function generateLibrary({
     } catch (e) {
       log("generate live skipped", String(e.message || e));
     }
+
     job.phase = "done";
     await fs.mkdir(config.liveDir, { recursive: true });
     await fs.writeFile(
@@ -361,8 +242,11 @@ export async function generateLibrary({
         {
           at: new Date().toISOString(),
           movies: job.movies,
+          movieTitles: job.movieTitles,
+          shows: job.shows,
           episodes: job.episodes,
           channels: job.channels,
+          catalog: catalogStatus(),
         },
         null,
         2,
@@ -400,7 +284,7 @@ async function waitUp(name, url, tries = 8) {
 
 export async function bootstrap() {
   log("bootstrap start");
-  const cine = await waitUp("cinepro", config.cineproUrl);
+  await waitUp("cinepro", config.cineproUrl);
   const liveOk = await waitUp("dlhd", `${config.dlhdUrl}/api/channels`);
   if (liveOk) {
     try {
@@ -420,17 +304,31 @@ export async function bootstrap() {
     log("bootstrap: no TMDB_API_KEY, skip STRM");
     return;
   }
+
+  // The marker only distinguishes a first deployment from an established
+  // library. Established libraries grow on the scheduled catalog tick instead
+  // of adding another batch on every container restart.
   const marker = path.join(config.liveDir, ".justone-first-run.json");
   try {
     await fs.access(marker);
-    log("bootstrap: STRM already generated");
+    log("bootstrap: existing STRM library; incremental growth will continue on schedule");
     return;
   } catch {
     /* first run */
   }
-  log("bootstrap first-run STRM", "moviePages=" + config.moviePages, "tvPages=" + config.tvPages);
+
+  log(
+    "bootstrap first-run incremental STRM",
+    `initialMovies=${config.initialMoviesTarget}`,
+    `initialShows=${config.initialShowsTarget}`,
+  );
   generateLibrary().then(() => {
-    log("bootstrap done movies=" + job.movies, "episodes=" + job.episodes, "live=" + job.channels);
+    log(
+      "bootstrap done movieTitles=" + job.movieTitles,
+      "shows=" + job.shows,
+      "episodes=" + job.episodes,
+      "live=" + job.channels,
+    );
   });
 }
 
@@ -444,6 +342,25 @@ export function libraryStatus() {
       tv1080: config.tv1080,
       tv4k: config.tv4k,
       live: config.liveDir,
+      quarantine: config.catalogQuarantineRoot,
+      catalogState: config.catalogStateDir,
+    },
+    catalog: catalogStatus(),
+    incremental: {
+      initialMoviesTarget: config.initialMoviesTarget,
+      initialShowsTarget: config.initialShowsTarget,
+      moviesAddPerRun: config.moviesAddPerRun,
+      showsAddPerRun: config.showsAddPerRun,
+      maxMovies: config.maxMovies,
+      maxShows: config.maxShows,
+      refreshHours: config.catalogRefreshHours,
+    },
+    healthPolicy: {
+      enabled: config.catalogHealthEnabled,
+      intervalHours: config.catalogHealthIntervalHours,
+      failureThreshold: config.catalogHealthFailureThreshold,
+      quarantineDays: config.catalogHealthQuarantineDays,
+      strict: config.catalogHealthStrict,
     },
     generateOnStart: config.generateOnStart,
     qualityFallback: config.qualityFallback,
