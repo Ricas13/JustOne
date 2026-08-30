@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { buildXmlTv, canonicalGuideName, guideCoverage, matchGuideChannel } from "../src/guide.js";
 import { parseXmlTv } from "../src/organizer.js";
 
+const GUIDE_NOW = Date.UTC(2026, 7, 30, 10, 30);
+
 function doc(xml, sourceUrl) {
   const parsed = parseXmlTv(xml);
   parsed.sourceUrl = sourceUrl;
@@ -90,7 +92,7 @@ test("unmatched static channels get an honest EPG fallback with artwork", () => 
     country: "GB",
     logo: "https://example/channel.png",
   }];
-  const xml = buildXmlTv(lineup, [ukDoc]);
+  const xml = buildXmlTv(lineup, [ukDoc], { now: GUIDE_NOW });
   assert.match(xml, /<channel id="justone\.unknown">/);
   assert.match(xml, /<programme[^>]+channel="justone\.unknown"/);
   assert.match(xml, /<title>Unknown Channel<\/title>/);
@@ -109,7 +111,7 @@ test("real external programmes still win over the fallback", () => {
     country: "GB",
     logo: "https://example/itv.png",
   }];
-  const xml = buildXmlTv(lineup, [ukDoc]);
+  const xml = buildXmlTv(lineup, [ukDoc], { now: GUIDE_NOW });
   assert.match(xml, /Good Morning Britain/);
   assert.doesNotMatch(xml, /Detailed programme schedule is currently unavailable/);
   assert.match(xml, /<programme[^>]+channel="justone\.itv"/);
@@ -131,7 +133,7 @@ test("sports XMLTV decodes nested entities and keeps event title searchable", ()
       icon: "https://example/program.png",
     }],
   }];
-  const xml = buildXmlTv(lineup, []);
+  const xml = buildXmlTv(lineup, [], { now: GUIDE_NOW });
   assert.match(xml, /Saint Kitts &amp; Nevis vs Antigua &amp; Barbuda/);
   assert.doesNotMatch(xml, /&amp;amp;/);
   assert.match(xml, /<category>Sports<\/category>/);
