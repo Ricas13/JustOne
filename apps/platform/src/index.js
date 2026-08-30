@@ -28,6 +28,7 @@ import {
   movieDownloadFilename,
   episodeDownloadFilename,
   proxyStream,
+  proxyHlsToken,
   fixMediaType,
   restreamMpegTs,
 } from "./play.js";
@@ -95,6 +96,9 @@ function redirectTo(res, picked, format, playPath) {
       quality: picked.quality,
       wanted: picked.wanted,
       matched: picked.matched,
+      validated: Boolean(picked.validated),
+      resolver: picked.resolver || null,
+      provider: picked.provider || null,
       available: picked.available,
     });
   }
@@ -255,13 +259,23 @@ function extOf(picked) {
   return "mp4";
 }
 
+app.get("/play/hls/:token", (req, res) => {
+  proxyHlsToken(req, res, req.params.token);
+});
+
 app.get("/play/movie/:tmdbId", async (req, res) => {
   try {
     const quality = req.query.quality === "4k" ? "4k" : "1080p";
     const picked = await resolveMovie(req.params.tmdbId, quality);
     if (!picked?.url) return redirectTo(res, picked, "json", playMoviePath(req.params.tmdbId, quality));
-    const filename = await movieDownloadFilename(req.params.tmdbId, extOf(picked));
-    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+    const ext = extOf(picked);
+    const filename = await movieDownloadFilename(req.params.tmdbId, ext);
+    proxyStream(req, res, picked.url, {
+      filename,
+      download: req.query.download === "1",
+      upstreamHeaders: picked.requestHeaders || {},
+      hls: ext === "m3u8",
+    });
   } catch (e) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });
   }
@@ -284,13 +298,19 @@ app.get("/play/episode/:tmdbId/:season/:episode", async (req, res) => {
         playEpisodePath(req.params.tmdbId, req.params.season, req.params.episode, quality),
       );
     }
+    const ext = extOf(picked);
     const filename = await episodeDownloadFilename(
       req.params.tmdbId,
       req.params.season,
       req.params.episode,
-      extOf(picked),
+      ext,
     );
-    proxyStream(req, res, picked.url, { filename, download: req.query.download === "1" });
+    proxyStream(req, res, picked.url, {
+      filename,
+      download: req.query.download === "1",
+      upstreamHeaders: picked.requestHeaders || {},
+      hls: ext === "m3u8",
+    });
   } catch (e) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });
   }
@@ -458,8 +478,6 @@ app.get("/api/update-providers/status", (_req, res) => {
 });
 
 app.post("/api/update-providers", (_req, res) => {
-  // Docker socket access is effectively host-admin access. Never expose this
-  // mutation when the dashboard itself has no admin password configured.
   if (!config.adminPassword) {
     return res.status(503).json({
       error: "ADMIN_PASSWORD must be configured before manual provider updates are allowed",
