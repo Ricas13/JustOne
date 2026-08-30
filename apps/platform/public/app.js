@@ -548,14 +548,14 @@ async function live() {
     };
   });
 
-  loadPreview();
+  loadPreview(links.all);
 }
 
-async function loadPreview() {
+async function loadPreview(url = "/live/playlist.m3u8") {
   const el = document.getElementById("preview");
   if (!el) return;
   try {
-    const r = await fetch("/live/playlist.m3u8", { credentials: "same-origin" });
+    const r = await fetch(url, { credentials: "same-origin" });
     const t = await r.text();
     el.textContent = t.slice(0, 12000);
   } catch (e) {
