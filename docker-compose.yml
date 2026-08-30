@@ -102,7 +102,6 @@ services:
       - "127.0.0.1:18080:8080"
     depends_on:
       - cinepro
-      - webstreamr-mbg
       - dlhd
     networks:
       - justone
