@@ -18,6 +18,10 @@ const PLAYBACK_SOURCE_FAILOVER_ATTEMPTS = Math.max(
   1,
   Math.min(10, Number(process.env.PLAYBACK_SOURCE_FAILOVER_ATTEMPTS || 4)),
 );
+const PLAYBACK_SOURCE_RECHECK_MS = Math.max(
+  0,
+  Number(process.env.PLAYBACK_SOURCE_RECHECK_MS || 15000),
+);
 const suppressedSources = new Map();
 
 function cacheGet(key) {
@@ -43,10 +47,11 @@ function pruneSuppressedSources(now = Date.now()) {
 
 function sourceSuppressed(url, now = Date.now()) {
   if (!url) return false;
-  const exp = suppressedSources.get(String(url));
+  const key = String(url);
+  const exp = suppressedSources.get(key);
   if (!exp) return false;
   if (exp <= now) {
-    suppressedSources.delete(String(url));
+    suppressedSources.delete(key);
     return false;
   }
   return true;
@@ -155,7 +160,6 @@ function normalizeCandidate(s, resolver) {
 }
 
 export function mergeCandidates(primarySources, secondarySources, quality) {
-  pruneSuppressedSources();
   const rows = [
     ...(primarySources || []).map((s) => normalizeCandidate(s, "primary")),
     ...(secondarySources || []).map((s) => normalizeCandidate(s, "secondary")),
@@ -164,7 +168,6 @@ export function mergeCandidates(primarySources, secondarySources, quality) {
   const deduped = [];
   const byUrl = new Map();
   for (const row of rows) {
-    if (sourceSuppressed(row.url)) continue;
     const existing = byUrl.get(row.url);
     if (existing) {
       existing.requestHeaders = { ...row.requestHeaders, ...existing.requestHeaders };
@@ -345,7 +348,7 @@ async function resolveVod({
 }) {
   if (!force) {
     const cached = cacheGet(key);
-    if (cached && !sourceSuppressed(cached.url)) return cached;
+    if (cached && (background || !sourceSuppressed(cached.url))) return cached;
   }
 
   const deadline = Date.now() + config.sourceResolveTimeoutMs;
@@ -358,12 +361,18 @@ async function resolveVod({
   const primarySources = extractSources(primaryData);
   const secondarySources = secondaryResult.status === "fulfilled" ? secondaryResult.value : [];
   const candidates = mergeCandidates(primarySources, secondarySources, quality);
-  const working = await chooseWorkingCandidate(candidates, quality, deadline);
+  const selectableCandidates = background
+    ? candidates
+    : candidates.filter((candidate) => !sourceSuppressed(candidate.url));
+  const working = await chooseWorkingCandidate(selectableCandidates, quality, deadline);
 
   let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
 
   if (!picked.url && primarySources.length && allowQualityFallback(quality)) {
-    picked = pickSource(primarySources, quality);
+    const primaryCandidates = selectableCandidates.filter((candidate) => candidate.resolver === "primary");
+    const exact = primaryCandidates.find((candidate) => qualityRank(candidate.quality, quality) === 3);
+    const fallback = primaryCandidates[0] || null;
+    picked = resultFromCandidate(exact || fallback, candidates, quality, { validated: false });
     picked.resolver = picked.url ? "primary" : null;
     picked.validationFallback = Boolean(picked.url);
   }
@@ -391,6 +400,15 @@ async function resolveForPlayback(resolveCall) {
   for (let attempt = 0; attempt < PLAYBACK_SOURCE_FAILOVER_ATTEMPTS; attempt += 1) {
     if (!picked?.url) break;
 
+    const recentlyChecked =
+      picked.playbackValidatedAt &&
+      Date.now() - picked.playbackValidatedAt <= PLAYBACK_SOURCE_RECHECK_MS;
+    if (recentlyChecked) {
+      picked.playbackValidated = true;
+      picked.failoverAttempts = failedCandidates;
+      return picked;
+    }
+
     const ok = await validateCandidateForPlayback(
       picked,
       Date.now() + PLAYBACK_SOURCE_PROBE_TIMEOUT_MS,
@@ -404,14 +422,25 @@ async function resolveForPlayback(resolveCall) {
 
     suppressSource(picked.url);
     failedCandidates += 1;
-    picked = await resolveCall(true);
+    if (attempt + 1 < PLAYBACK_SOURCE_FAILOVER_ATTEMPTS) {
+      picked = await resolveCall(true);
+    }
   }
 
-  if (picked) {
-    picked.playbackValidated = false;
-    picked.failoverAttempts = failedCandidates;
-  }
-  return picked;
+  if (!picked) return picked;
+  return {
+    ...picked,
+    url: null,
+    probeUrl: null,
+    quality: null,
+    provider: null,
+    resolver: null,
+    matched: false,
+    validated: false,
+    playbackValidated: false,
+    failoverAttempts: failedCandidates,
+    playbackFailure: failedCandidates ? "sources-failed-byte-probe" : null,
+  };
 }
 
 async function inspectVodAvailability({
@@ -478,11 +507,7 @@ export function checkEpisodeAvailability(tmdbId, season, episode, { strict = fal
   });
 }
 
-export function resolveMovie(
-  tmdbId,
-  quality = "1080p",
-  { background = false, force = false } = {},
-) {
+function resolveMovieOnce(tmdbId, quality, { background = false, force = false } = {}) {
   return resolveVod({
     key: `movie:${tmdbId}:${quality}`,
     quality,
@@ -493,15 +518,28 @@ export function resolveMovie(
   });
 }
 
-export function resolveMovieForPlayback(tmdbId, quality = "1080p") {
-  return resolveForPlayback((force) => resolveMovie(tmdbId, quality, { force }));
+export function resolveMovie(
+  tmdbId,
+  quality = "1080p",
+  { background = false, force = false, playbackCheck = !background } = {},
+) {
+  if (!background && playbackCheck) {
+    return resolveForPlayback((retryForce) =>
+      resolveMovieOnce(tmdbId, quality, { background: false, force: force || retryForce }),
+    );
+  }
+  return resolveMovieOnce(tmdbId, quality, { background, force });
 }
 
-export function resolveEpisode(
+export function resolveMovieForPlayback(tmdbId, quality = "1080p") {
+  return resolveMovie(tmdbId, quality, { playbackCheck: true });
+}
+
+function resolveEpisodeOnce(
   tmdbId,
   season,
   episode,
-  quality = "1080p",
+  quality,
   { background = false, force = false } = {},
 ) {
   return resolveVod({
@@ -514,10 +552,26 @@ export function resolveEpisode(
   });
 }
 
+export function resolveEpisode(
+  tmdbId,
+  season,
+  episode,
+  quality = "1080p",
+  { background = false, force = false, playbackCheck = !background } = {},
+) {
+  if (!background && playbackCheck) {
+    return resolveForPlayback((retryForce) =>
+      resolveEpisodeOnce(tmdbId, season, episode, quality, {
+        background: false,
+        force: force || retryForce,
+      }),
+    );
+  }
+  return resolveEpisodeOnce(tmdbId, season, episode, quality, { background, force });
+}
+
 export function resolveEpisodeForPlayback(tmdbId, season, episode, quality = "1080p") {
-  return resolveForPlayback((force) =>
-    resolveEpisode(tmdbId, season, episode, quality, { force }),
-  );
+  return resolveEpisode(tmdbId, season, episode, quality, { playbackCheck: true });
 }
 
 export async function resolveLive(channelId, { force = false } = {}) {
@@ -545,5 +599,6 @@ export function cacheStats() {
     suppressedSources: suppressedSources.size,
     playbackSourceFailureCooldownMs: PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS,
     playbackSourceFailoverAttempts: PLAYBACK_SOURCE_FAILOVER_ATTEMPTS,
+    playbackSourceRecheckMs: PLAYBACK_SOURCE_RECHECK_MS,
   };
 }
