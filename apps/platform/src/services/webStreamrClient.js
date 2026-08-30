@@ -12,6 +12,16 @@ const RATE_LIMIT_FALLBACK_MS = Math.max(
   5000,
   Number(process.env.WEBSTREAMR_RATE_LIMIT_FALLBACK_MS || 60000),
 );
+const PLAYBACK_PROBE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.PLAYBACK_SOURCE_PROBE_TIMEOUT_MS || 5000),
+);
+const PLAYBACK_PROBE_BYTES = 4096;
+const PLAYBACK_READY_TARGETS = Math.max(
+  1,
+  Math.min(10, Number(process.env.PLAYBACK_SOURCE_FAILOVER_ATTEMPTS || 4)),
+);
+const MATERIALIZE_BATCH_SIZE = 3;
 
 let cooldownUntil = 0;
 let lastRateLimitAt = null;
@@ -97,6 +107,142 @@ async function waitForBackgroundSlot() {
   await turn;
 }
 
+function isLazyExtractUrl(value) {
+  try {
+    const url = new URL(String(value));
+    const provider = new URL(config.streamProviderUrl);
+    return url.origin === provider.origin && /\/extract\/?$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function readPrefix(response, maxBytes = PLAYBACK_PROBE_BYTES) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      const take = value.subarray(0, Math.min(value.length, maxBytes - total));
+      chunks.push(take);
+      total += take.length;
+      if (take.length < value.length) break;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore cleanup errors */
+    }
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function playbackErrorPayload(response, prefix) {
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  const text = new TextDecoder().decode(prefix).trim();
+  const lower = text.toLowerCase();
+
+  if (
+    /downloadquotaexceeded|download quota(?: for this file)? has been exceeded|"domain"\s*:\s*"usagelimits"|quota[_ -]?exceeded/.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+
+  const jsonLike = contentType.includes("json") || /^[{[]/.test(text);
+  if (jsonLike && /["']error["']\s*:|["']errors["']\s*:/.test(lower)) return true;
+
+  if (
+    contentType.includes("text/html") &&
+    /(?:access denied|forbidden|quota|expired|not found|error)/i.test(text)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function materializeLazyStream(stream) {
+  if (!isLazyExtractUrl(stream.url)) return stream;
+
+  const headers = {
+    accept: "*/*",
+    "user-agent": "JustOne playback source materializer",
+    ...stream.requestHeaders,
+  };
+  if (!Object.keys(headers).some((key) => key.toLowerCase() === "range")) {
+    headers.Range = `bytes=0-${PLAYBACK_PROBE_BYTES - 1}`;
+  }
+
+  try {
+    const response = await fetch(stream.url, {
+      method: "GET",
+      headers,
+      redirect: "follow",
+      signal: AbortSignal.timeout(PLAYBACK_PROBE_TIMEOUT_MS),
+    });
+    if (response.status < 200 || response.status >= 400) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* ignore cleanup errors */
+      }
+      return null;
+    }
+
+    const prefix = await readPrefix(response);
+    if (playbackErrorPayload(response, prefix)) return null;
+
+    const finalUrl = isHttpUrl(response.url) ? response.url : stream.url;
+    return {
+      ...stream,
+      url: finalUrl,
+      materializedFrom: stream.url,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function materializeInteractiveStreams(rows) {
+  const out = [];
+  let readyLazyTargets = 0;
+
+  for (let offset = 0; offset < rows.length; offset += MATERIALIZE_BATCH_SIZE) {
+    const batch = rows.slice(offset, offset + MATERIALIZE_BATCH_SIZE);
+    const resolved = await Promise.all(
+      batch.map((row) => (isLazyExtractUrl(row.url) ? materializeLazyStream(row) : Promise.resolve(row))),
+    );
+
+    for (let i = 0; i < resolved.length; i += 1) {
+      const before = batch[i];
+      const after = resolved[i];
+      if (!after) continue;
+      out.push(after);
+      if (isLazyExtractUrl(before.url)) readyLazyTargets += 1;
+    }
+
+    if (readyLazyTargets >= PLAYBACK_READY_TARGETS) {
+      out.push(...rows.slice(offset + batch.length));
+      break;
+    }
+  }
+
+  return out;
+}
+
 async function fetchStreams(type, id, { background = false } = {}) {
   if (Date.now() < cooldownUntil) throw cooldownError();
   if (background) {
@@ -144,9 +290,10 @@ async function fetchStreams(type, id, { background = false } = {}) {
     throw new Error(`stream provider returned non-JSON response (${response.status})`);
   }
 
-  return (Array.isArray(data?.streams) ? data.streams : [])
+  const rows = (Array.isArray(data?.streams) ? data.streams : [])
     .map(normalizeStream)
     .filter(Boolean);
+  return background ? rows : materializeInteractiveStreams(rows);
 }
 
 export function fetchMovieStreams(tmdbId, options) {
