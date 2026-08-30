@@ -54,7 +54,7 @@ export function playEpisodePath(tmdbId, season, episode, quality) {
 
 export function playLivePath(channelId) {
   const id = String(channelId).replace(/\.(m3u8|ts)$/i, "");
-  return `/play/live/${encodeURIComponent(id)}.m3u8`;
+  return `/play/live/${encodeURIComponent(id)}.ts`;
 }
 
 const UA =
@@ -79,53 +79,6 @@ function hlsRefs(text, base) {
     }
   }
   return out;
-}
-
-export function parseLiveHlsPlaylist(text, base) {
-  const body = String(text || "");
-  const lines = body.split(/\r?\n/);
-  const mediaSequenceMatch = /^#EXT-X-MEDIA-SEQUENCE:\s*(\d+)/im.exec(body);
-  const mediaSequence = mediaSequenceMatch ? Number(mediaSequenceMatch[1]) : null;
-  const targetDuration = Number(/^#EXT-X-TARGETDURATION:\s*(\d+(?:\.\d+)?)/im.exec(body)?.[1] || 2);
-  const isMaster = /#EXT-X-STREAM-INF/i.test(body);
-  const refs = [];
-  const segments = [];
-  let segmentIndex = 0;
-  let programDateTime = null;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const pdt = /^#EXT-X-PROGRAM-DATE-TIME:\s*(.+)$/i.exec(trimmed);
-    if (pdt) {
-      programDateTime = pdt[1].trim();
-      continue;
-    }
-    if (trimmed.startsWith("#")) continue;
-
-    let url;
-    try {
-      url = new URL(trimmed, base).href;
-    } catch {
-      continue;
-    }
-
-    refs.push(url);
-    if (!isMaster) {
-      const sequence = mediaSequence == null ? null : mediaSequence + segmentIndex;
-      const key =
-        sequence != null
-          ? `seq:${sequence}`
-          : programDateTime
-            ? `pdt:${programDateTime}`
-            : null;
-      segments.push({ url, sequence, key, index: segmentIndex });
-      segmentIndex += 1;
-      programDateTime = null;
-    }
-  }
-
-  return { isMaster, refs, segments, mediaSequence, targetDuration };
 }
 
 async function fetchRes(url, signal) {
@@ -160,68 +113,34 @@ async function fetchRes(url, signal) {
   });
 }
 
-function rememberBounded(queue, set, value, max = 240) {
-  if (set.has(value)) return false;
-  set.add(value);
-  queue.push(value);
-  while (queue.length > max) set.delete(queue.shift());
-  return true;
-}
-
 export async function restreamMpegTs(req, res, inputUrl) {
   const ac = new AbortController();
   const stop = () => ac.abort();
   req.on("close", stop);
   res.on("close", stop);
   let listUrl = localUrl(inputUrl);
-  const seenKeys = [];
-  const knownKeys = new Set();
-  const seenHashes = [];
-  const knownHashes = new Set();
-  let lastMediaSequence = null;
+  const seen = [];
+  const known = new Set();
   let started = false;
-
   try {
     for (let n = 0; n < 3600 && !ac.signal.aborted; n++) {
       const pl = await fetchRes(listUrl, ac.signal);
-      if (pl.status < 200 || pl.status >= 400) throw new Error(`hls playlist returned ${pl.status}`);
       const text = pl.buf.toString("utf8");
-      const parsed = parseLiveHlsPlaylist(text, pl.href);
-
-      if (parsed.isMaster && parsed.refs[0]) {
-        listUrl = parsed.refs[0];
-        knownKeys.clear();
-        seenKeys.length = 0;
-        knownHashes.clear();
-        seenHashes.length = 0;
-        lastMediaSequence = null;
+      const refs = hlsRefs(text, pl.href);
+      if (/#EXT-X-STREAM-INF/i.test(text) && refs[0]) {
+        listUrl = refs[0];
         continue;
       }
-      if (!parsed.segments.length) throw new Error("empty hls");
-
-      if (
-        parsed.mediaSequence != null &&
-        lastMediaSequence != null &&
-        parsed.mediaSequence < lastMediaSequence
-      ) {
-        knownKeys.clear();
-        seenKeys.length = 0;
-      }
-      if (parsed.mediaSequence != null) lastMediaSequence = parsed.mediaSequence;
-
-      for (const segment of parsed.segments) {
-        if (segment.key && knownKeys.has(segment.key)) continue;
-
-        const seg = await fetchRes(segment.url, ac.signal);
-        if (seg.status < 200 || seg.status >= 400 || !seg.buf?.length) continue;
-
-        if (segment.key) {
-          rememberBounded(seenKeys, knownKeys, segment.key);
-        } else {
-          const hash = crypto.createHash("sha1").update(seg.buf).digest("hex");
-          if (!rememberBounded(seenHashes, knownHashes, hash)) continue;
+      if (!refs.length) throw new Error("empty hls");
+      for (const u of refs) {
+        if (known.has(u)) continue;
+        known.add(u);
+        seen.push(u);
+        if (seen.length > 60) {
+          known.delete(seen.shift());
         }
-
+        const seg = await fetchRes(u, ac.signal);
+        if (!seg.buf?.length) continue;
         if (!started) {
           res.setHeader("Content-Type", "video/mp2t");
           res.setHeader("Cache-Control", "no-store");
@@ -233,8 +152,7 @@ export async function restreamMpegTs(req, res, inputUrl) {
           await new Promise((r) => res.once("drain", r));
         }
       }
-
-      const td = Number.isFinite(parsed.targetDuration) ? parsed.targetDuration : 2;
+      const td = Number(/#EXT-X-TARGETDURATION:(\d+)/i.exec(text)?.[1] || 2);
       await new Promise((r) => setTimeout(r, Math.min(Math.max(td, 1), 4) * 400));
     }
   } catch (e) {
@@ -489,14 +407,8 @@ function externalHandoffUrl(value, providerUrl = config.streamProviderUrl) {
     const provider = new URL(providerUrl);
     const publicOrigin = new URL(config.publicUrl).origin;
     const cineproOrigin = new URL(config.cineproUrl).origin;
-    const dlhdOrigin = new URL(config.dlhdUrl).origin;
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (
-      url.origin === provider.origin ||
-      url.origin === publicOrigin ||
-      url.origin === cineproOrigin ||
-      url.origin === dlhdOrigin
-    ) {
+    if (url.origin === provider.origin || url.origin === publicOrigin || url.origin === cineproOrigin) {
       return null;
     }
     if (privateHostname(url.hostname)) return null;
@@ -630,12 +542,10 @@ export async function proxyStream(
   }
   const rememberedHeaders = sourceHeadersFor(targetUrl);
   const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
-  const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
 
   if (hops === 0) {
-    const isLiveRequest = String(req.path || "").startsWith("/play/live/");
     const directUrl = await resolveDirectHandoffTarget(targetUrl, {
-      filename: filename || (isLiveRequest && likelyHls ? "live.m3u8" : null),
+      filename,
       download,
       upstreamHeaders: effectiveHeaders,
     });
@@ -649,6 +559,7 @@ export async function proxyStream(
   }
 
   const lib = dest.protocol === "https:" ? https : http;
+  const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
   const p = lib.request(
     dest,
     {
