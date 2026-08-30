@@ -92,6 +92,7 @@ function playable4kResult(picked) {
       state: "available",
       resolver: picked.resolver || null,
       provider: picked.provider || null,
+      available: picked.available || [],
     };
   }
 
@@ -101,6 +102,7 @@ function playable4kResult(picked) {
       state: "indeterminate",
       reason: "provider-error",
       providerErrors,
+      available: picked?.available || [],
     };
   }
 
@@ -111,23 +113,23 @@ function playable4kResult(picked) {
   };
 }
 
-export function inspectMovieQualities(tmdbId) {
+export function inspectMovieQualities(tmdbId, { background = false } = {}) {
   return inspect(
     () => primaryRequest(`/v1/movies/${tmdbId}`),
-    () => fetchMovieStreams(tmdbId),
+    () => fetchMovieStreams(tmdbId, { background }),
   );
 }
 
-export function inspectEpisodeQualities(tmdbId, season, episode) {
+export function inspectEpisodeQualities(tmdbId, season, episode, { background = false } = {}) {
   return inspect(
     () => primaryRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`),
-    () => fetchEpisodeStreams(tmdbId, season, episode),
+    () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
   );
 }
 
-export async function validateMovie4k(tmdbId) {
+export async function validateMovie4k(tmdbId, { background = false } = {}) {
   try {
-    return playable4kResult(await resolveMovie(tmdbId, "4k"));
+    return playable4kResult(await resolveMovie(tmdbId, "4k", { background }));
   } catch (error) {
     return {
       state: "indeterminate",
@@ -137,9 +139,16 @@ export async function validateMovie4k(tmdbId) {
   }
 }
 
-export async function validateEpisode4k(tmdbId, season, episode) {
+export async function validateEpisode4k(
+  tmdbId,
+  season,
+  episode,
+  { background = false } = {},
+) {
   try {
-    return playable4kResult(await resolveEpisode(tmdbId, season, episode, "4k"));
+    return playable4kResult(
+      await resolveEpisode(tmdbId, season, episode, "4k", { background }),
+    );
   } catch (error) {
     return {
       state: "indeterminate",
