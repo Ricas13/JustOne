@@ -14,16 +14,17 @@ RUN npm ci
 
 COPY providers/webstreamr-mbg/ ./
 
-# Upstream WebStreamrMBG enables a 30 requests/minute Express limiter whenever
-# NODE_ENV=production. That is appropriate for a public hosted add-on, but this
-# container is internal-only and all traffic is already governed by JustOne's
-# background pacing/cooldown logic. Patch only that limiter in the build copy;
-# keep the source checkout clean so provider auto-updates remain fast-forwardable.
-# Fail the build if upstream changes the expected expression so this cannot
-# silently stop applying after a provider update.
-RUN grep -Fq 'addon.use(rateLimit({ windowMs: 60 * 1000, limit: 30 }));' src/index.ts \
-    && sed -i 's/limit: 30/limit: Number(process.env.WEBSTREAMR_INTERNAL_RATE_LIMIT || 300)/' src/index.ts \
-    && npm run build \
+# Build upstream unchanged first. WebStreamrMBG enables a 30 requests/minute
+# Express limiter in production; for JustOne this service is internal-only and
+# platform-side maintenance traffic is already paced/cooldown-aware. Patch only
+# the compiled Docker image so the provider checkout stays clean/fast-forwardable
+# and upstream TypeScript can never fail because of our local limiter override.
+# Require exactly one compiled limiter occurrence so upstream changes fail loudly
+# instead of silently applying the patch to the wrong code.
+RUN npm run build \
+    && test "$(grep -o 'limit: 30' dist/index.js | wc -l)" -eq 1 \
+    && sed -i 's/limit: 30/limit: Number(process.env.WEBSTREAMR_INTERNAL_RATE_LIMIT || 300)/' dist/index.js \
+    && grep -Fq 'WEBSTREAMR_INTERNAL_RATE_LIMIT' dist/index.js \
     && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
