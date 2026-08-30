@@ -24,12 +24,13 @@ function pad(n, w = 2) {
 }
 
 export function movieFolder(title, year, tmdbId) {
-  // Keep the media-server ID in the folder and a clean title/year in the STRM
-  // filename, mirroring the TRaSH/Jellyfin naming pattern as closely as a
-  // resolver-only library can.
   const clean = cleanTitleWithoutYear(title, year);
-  const folder = `${clean} (${year}) [tmdbid-${tmdbId}]`;
-  return { folder, file: `${clean} (${year}).strm` };
+  const id = `[tmdbid-${tmdbId}]`;
+  const folder = `${clean} (${year}) ${id}`;
+  // Keep the STRM useful even if it is viewed/copied outside its parent folder.
+  // Do not invent release/source/codec tags: a resolver-backed file does not know
+  // those until playback time.
+  return { folder, file: `${clean} (${year}) ${id}.strm` };
 }
 
 export function seriesFolder(title, year, { tvdbId, tmdbId } = {}) {
@@ -39,12 +40,13 @@ export function seriesFolder(title, year, { tvdbId, tmdbId } = {}) {
   return base;
 }
 
-export function episodeFile(seriesTitle, year, season, episode, episodeTitle) {
+export function episodeFile(seriesTitle, year, season, episode, episodeTitle, tmdbId = null) {
   const show = cleanTitleWithoutYear(seriesTitle, year);
   const code = `S${pad(season)}E${pad(episode)}`;
   const cleanedEpisode = cleanTitle(episodeTitle).slice(0, 90).trim();
   const ep = cleanedEpisode ? ` - ${cleanedEpisode}` : "";
-  return `${show} (${year}) - ${code}${ep}.strm`;
+  const id = tmdbId ? ` [tmdbid-${tmdbId}]` : "";
+  return `${show} (${year}) - ${code}${ep}${id}.strm`;
 }
 
 export function downloadName(strmFile, ext = "mp4") {
