@@ -65,14 +65,20 @@ function appendTail(current, chunk, maxBytes = 64 * 1024) {
   return next.length > maxBytes ? next.slice(next.length - maxBytes) : next;
 }
 
-function runCommand(command, args, { cwd, timeoutMs = 30000, label = command } = {}) {
+function runCommand(
+  command,
+  args,
+  { cwd, timeoutMs = 30000, label = command, uid, gid, env = process.env } = {},
+) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     log("INFO", `${label}: running ${command} ${args.join(" ")}`);
 
     const child = spawn(command, args, {
       cwd,
-      env: process.env,
+      env,
+      ...(Number.isInteger(uid) ? { uid } : {}),
+      ...(Number.isInteger(gid) ? { gid } : {}),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -136,9 +142,16 @@ function gitArgs(provider, args) {
 }
 
 async function git(provider, args, label) {
+  // The platform container needs root for the Docker socket, but Git should run
+  // as the bind-mounted checkout owner so pulls do not create root-owned files
+  // on the host.
+  const owner = await fs.stat(provider.dir);
   const result = await runCommand("git", gitArgs(provider, args), {
     timeoutMs: settings.gitTimeoutMs,
     label: `${provider.label}: ${label}`,
+    uid: owner.uid,
+    gid: owner.gid,
+    env: { ...process.env, HOME: "/tmp" },
   });
   return result.stdout.trim();
 }
