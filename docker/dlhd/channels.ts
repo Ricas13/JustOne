@@ -43,6 +43,34 @@ function httpUrl(value: string, base?: string): string | null {
   }
 }
 
+function clearlyNonMediaContentType(value: string): boolean {
+  const contentType = String(value || "").toLowerCase();
+  return (
+    contentType.startsWith("text/") ||
+    contentType.includes("application/json") ||
+    contentType.includes("application/pdf") ||
+    contentType.includes("application/xml") ||
+    contentType.includes("application/xhtml") ||
+    contentType.includes("image/svg+xml")
+  );
+}
+
+function clearlyNonMediaPrefix(value: Uint8Array): boolean {
+  const prefix = new TextDecoder()
+    .decode(value.subarray(0, Math.min(value.length, 2048)))
+    .trimStart()
+    .toLowerCase();
+  return (
+    prefix.startsWith("%pdf-") ||
+    prefix.startsWith("<!doctype html") ||
+    prefix.startsWith("<html") ||
+    prefix.startsWith("<?xml") ||
+    prefix.startsWith("<svg") ||
+    prefix.startsWith("{\"error\"") ||
+    prefix.startsWith("{\n\"error\"")
+  );
+}
+
 async function readManifest(response: Response): Promise<string | null> {
   const declared = Number(response.headers.get("content-length") || 0);
   if (declared > MANIFEST_MAX_BYTES) {
@@ -91,7 +119,7 @@ async function probeBinary(url: string, referer: string | null): Promise<boolean
     }
 
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    if (contentType.includes("text/html") || contentType.includes("application/json")) {
+    if (clearlyNonMediaContentType(contentType)) {
       await response.body?.cancel().catch(() => undefined);
       return false;
     }
@@ -101,11 +129,7 @@ async function probeBinary(url: string, referer: string | null): Promise<boolean
     const { value } = await reader.read();
     await reader.cancel().catch(() => undefined);
     if (!value?.length) return false;
-
-    const prefix = new TextDecoder().decode(value.subarray(0, Math.min(value.length, 2048))).trimStart().toLowerCase();
-    if (prefix.startsWith("<!doctype html") || prefix.startsWith("<html") || prefix.startsWith("{\"error\"") || prefix.startsWith("{\n\"error\"")) {
-      return false;
-    }
+    if (clearlyNonMediaPrefix(value)) return false;
     return true;
   } catch {
     try {
@@ -181,7 +205,7 @@ async function canPlay(
 
     if (!looksHls) {
       await response.body?.cancel().catch(() => undefined);
-      return !contentType.includes("text/html") && !contentType.includes("application/json");
+      return !clearlyNonMediaContentType(contentType);
     }
 
     const manifest = await readManifest(response);
