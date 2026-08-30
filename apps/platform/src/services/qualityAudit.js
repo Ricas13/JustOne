@@ -1,12 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
-import {
-  inspectMovieQualities,
-  inspectEpisodeQualities,
-  validateMovie4k,
-  validateEpisode4k,
-} from "./qualityAvailability.js";
+import { validateMovie4k, validateEpisode4k } from "./qualityAvailability.js";
 
 const TMDB_ID_RE = /\[tmdbid-(\d+)\]/i;
 const EPISODE_URL_RE = /\/play\/episode\/(\d+)\/(\d+)\/(\d+)/i;
@@ -234,10 +229,6 @@ async function migrateShowFilenames(showDir, tmdbId) {
   return migrated;
 }
 
-function canAssertNo4k(result) {
-  return Boolean(result?.complete && !result.has4k && !result.qualities?.includes("unknown"));
-}
-
 function movieQuarantineRoot() {
   return path.join(QUALITY_QUARANTINE, "Movies-4K");
 }
@@ -265,52 +256,42 @@ async function auditMovie(id, maps, stats) {
   if (normal) stats.namesMigrated += await migrateMovieFilename(normal, id);
   if (fourK) stats.namesMigrated += await migrateMovieFilename(fourK, id);
 
-  const result = await inspectMovieQualities(id);
+  const playable = await validateMovie4k(id, { background: true });
   stats.moviesChecked += 1;
 
-  if (result.has4k) {
-    const playable = await validateMovie4k(id);
-    if (playable.state === "indeterminate") {
-      stats.moviesIndeterminate += 1;
-      return;
-    }
-    if (playable.state !== "available") {
-      await quarantineMovie(id, maps, stats, fourK);
-      return;
-    }
-
-    if (!fourK && quarantined) {
-      const target = path.join(config.movies4k, path.basename(quarantined));
-      if (!(await exists(target))) {
-        await moveFolder(quarantined, target);
-        fourK = target;
-        maps.fourK.set(id, target);
-        maps.quarantine.delete(id);
-        stats.moviesPromoted += 1;
-      }
-    }
-    if (!fourK && normal) {
-      const target = path.join(config.movies4k, path.basename(normal));
-      if (!(await exists(target))) {
-        await copyFolder(normal, target);
-        fourK = target;
-        maps.fourK.set(id, target);
-        stats.moviesPromoted += 1;
-      }
-    }
-    if (fourK) {
-      await rewriteTreeQuality(fourK, "4k");
-      stats.namesMigrated += await migrateMovieFilename(fourK, id);
-    }
-    return;
-  }
-
-  if (!canAssertNo4k(result)) {
+  if (playable.state === "indeterminate") {
     stats.moviesIndeterminate += 1;
     return;
   }
 
-  await quarantineMovie(id, maps, stats, fourK);
+  if (playable.state !== "available") {
+    await quarantineMovie(id, maps, stats, fourK);
+    return;
+  }
+
+  if (!fourK && quarantined) {
+    const target = path.join(config.movies4k, path.basename(quarantined));
+    if (!(await exists(target))) {
+      await moveFolder(quarantined, target);
+      fourK = target;
+      maps.fourK.set(id, target);
+      maps.quarantine.delete(id);
+      stats.moviesPromoted += 1;
+    }
+  }
+  if (!fourK && normal) {
+    const target = path.join(config.movies4k, path.basename(normal));
+    if (!(await exists(target))) {
+      await copyFolder(normal, target);
+      fourK = target;
+      maps.fourK.set(id, target);
+      stats.moviesPromoted += 1;
+    }
+  }
+  if (fourK) {
+    await rewriteTreeQuality(fourK, "4k");
+    stats.namesMigrated += await migrateMovieFilename(fourK, id);
+  }
 }
 
 async function episodeRefs(showDir, limit) {
@@ -377,31 +358,18 @@ async function auditShow(id, maps, stats) {
   }
 
   const results = await Promise.all(
-    refs.map(async (ref) => {
-      const advertised = await inspectEpisodeQualities(ref.tmdbId, ref.season, ref.episode);
-      const playable = advertised.has4k
-        ? await validateEpisode4k(ref.tmdbId, ref.season, ref.episode)
-        : null;
-      return { advertised, playable };
-    }),
+    refs.map((ref) =>
+      validateEpisode4k(ref.tmdbId, ref.season, ref.episode, { background: true }),
+    ),
   );
   stats.showsChecked += 1;
 
-  const allSamples4k =
-    results.length === refs.length &&
-    results.every(
-      ({ advertised, playable }) => advertised.has4k && playable?.state === "available",
-    );
-  const definitelyNotConsistent4k = results.some(
-    ({ advertised, playable }) =>
-      canAssertNo4k(advertised) ||
-      (advertised.has4k && playable?.state === "unavailable"),
-  );
-  const hasIndeterminate = results.some(
-    ({ advertised, playable }) =>
-      (!advertised.has4k && !canAssertNo4k(advertised)) ||
-      (advertised.has4k && playable?.state === "indeterminate"),
-  );
+  if (results.some((result) => result.state === "indeterminate")) {
+    stats.showsIndeterminate += 1;
+    return;
+  }
+
+  const allSamples4k = results.length === refs.length && results.every((result) => result.state === "available");
 
   if (allSamples4k) {
     if (!fourK && quarantined) {
@@ -427,11 +395,6 @@ async function auditShow(id, maps, stats) {
       await rewriteTreeQuality(fourK, "4k");
       stats.namesMigrated += await migrateShowFilenames(fourK, id);
     }
-    return;
-  }
-
-  if (!definitelyNotConsistent4k || hasIndeterminate) {
-    stats.showsIndeterminate += 1;
     return;
   }
 
