@@ -1,8 +1,20 @@
 import { config, withKey } from "./config.js";
 
-const HOUR = 60 * 60 * 1000;
-const DAY = 24 * HOUR;
 const docIndexCache = new WeakMap();
+
+const EXPLICIT_ALIASES = new Map([
+  ["PT|rtp 3", ["rtp noticias"]],
+  ["US|nesn", ["new england sports"]],
+  ["US|masn", ["masn mid atlantic sports"]],
+  ["US|msg", ["msg national"]],
+  ["US|nbc universo", ["universo"]],
+  ["US|wetv", ["we"]],
+  ["US|showtime family zone sho family zone", ["showtime familyzone"]],
+  ["US|cbs", ["cbs streaming east"]],
+  ["US|nbc", ["nbc east stream"]],
+  ["US|pbs", ["pbs stream"]],
+  ["US|mgm usa epix", ["mgm"]],
+]);
 
 function xml(v) {
   return String(v ?? "")
@@ -30,15 +42,20 @@ function decodeEntities(value) {
   return out.replace(/\s+/g, " ").trim();
 }
 
+function normalizeCountry(value) {
+  const cc = String(value || "").trim().toUpperCase();
+  if (cc === "UK") return "GB";
+  if (cc === "USA") return "US";
+  return cc;
+}
+
 function sourceCountry(url) {
   const m = /epg_ripper_([A-Z]{2})(?:\d|_)/i.exec(String(url || ""));
-  if (!m) return "";
-  const cc = m[1].toUpperCase();
-  return cc === "UK" ? "GB" : cc;
+  return m ? normalizeCountry(m[1]) : "";
 }
 
 function countrySuffixes(country) {
-  switch (String(country || "").toUpperCase()) {
+  switch (normalizeCountry(country)) {
     case "US": return ["usa", "us", "united states", "us2"];
     case "GB": return ["uk", "gb", "united kingdom"];
     case "PT": return ["pt", "portugal"];
@@ -56,12 +73,13 @@ export function canonicalGuideName(value, country = "") {
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
+    .replace(/&/g, " and ")
     .replace(/\bskysp\b/g, "sky sports")
     .replace(/\bnetwrk\b/g, "network")
     .replace(/\bfball\b/g, "football")
     .replace(/\bmain ev\b/g, "main event")
     .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
-    .replace(/[._/+&-]+/g, " ")
+    .replace(/[._/+\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -71,15 +89,27 @@ export function canonicalGuideName(value, country = "") {
     if (re.test(s)) s = s.replace(re, "").trim();
   }
 
-  s = s
+  return s
     .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/g, " ")
     .replace(/\b(?:east feed|west feed|pacific feed|national feed)\b/g, " ")
     .replace(/\b(?:channel|network|television)\b/g, " ")
     .replace(/\btv\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
 
-  return s;
+function guideKeys(value, country = "") {
+  const raw = decodeEntities(value);
+  const values = [raw, raw.replace(/\([^)]*\)/g, " ")];
+  const out = new Set();
+  for (const item of values) {
+    const canonical = canonicalGuideName(item, country);
+    if (!canonical) continue;
+    out.add(canonical);
+    const compact = canonical.replace(/\s+/g, "");
+    if (compact.length >= 3) out.add(compact);
+  }
+  return [...out];
 }
 
 function addAlias(map, key, id) {
@@ -99,7 +129,7 @@ function indexDoc(doc) {
 
   for (const [id, meta] of doc.channels || []) {
     const names = [id, ...(meta.display || [])];
-    const canonical = [...new Set(names.map((n) => canonicalGuideName(n, country)).filter(Boolean))];
+    const canonical = [...new Set(names.flatMap((n) => guideKeys(n, country)).filter(Boolean))];
     const tokenSet = new Set(canonical.flatMap((n) => n.split(" ")).filter(Boolean));
     entries.set(id, { id, meta, canonical, tokens: tokenSet });
     for (const name of canonical) addAlias(aliases, name, id);
@@ -117,15 +147,22 @@ function indexDoc(doc) {
 }
 
 function channelVariants(ch) {
-  return [...new Set([
+  const country = normalizeCountry(ch.country);
+  const raw = [
     ch.name,
     ch.tvgId,
     ch.iptvOrgId,
     ...(ch.sourceTvgIds || []),
     ...(ch.candidates || []).map((candidate) => candidate?.label),
-  ].filter((v) => v && !/^justone\./i.test(v) && !/^dlhd-/i.test(v))
-    .map((v) => canonicalGuideName(v, ch.country))
-    .filter(Boolean))];
+  ].filter((v) => v && !/^justone\./i.test(v) && !/^dlhd-/i.test(v));
+
+  const out = new Set(raw.flatMap((v) => guideKeys(v, country)));
+  for (const key of [...out]) {
+    for (const alias of EXPLICIT_ALIASES.get(`${country}|${key}`) || []) {
+      for (const expanded of guideKeys(alias, country)) out.add(expanded);
+    }
+  }
+  return [...out].filter(Boolean);
 }
 
 function similarity(a, entry) {
@@ -143,7 +180,9 @@ function similarity(a, entry) {
     const jaccard = intersection / (aa.size + bb.size - intersection);
 
     if (aa.size === 1 || bb.size === 1) {
-      if (containment === 1 && [...aa][0]?.length >= 5 && [...bb][0]?.length >= 5) best = Math.max(best, 92);
+      const onlyA = [...aa][0] || "";
+      const onlyB = [...bb][0] || "";
+      if (containment === 1 && onlyA.length >= 4 && onlyB.length >= 4) best = Math.max(best, 92);
       continue;
     }
     if (containment === 1) best = Math.max(best, 94 - Math.max(0, larger - smaller) * 3);
@@ -169,7 +208,7 @@ function candidateIds(index, variant) {
 export function matchGuideChannel(ch, docs) {
   const variants = channelVariants(ch);
   if (!variants.length) return null;
-  const country = String(ch.country || "").toUpperCase();
+  const country = normalizeCountry(ch.country);
   const orderedDocs = [...(docs || [])].sort((a, b) => {
     const ac = indexDoc(a).country === country ? 0 : 1;
     const bc = indexDoc(b).country === country ? 0 : 1;
@@ -181,15 +220,19 @@ export function matchGuideChannel(ch, docs) {
     const index = indexDoc(doc);
     const countryPenalty = country && index.country && country !== index.country ? 12 : 0;
     for (const variant of variants) {
-      const ids = candidateIds(index, variant);
-      for (const id of ids) {
+      for (const id of candidateIds(index, variant)) {
         const entry = index.entries.get(id);
         if (!entry) continue;
         const score = similarity(variant, entry) - countryPenalty;
-        if (!best || score > best.score) best = { doc, id, meta: entry.meta, score };
+        const programmeCount = (doc.programmes?.get(id) || []).length;
+        const isBetter = !best
+          || score > best.score
+          || (programmeCount > 0 && best.programmeCount === 0 && score >= best.score - 4)
+          || (score === best.score && programmeCount > best.programmeCount);
+        if (isBetter) best = { doc, id, meta: entry.meta, score, programmeCount };
       }
     }
-    if (best?.score >= 98) break;
+    if (best?.score >= 98 && best.programmeCount > 0) break;
   }
   return best?.score >= 86 ? best : null;
 }
@@ -240,25 +283,6 @@ function generatedSportsProgramXml(ch, p) {
   ].filter(Boolean).join("\n");
 }
 
-function placeholderPrograms(ch) {
-  const start = Math.floor((Date.now() - 6 * HOUR) / (12 * HOUR)) * 12 * HOUR;
-  const icon = ch.logo || localArtwork(ch, "program");
-  const out = [];
-  for (let t = start; t < start + 3 * DAY; t += 12 * HOUR) {
-    out.push({ start: t, end: t + 12 * HOUR, title: ch.name, icon });
-  }
-  return out;
-}
-
-function placeholderXml(ch, p) {
-  return [
-    `  <programme start="${xmltvTime(p.start)}" stop="${xmltvTime(p.end)}" channel="${xml(ch.tvgId)}">`,
-    `    <title>${xml(decodeEntities(p.title))}</title>`,
-    p.icon ? `    <icon src="${xml(p.icon)}" />` : "",
-    "  </programme>",
-  ].filter(Boolean).join("\n");
-}
-
 function adaptExternalProgram(full, ch, hit) {
   let out = String(full).replace(/\bchannel="[^"]+"/i, `channel="${xml(ch.tvgId)}"`);
   const fallback = ch.logo || hit?.meta?.icon || localArtwork(ch, "program");
@@ -282,7 +306,7 @@ export function guideCoverage(lineup, docs) {
   for (const ch of lineup || []) {
     if (ch.kind !== "static") continue;
     staticChannels += 1;
-    const country = String(ch.country || "INTL").toUpperCase() || "INTL";
+    const country = normalizeCountry(ch.country) || "INTL";
     const bucket = countryBuckets.get(country) || { staticChannels: 0, matchedChannels: 0, channelsWithPrograms: 0 };
     bucket.staticChannels += 1;
 
@@ -336,13 +360,14 @@ export function buildXmlTv(lineup, docs = []) {
       for (const p of ch.programmes || []) lines.push(generatedSportsProgramXml(ch, p));
       continue;
     }
+
     const hit = hits.get(ch.id);
     const external = hit?.doc?.programmes?.get(hit.id) || [];
     if (external.length) {
       for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
-    } else {
-      for (const p of placeholderPrograms(ch)) lines.push(placeholderXml(ch, p));
     }
+    // Do not invent generic "Live channel" programmes. A blank guide cell is
+    // preferable to misleading EPG data when no real upstream schedule exists.
   }
 
   lines.push("</tv>");
