@@ -3,8 +3,6 @@ import assert from "node:assert/strict";
 import {
   filterJellyfinRows,
   isAdultStyleChannel,
-  isFreeStyleChannel,
-  isIptvOrgStyleChannel,
   isVodStyleChannel,
 } from "../src/filter.js";
 
@@ -29,33 +27,19 @@ test("linear movie channels are retained", () => {
   }
 });
 
-test("adult rows are removed", () => {
+test("adult detection remains available to the configurable metadata layer", () => {
   assert.equal(isAdultStyleChannel({ name: "18+ Example", group: "Adult" }), true);
   assert.equal(isAdultStyleChannel({ name: "Brazzers TV", group: "International" }), true);
-  assert.deepEqual(
-    filterJellyfinRows([
-      { name: "18+ Example", group: "Adult" },
-      { name: "BBC One UK", group: "UK" },
-    ]).map((x) => x.name),
-    ["BBC One UK"],
-  );
+  assert.equal(isAdultStyleChannel({ name: "Babestation", group: "UK" }), true);
 });
 
-test("free-channel providers and explicit free groups are removed", () => {
-  for (const ch of [
-    { name: "Random Channel", group: "Free Channels" },
-    { name: "Pluto TV Action", group: "USA" },
-    { name: "Samsung TV Plus News", group: "USA" },
-    { name: "Plex Live TV", group: "International" },
-  ]) {
-    assert.equal(isFreeStyleChannel(ch), true, ch.name);
-  }
-  assert.equal(isFreeStyleChannel({ name: "FreeSports UK", group: "UK" }), false);
-});
+test("source-family labels do not make valid Live TV rows disappear", () => {
+  const rows = [
+    { name: "Pluto TV Action", group: "USA", url: "https://example/pluto" },
+    { name: "Samsung TV Plus News", group: "Free Channels", url: "https://example/samsung" },
+    { name: "IPTV Org Example", group: "IPTV-Org", url: "https://iptv-org.github.io/example.m3u" },
+    { name: "BBC One UK", group: "UK", url: "https://resolver.example/play/live/1.ts" },
+  ];
 
-test("IPTV-org source rows are removed without disabling IPTV-org metadata enrichment", () => {
-  assert.equal(isIptvOrgStyleChannel({ name: "Example", group: "IPTV-Org" }), true);
-  assert.equal(isIptvOrgStyleChannel({ name: "IPTV Org Example", group: "International" }), true);
-  assert.equal(isIptvOrgStyleChannel({ name: "Example", group: "UK", url: "https://iptv-org.github.io/example.m3u" }), true);
-  assert.equal(isIptvOrgStyleChannel({ name: "BBC One UK", group: "UK", url: "https://resolver.example/play/live/1.ts" }), false);
+  assert.deepEqual(filterJellyfinRows(rows).map((x) => x.name), rows.map((x) => x.name));
 });
