@@ -33,15 +33,29 @@ test("guide matcher maps common playlist names to EPGShare ids", () => {
   assert.equal(matchGuideChannel({ name: "Sky Sports F1 UK", country: "GB" }, [ukDoc])?.id, "SkySp.F1.HD.uk");
 });
 
-test("coverage counts channels with real programmes", () => {
+test("guide matcher considers alternate source labels after channel dedupe", () => {
+  const channel = {
+    name: "Regional Sports USA",
+    country: "US",
+    candidates: [{ label: "NESN USA" }, { label: "Backup Feed" }],
+  };
+  assert.equal(matchGuideChannel(channel, [usDoc])?.id, "NESN.HD.us2");
+});
+
+test("coverage counts channels with real programmes and reports countries", () => {
   const lineup = [
     { id: "a", kind: "static", name: "NESN USA", country: "US", tvgId: "justone.a", logo: "" },
     { id: "b", kind: "static", name: "Unknown USA", country: "US", tvgId: "justone.b", logo: "" },
+    { id: "c", kind: "static", name: "Sky Sports F1 UK", country: "GB", tvgId: "justone.c", logo: "" },
   ];
-  const stats = guideCoverage(lineup, [usDoc]);
-  assert.equal(stats.staticChannels, 2);
-  assert.equal(stats.channelsWithPrograms, 1);
-  assert.equal(stats.coveragePercent, 50);
+  const stats = guideCoverage(lineup, [usDoc, ukDoc]);
+  assert.equal(stats.staticChannels, 3);
+  assert.equal(stats.channelsWithPrograms, 2);
+  assert.equal(stats.coveragePercent, 66.7);
+  assert.equal(stats.byCountry.US.staticChannels, 2);
+  assert.equal(stats.byCountry.US.channelsWithPrograms, 1);
+  assert.equal(stats.byCountry.US.coveragePercent, 50);
+  assert.equal(stats.byCountry.GB.coveragePercent, 100);
 });
 
 test("sports XMLTV decodes nested entities and keeps event title searchable", () => {
