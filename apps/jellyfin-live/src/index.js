@@ -224,6 +224,10 @@ async function refresh(force = false) {
       epgStats,
       error: null,
     };
+    const priorityCoverage = ["US", "GB", "PT"].map((country) => {
+      const row = coverage.byCountry?.[country];
+      return row ? `${country}:${row.channelsWithPrograms}/${row.staticChannels}(${row.coveragePercent}%)` : `${country}:0/0`;
+    }).join(",");
     log(
       "refresh",
       `raw=${raw.length}`,
@@ -232,6 +236,7 @@ async function refresh(force = false) {
       `epg=${docs.length}/${epgSources.length}`,
       `matched=${coverage.channelsWithPrograms}/${coverage.staticChannels}`,
       `coverage=${coverage.coveragePercent}%`,
+      `priority=${priorityCoverage}`,
       `iptv-guides=${iptvOrg.guides.length}`,
       `fallback=${fallbackUrls.length}`,
     );
