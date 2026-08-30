@@ -2,18 +2,68 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { currentChannelName, normalizeCountryCode, organizeLineup } from "../src/lineup.js";
 
-test("sports stay first and static channels are ordered USA UK Portugal then other countries", () => {
+test("sports stay first and TV is ordered USA UK Portugal then other countries", () => {
   const lineup = [
-    { id: "sport", kind: "sport-slot", name: "Football 01", group: "Sports | Football", number: 100 },
-    { id: "fr", kind: "static", name: "TF1", country: "FR", group: "TV | FR", number: 3000 },
-    { id: "pt", kind: "static", name: "RTP 1", country: "PT", group: "TV | PT", number: 2200 },
-    { id: "gb", kind: "static", name: "BBC One", country: "GB", group: "TV | GB", number: 2000 },
-    { id: "us", kind: "static", name: "ESPN", country: "US", group: "TV | US", number: 2400 },
+    { id: "sport", kind: "sport-slot", name: "Arsenal vs Chelsea", group: "Football", number: 100 },
+    { id: "fr", kind: "static", name: "TF1 France", country: "FR", group: "France", number: 3000 },
+    { id: "pt", kind: "static", name: "RTP 1 Portugal", country: "PT", group: "Portugal", number: 2200 },
+    { id: "gb", kind: "static", name: "BBC One UK", country: "GB", group: "UK", number: 2000 },
+    { id: "us", kind: "static", name: "ABC USA", country: "US", group: "USA", number: 2400 },
   ];
   const out = organizeLineup(lineup);
   assert.deepEqual(out.map((x) => x.id), ["sport", "us", "gb", "pt", "fr"]);
-  assert.deepEqual(out.slice(1).map((x) => x.group), ["USA", "UK", "Portugal", "France"]);
-  assert.deepEqual(out.slice(1).map((x) => x.number), [1000, 2000, 3000, 4000]);
+  assert.deepEqual(out.map((x) => x.group), [
+    "Sports | Football",
+    "TV | USA",
+    "TV | UK",
+    "TV | Portugal",
+    "TV | France",
+  ]);
+  assert.deepEqual(out.map((x) => x.number), [1001, 20001, 21001, 22001, 23001]);
+});
+
+test("sports event groups are separated without pulling linear sports networks out of countries", () => {
+  const out = organizeLineup([
+    { id: "f1", kind: "static", name: "Formula 1 - Sky Sports F1 UK", country: "GB", group: "Formula 1", url: "https://example/f1" },
+    { id: "ufc", kind: "static", name: "UFC 999 - Main Event", country: "US", group: "MMA", url: "https://example/ufc" },
+    { id: "espn", kind: "static", name: "ESPN USA", country: "US", group: "USA", url: "https://example/espn" },
+    { id: "sporttv", kind: "static", name: "Sport TV 1 Portugal", country: "PT", group: "Portugal", url: "https://example/sporttv" },
+  ]);
+
+  assert.equal(out.find((x) => x.id === "f1")?.group, "Sports | Motorsport");
+  assert.equal(out.find((x) => x.id === "ufc")?.group, "Sports | Boxing & MMA");
+  assert.equal(out.find((x) => x.id === "espn")?.group, "TV | USA");
+  assert.equal(out.find((x) => x.id === "sporttv")?.group, "TV | Portugal");
+});
+
+test("organisation preserves raw playback URLs exactly", () => {
+  const url = "https://resolver.example/play/live/501.ts?key=abc123&token=x%2Fy";
+  const [channel] = organizeLineup([
+    { id: "raw", kind: "static", name: "BBC One UK", country: "GB", group: "UK", url },
+  ]);
+  assert.equal(channel.url, url);
+});
+
+test("country suffixes are removed from display names once the group already identifies the country", () => {
+  const out = organizeLineup([
+    { id: "bbc", kind: "static", name: "BBC One UK", country: "GB" },
+    { id: "rtp", kind: "static", name: "RTP 1 Portugal HD", country: "PT" },
+    { id: "abc", kind: "static", name: "ABC USA", country: "US" },
+    { id: "fiveusa", kind: "static", name: "5 USA", country: "US" },
+  ]);
+  assert.equal(out.find((x) => x.id === "bbc")?.name, "BBC One");
+  assert.equal(out.find((x) => x.id === "rtp")?.name, "RTP 1 HD");
+  assert.equal(out.find((x) => x.id === "abc")?.name, "ABC");
+  assert.equal(out.find((x) => x.id === "fiveusa")?.name, "5 USA");
+});
+
+test("explicit 24/7 rows get their own tidy section", () => {
+  const out = organizeLineup([
+    { id: "uk247", kind: "static", name: "Classic TV 24/7 UK", country: "GB", group: "24/7", url: "https://example/uk" },
+    { id: "intl247", kind: "static", name: "Nature 24/7", country: "", group: "24/7", url: "https://example/int" },
+  ]);
+  assert.equal(out.find((x) => x.id === "uk247")?.group, "24/7 | UK");
+  assert.equal(out.find((x) => x.id === "intl247")?.group, "24/7");
 });
 
 test("Portugal follows familiar terrestrial order before secondary channels", () => {
@@ -75,7 +125,7 @@ test("UK and GB are one country bucket", () => {
     { id: "b", kind: "static", name: "ITV 1 UK", country: "UK" },
   ]);
   assert.deepEqual(out.map((x) => x.country), ["GB", "GB"]);
-  assert.deepEqual(out.map((x) => x.group), ["UK", "UK"]);
+  assert.deepEqual(out.map((x) => x.group), ["TV | UK", "TV | UK"]);
 });
 
 test("known ambiguous channel names get the correct country", () => {

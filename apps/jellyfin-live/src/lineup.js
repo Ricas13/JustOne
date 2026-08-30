@@ -7,9 +7,45 @@ const SPECIAL_NAMES = new Map([
   ["PT", "Portugal"],
 ]);
 
+const COUNTRY_SUFFIXES = new Map([
+  ["US", ["USA", "US", "United States"]],
+  ["GB", ["UK", "GB", "United Kingdom"]],
+  ["PT", ["Portugal", "PT"]],
+  ["CA", ["Canada", "CA"]],
+  ["ES", ["Spain", "ES"]],
+  ["FR", ["France", "FR"]],
+  ["DE", ["Germany", "DE"]],
+  ["IT", ["Italy", "IT"]],
+  ["NL", ["Netherlands", "NL"]],
+  ["IE", ["Ireland", "IE"]],
+  ["AU", ["Australia", "AU"]],
+  ["BR", ["Brazil", "BR"]],
+]);
+
+const SPORT_GROUPS = [
+  { key: "football", label: "Sports | Football", re: /\b(?:football|soccer|premier league|champions league|europa league|uefa|fifa|la liga|bundesliga|serie a|ligue 1|mls)\b/i },
+  { key: "motorsport", label: "Sports | Motorsport", re: /\b(?:formula ?1|f1|motogp|moto ?gp|nascar|indycar|motorsport|superbike|racing|grand prix)\b/i },
+  { key: "combat", label: "Sports | Boxing & MMA", re: /\b(?:boxing|mma|ufc|bellator|combat|fight|wwe|aew|wrestling)\b/i },
+  { key: "tennis", label: "Sports | Tennis", re: /\b(?:tennis|atp|wta|wimbledon|roland garros|australian open|us open)\b/i },
+  { key: "basketball", label: "Sports | Basketball", re: /\b(?:basketball|nba|wnba|euroleague|fiba)\b/i },
+  { key: "american-football", label: "Sports | American Football", re: /\b(?:american football|nfl|college football|ncaa football|cfl)\b/i },
+  { key: "baseball", label: "Sports | Baseball", re: /\b(?:baseball|mlb)\b/i },
+  { key: "hockey", label: "Sports | Ice Hockey", re: /\b(?:ice hockey|nhl|hockey)\b/i },
+  { key: "golf", label: "Sports | Golf", re: /\b(?:golf|pga|lpga|ryder cup|solheim)\b/i },
+  { key: "rugby", label: "Sports | Rugby", re: /\b(?:rugby|six nations)\b/i },
+  { key: "cricket", label: "Sports | Cricket", re: /\b(?:cricket|ipl|t20|test match)\b/i },
+];
+
+const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
+const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
 const displayNames = typeof Intl.DisplayNames === "function"
   ? new Intl.DisplayNames(["en"], { type: "region" })
   : null;
+
+function escaped(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export function normalizeCountryCode(code, name = "") {
   const title = String(name || "").trim();
@@ -58,6 +94,23 @@ export function currentChannelName(country, name) {
   return rebrand ? `DAZN ${rebrand[1]}` : original;
 }
 
+function cleanChannelName(country, name) {
+  const cc = normalizeCountryCode(country, name);
+  let out = currentChannelName(cc, name)
+    .replace(/\s+[—–]\s+/g, " - ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Country suffixes are useful in the source playlist for matching, but are
+  // redundant once Jellyfin already groups the channel by country.
+  for (const suffix of COUNTRY_SUFFIXES.get(cc) || []) {
+    const re = new RegExp(`\\s+${escaped(suffix)}(?=\\s*(?:UHD|FHD|HD|SD|4K|1080P|720P)?$)`, "i");
+    out = out.replace(re, "").replace(/\s+/g, " ").trim();
+  }
+
+  return out;
+}
+
 function replaceableLegacyLogo(url) {
   const value = String(url || "").trim();
   if (!value) return value;
@@ -65,52 +118,115 @@ function replaceableLegacyLogo(url) {
   return `${value}${join}justone-rebrand=1`;
 }
 
+function sportGroup(channel) {
+  if (channel?.kind === "sport-slot") {
+    const hay = `${channel.group || ""} ${channel.name || ""}`;
+    return SPORT_GROUPS.find((group) => group.re.test(hay)) || SPORT_FALLBACK;
+  }
+
+  // Raw Grok event streams already carry sport/event-oriented group names.
+  // Classify from that source group first so linear channels such as ESPN stay
+  // inside their country rather than being pulled out of USA TV.
+  const group = String(channel?.group || "");
+  const direct = SPORT_GROUPS.find((item) => item.re.test(group));
+  if (direct) return direct;
+  if (/\b(?:sports?|event|ppv)\b/i.test(group)) {
+    const hay = `${group} ${channel?.name || ""}`;
+    return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
+  }
+  return null;
+}
+
+function isExplicit247(channel) {
+  return /(?:^|\b)24\s*\/\s*7(?:\b|$)/i.test(`${channel?.group || ""} ${channel?.name || ""}`);
+}
+
+function preparedChannel(channel) {
+  const country = normalizeCountryCode(channel.country, channel.name);
+  const name = cleanChannelName(country, channel.name);
+  const rebranded = currentChannelName(country, channel.name) !== String(channel.name || "").trim();
+  return {
+    ...channel,
+    country,
+    name,
+    // Preserve the old image only as a last-resort fallback. The marker tells
+    // later logo enrichment that this otherwise-real URL is stale.
+    logo: rebranded ? replaceableLegacyLogo(channel.logo) : channel.logo,
+    rebrandedFrom: rebranded ? channel.name : channel.rebrandedFrom,
+  };
+}
+
+function compareSportChannels(a, b) {
+  return collator.compare(String(a?.name || ""), String(b?.name || ""));
+}
+
+function sortCountries(countries) {
+  return [...countries].sort((a, b) => {
+    const ra = countryRank(a);
+    const rb = countryRank(b);
+    if (ra !== rb) return ra - rb;
+    if (!a) return 1;
+    if (!b) return -1;
+    return countryLabel(a).localeCompare(countryLabel(b));
+  });
+}
+
 export function organizeLineup(lineup) {
-  const sports = (lineup || [])
-    .filter((ch) => ch.kind === "sport-slot")
-    .sort((a, b) => Number(a.number || 0) - Number(b.number || 0) || String(a.name).localeCompare(String(b.name)));
+  const prepared = (lineup || []).map(preparedChannel);
+  const sports = [];
+  const alwaysOn = [];
+  const television = [];
 
-  const statics = (lineup || [])
-    .filter((ch) => ch.kind === "static")
-    .map((ch) => {
-      const country = normalizeCountryCode(ch.country, ch.name);
-      const name = currentChannelName(country, ch.name);
-      const rebranded = name !== String(ch.name || "").trim();
-      return {
-        ...ch,
-        country,
-        name,
-        // Preserve the old image only as a last-resort fallback. The marker
-        // tells later logo enrichment that this otherwise-real URL is stale.
-        logo: rebranded ? replaceableLegacyLogo(ch.logo) : ch.logo,
-        rebrandedFrom: rebranded ? ch.name : ch.rebrandedFrom,
-      };
-    });
-
-  const countries = [...new Set(statics.map((ch) => ch.country))]
-    .sort((a, b) => {
-      const ra = countryRank(a);
-      const rb = countryRank(b);
-      if (ra !== rb) return ra - rb;
-      if (!a) return 1;
-      if (!b) return -1;
-      return countryLabel(a).localeCompare(countryLabel(b));
-    });
+  for (const channel of prepared) {
+    const sport = sportGroup(channel);
+    if (sport) sports.push({ channel, sport });
+    else if (isExplicit247(channel)) alwaysOn.push(channel);
+    else television.push(channel);
+  }
 
   const ordered = [];
-  countries.forEach((country, countryIndex) => {
-    const rows = statics
-      .filter((ch) => ch.country === country)
-      .sort((a, b) => compareCountryChannels(country, a, b));
-    const base = (countryIndex + 1) * 1000;
-    rows.forEach((ch, i) => {
+
+  SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport, sportIndex) => {
+    const rows = sports
+      .filter((entry) => entry.sport.key === sport.key)
+      .map((entry) => entry.channel)
+      .sort(compareSportChannels);
+    rows.forEach((channel, index) => {
       ordered.push({
-        ...ch,
-        group: countryLabel(country),
-        number: base + i,
+        ...channel,
+        group: sport.label,
+        number: (sportIndex + 1) * 1000 + index + 1,
       });
     });
   });
 
-  return [...sports, ...ordered];
+  const countries = sortCountries(new Set(television.map((channel) => channel.country)));
+  countries.forEach((country, countryIndex) => {
+    const rows = television
+      .filter((channel) => channel.country === country)
+      .sort((a, b) => compareCountryChannels(country, a, b));
+    rows.forEach((channel, index) => {
+      ordered.push({
+        ...channel,
+        group: `TV | ${countryLabel(country)}`,
+        number: 20000 + countryIndex * 1000 + index + 1,
+      });
+    });
+  });
+
+  const alwaysOnCountries = sortCountries(new Set(alwaysOn.map((channel) => channel.country));
+  alwaysOnCountries.forEach((country, countryIndex) => {
+    const rows = alwaysOn
+      .filter((channel) => channel.country === country)
+      .sort((a, b) => compareCountryChannels(country, a, b));
+    rows.forEach((channel, index) => {
+      ordered.push({
+        ...channel,
+        group: country ? `24/7 | ${countryLabel(country)}` : "24/7",
+        number: 80000 + countryIndex * 1000 + index + 1,
+      });
+    });
+  });
+
+  return ordered;
 }
