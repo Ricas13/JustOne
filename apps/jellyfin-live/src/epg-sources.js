@@ -1,6 +1,7 @@
 const EPGSHARE_BASE = "https://epgshare01.online/epgshare01/";
 const INDEX_TTL_MS = 12 * 60 * 60 * 1000;
 const COUNTRY_ALIAS = new Map([["GB", "UK"]]);
+const PRIORITY_COUNTRIES = ["US", "UK", "PT"];
 
 let indexCache = { at: 0, files: [] };
 
@@ -34,6 +35,19 @@ function countryCounts(lineup) {
   return counts;
 }
 
+function countryOrder(counts) {
+  return [...counts.entries()].sort((a, b) => {
+    const ap = PRIORITY_COUNTRIES.indexOf(a[0]);
+    const bp = PRIORITY_COUNTRIES.indexOf(b[0]);
+    if (ap >= 0 || bp >= 0) {
+      if (ap < 0) return 1;
+      if (bp < 0) return -1;
+      return ap - bp;
+    }
+    return b[1] - a[1] || a[0].localeCompare(b[0]);
+  });
+}
+
 function packPriority(pack, cc) {
   if (pack === `${cc}1`) return 0;
   if (pack === `${cc}2`) return 1;
@@ -46,7 +60,7 @@ export function selectEpgShareUrls(lineup, availableFiles, maxSources = 12) {
   const limit = Math.max(0, Number(maxSources) || 0);
   if (!limit) return [];
   const counts = countryCounts(lineup);
-  const countries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const countries = countryOrder(counts);
   const byCountry = new Map();
 
   for (const row of availableFiles || []) {
@@ -72,13 +86,18 @@ export function selectEpgShareUrls(lineup, availableFiles, maxSources = 12) {
     selected.push(`${EPGSHARE_BASE}${row.file}`);
   };
 
-  // First pass: one primary pack for as many represented countries as possible.
+  // Always spend the first slots on the three countries most important to this deployment.
+  for (const cc of PRIORITY_COUNTRIES) {
+    if (counts.has(cc)) add(byCountry.get(cc)?.[0]);
+  }
+
+  // Then cover the remaining represented countries, largest first.
   for (const [cc] of countries) add(byCountry.get(cc)?.[0]);
 
-  // Second pass: use remaining budget for secondary packs in the biggest countries.
+  // Use spare budget on secondary packs, preferring USA/UK/Portugal first.
   if (selected.length < limit) {
     for (const [cc, count] of countries) {
-      if (count < 40) continue;
+      if (count < 20 && !PRIORITY_COUNTRIES.includes(cc)) continue;
       for (const row of (byCountry.get(cc) || []).slice(1)) add(row);
       if (selected.length >= limit) break;
     }
