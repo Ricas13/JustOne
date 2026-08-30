@@ -6,7 +6,9 @@ RUN git clone --depth 1 https://github.com/Lunatic16/dlhd-web.git /app
 COPY m3u8.ts /app/src/channels/m3u8.ts
 COPY channels.ts /app/src/server/channels.ts
 RUN npm ci && npm run build \
-  && grep -q 'X-DLHD-Delivery' /app/dist/server/channels.js
+  && grep -q 'X-DLHD-Delivery' /app/dist/server/channels.js \
+  && grep -q 'X-DLHD-Source' /app/dist/server/channels.js \
+  && grep -q 'X-DLHD-Failover' /app/dist/server/channels.js
 
 FROM node:22-alpine AS runner
 WORKDIR /app
