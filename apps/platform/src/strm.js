@@ -91,8 +91,16 @@ export async function writeMovieStrm({ title, year, tmdbId, quality }) {
   const url = withKey(`${config.publicUrl}/play/movie/${tmdbId}?quality=${quality}`);
   const changed = await writeIfChanged(filePath, url + "\n");
 
-  const legacyPath = path.join(dir, `${folder}.strm`);
-  if (legacyPath !== filePath) await unlinkIfExists(legacyPath);
+  // Remove both historical filename styles after the canonical ID-bearing file
+  // has been written successfully.
+  const legacyNames = new Set([
+    `${folder}.strm`,
+    file.replace(new RegExp(`\\s+\\[tmdbid-${tmdbId}\\](?=\\.strm$)`, "i"), ""),
+  ]);
+  for (const legacyName of legacyNames) {
+    const legacyPath = path.join(dir, legacyName);
+    if (legacyPath !== filePath) await unlinkIfExists(legacyPath);
+  }
 
   return { filePath, url, changed };
 }
@@ -115,7 +123,7 @@ export async function writeEpisodeStrm({
   const dir = path.join(root, show, seasonFolder);
   await ensureDir(dir);
 
-  const fileName = episodeFile(showTitle, safeYear, season, episode, resolvedTitle);
+  const fileName = episodeFile(showTitle, safeYear, season, episode, resolvedTitle, tmdbId);
   const filePath = path.join(dir, fileName);
   const url = withKey(
     `${config.publicUrl}/play/episode/${tmdbId}/${season}/${episode}?quality=${quality}`,
@@ -128,6 +136,7 @@ export async function writeEpisodeStrm({
   const legacyNames = new Set([
     legacyEpisodeFile(showTitle, safeYear, season, episode),
     legacyEpisodeFile(showTitle, safeYear, season, episode, resolvedTitle),
+    episodeFile(showTitle, safeYear, season, episode, resolvedTitle),
   ]);
   const legacyDirs = new Set([dir, path.join(root, oldShow, seasonFolder)]);
   for (const legacyDir of legacyDirs) {
