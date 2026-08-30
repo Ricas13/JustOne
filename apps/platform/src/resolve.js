@@ -5,6 +5,7 @@ import { fetchMovieStreams, fetchEpisodeStreams } from "./services/webStreamrCli
 const cache = new Map();
 const TTL_MS = Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000);
 const PROBE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JustOne source resolver";
+const PROBE_BATCH_SIZE = 3;
 
 function cacheGet(key) {
   const hit = cache.get(key);
@@ -197,10 +198,15 @@ export async function validateCandidate(candidate, deadline = Date.now() + confi
 
 async function chooseWorkingCandidate(candidates, quality, deadline) {
   const allowFallback = config.qualityFallback || quality !== "4k";
-  for (const candidate of candidates) {
-    if (!allowFallback && qualityRank(candidate.quality, quality) !== 3) continue;
-    if (!remainingMs(deadline)) break;
-    if (await validateCandidate(candidate, deadline)) return candidate;
+  const eligible = (candidates || []).filter(
+    (candidate) => allowFallback || qualityRank(candidate.quality, quality) === 3,
+  );
+
+  for (let offset = 0; offset < eligible.length && remainingMs(deadline); offset += PROBE_BATCH_SIZE) {
+    const batch = eligible.slice(offset, offset + PROBE_BATCH_SIZE);
+    const results = await Promise.all(batch.map((candidate) => validateCandidate(candidate, deadline)));
+    const firstWorking = results.findIndex(Boolean);
+    if (firstWorking >= 0) return batch[firstWorking];
   }
   return null;
 }
