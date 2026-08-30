@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
 import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
+import { sourceHeadersFor } from "./services/sourceHeaders.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 const titleCache = new Map();
@@ -243,10 +244,12 @@ export function proxyStream(
     if (!res.headersSent) res.status(502).json({ error: "bad upstream" });
     return;
   }
+  const rememberedHeaders = sourceHeadersFor(targetUrl);
+  const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
   const lib = dest.protocol === "https:" ? https : http;
   const p = lib.request(
     dest,
-    { method: "GET", headers: hopHeaders(req, dest.host, upstreamHeaders), timeout: 120000 },
+    { method: "GET", headers: hopHeaders(req, dest.host, effectiveHeaders), timeout: 120000 },
     (up) => {
       const loc = up.headers.location;
       if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
@@ -256,7 +259,7 @@ export function proxyStream(
           filename,
           download,
           hops: hops + 1,
-          upstreamHeaders,
+          upstreamHeaders: effectiveHeaders,
         });
       }
       const out = fixMediaType(sanitizeOut(up.headers, filename, download), dest.href);
