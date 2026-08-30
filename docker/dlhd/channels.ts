@@ -11,16 +11,24 @@ const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
 };
 
-const DIRECT_PROBE_UA =
+const PROBE_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const DIRECT_PROBE_TIMEOUT_MS = 5000;
-const DIRECT_MANIFEST_MAX_BYTES = 512 * 1024;
+const PROBE_TIMEOUT_MS = 5000;
+const MANIFEST_MAX_BYTES = 512 * 1024;
 
-function directHeaders(range = false): Record<string, string> {
+function probeHeaders(referer: string | null = null, range = false): Record<string, string> {
   const headers: Record<string, string> = {
-    "User-Agent": DIRECT_PROBE_UA,
+    "User-Agent": PROBE_UA,
     Accept: "*/*",
   };
+  if (referer) {
+    headers.Referer = referer;
+    try {
+      headers.Origin = new URL(referer).origin;
+    } catch {
+      // A malformed referer cannot help the protected-source probe.
+    }
+  }
   if (range) headers.Range = "bytes=0-0";
   return headers;
 }
@@ -37,7 +45,7 @@ function httpUrl(value: string, base?: string): string | null {
 
 async function readManifest(response: Response): Promise<string | null> {
   const declared = Number(response.headers.get("content-length") || 0);
-  if (declared > DIRECT_MANIFEST_MAX_BYTES) {
+  if (declared > MANIFEST_MAX_BYTES) {
     await response.body?.cancel().catch(() => undefined);
     return null;
   }
@@ -47,12 +55,12 @@ async function readManifest(response: Response): Promise<string | null> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
-    while (total <= DIRECT_MANIFEST_MAX_BYTES) {
+    while (total <= MANIFEST_MAX_BYTES) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value?.length) continue;
       total += value.length;
-      if (total > DIRECT_MANIFEST_MAX_BYTES) return null;
+      if (total > MANIFEST_MAX_BYTES) return null;
       chunks.push(value);
     }
   } finally {
@@ -68,22 +76,37 @@ async function readManifest(response: Response): Promise<string | null> {
   return new TextDecoder().decode(merged);
 }
 
-async function probeBinary(url: string): Promise<boolean> {
+async function probeBinary(url: string, referer: string | null): Promise<boolean> {
   let response: Response | null = null;
   try {
     response = await fetch(url, {
       method: "GET",
-      headers: directHeaders(true),
+      headers: probeHeaders(referer, true),
       redirect: "follow",
-      signal: AbortSignal.timeout(DIRECT_PROBE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       return false;
     }
+
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    await response.body?.cancel().catch(() => undefined);
-    return !contentType.includes("text/html") && !contentType.includes("application/json");
+    if (contentType.includes("text/html") || contentType.includes("application/json")) {
+      await response.body?.cancel().catch(() => undefined);
+      return false;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) return false;
+    const { value } = await reader.read();
+    await reader.cancel().catch(() => undefined);
+    if (!value?.length) return false;
+
+    const prefix = new TextDecoder().decode(value.subarray(0, Math.min(value.length, 2048))).trimStart().toLowerCase();
+    if (prefix.startsWith("<!doctype html") || prefix.startsWith("<html") || prefix.startsWith("{\"error\"") || prefix.startsWith("{\n\"error\"")) {
+      return false;
+    }
+    return true;
   } catch {
     try {
       await response?.body?.cancel();
@@ -95,9 +118,8 @@ async function probeBinary(url: string): Promise<boolean> {
 }
 
 function firstVariant(text: string, base: string): string | null {
-  const lines = text.split(/\r?\n/);
   let afterStreamInf = false;
-  for (const line of lines) {
+  for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (/^#EXT-X-STREAM-INF:/i.test(trimmed)) {
@@ -132,14 +154,19 @@ function firstMediaSegment(text: string, base: string): string | null {
   return null;
 }
 
-async function canPlayDirect(url: string, mimeType: string, depth = 0): Promise<boolean> {
+async function canPlay(
+  url: string,
+  mimeType: string,
+  referer: string | null = null,
+  depth = 0,
+): Promise<boolean> {
   let response: Response | null = null;
   try {
     response = await fetch(url, {
       method: "GET",
-      headers: directHeaders(false),
+      headers: probeHeaders(referer),
       redirect: "follow",
-      signal: AbortSignal.timeout(DIRECT_PROBE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -164,23 +191,25 @@ async function canPlayDirect(url: string, mimeType: string, depth = 0): Promise<
     if (/#EXT-X-STREAM-INF:/i.test(manifest)) {
       if (depth >= 2) return false;
       const variant = firstVariant(manifest, base);
-      if (!variant || !(await canPlayDirect(variant, "application/x-mpegURL", depth + 1))) return false;
+      if (!variant || !(await canPlay(variant, "application/x-mpegURL", referer, depth + 1))) {
+        return false;
+      }
 
       const rendition = firstAttributeUri(manifest, /^#EXT-X-MEDIA:/i, base);
-      if (rendition && !(await canPlayDirect(rendition, "application/x-mpegURL", depth + 1))) {
+      if (rendition && !(await canPlay(rendition, "application/x-mpegURL", referer, depth + 1))) {
         return false;
       }
       return true;
     }
 
     const key = firstAttributeUri(manifest, /^#EXT-X-KEY:/i, base);
-    if (key && !(await probeBinary(key))) return false;
+    if (key && !(await probeBinary(key, referer))) return false;
 
     const map = firstAttributeUri(manifest, /^#EXT-X-MAP:/i, base);
-    if (map && !(await probeBinary(map))) return false;
+    if (map && !(await probeBinary(map, referer))) return false;
 
     const segment = firstMediaSegment(manifest, base);
-    return Boolean(segment && (await probeBinary(segment)));
+    return Boolean(segment && (await probeBinary(segment, referer)));
   } catch {
     try {
       await response?.body?.cancel();
@@ -210,28 +239,46 @@ export async function handlePlaylist(res: ServerResponse, origin: string) {
 }
 
 export async function handleStreamResolver(res: ServerResponse, channelId: number, origin: string) {
-  for (const server of PLAYER_IDS) {
+  for (let attempt = 0; attempt < PLAYER_IDS.length; attempt += 1) {
+    const server = PLAYER_IDS[attempt];
     try {
       const { resolved } = await resolveLive(channelId, server);
       const direct = resolved.playableUrl;
-      const directOk = await canPlayDirect(direct, resolved.mimeType);
-      const location = directOk ? direct : buildProxyUrl(direct, resolved.embedUrl, origin);
-      res.writeHead(302, {
-        Location: location,
-        "X-DLHD-Delivery": directOk ? "direct" : "proxy",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-      });
-      res.end();
-      return;
+
+      if (await canPlay(direct, resolved.mimeType)) {
+        res.writeHead(302, {
+          Location: direct,
+          "X-DLHD-Delivery": "direct",
+          "X-DLHD-Source": server,
+          "X-DLHD-Attempt": String(attempt + 1),
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        });
+        res.end();
+        return;
+      }
+
+      if (await canPlay(direct, resolved.mimeType, resolved.embedUrl)) {
+        res.writeHead(302, {
+          Location: buildProxyUrl(direct, resolved.embedUrl, origin),
+          "X-DLHD-Delivery": "proxy",
+          "X-DLHD-Source": server,
+          "X-DLHD-Attempt": String(attempt + 1),
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        });
+        res.end();
+        return;
+      }
     } catch {
-      // try next player
+      // Resolution or playback validation failed; try the next player.
     }
   }
 
   res.writeHead(503, {
     "Content-Type": "text/plain; charset=utf-8",
+    "X-DLHD-Failover": "exhausted",
     "Access-Control-Allow-Origin": "*",
   });
-  res.end(`Failed to resolve live stream for channel ${channelId}`);
+  res.end(`Failed to resolve a playable live stream for channel ${channelId}`);
 }
