@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { filterJellyfinRows } from "../src/filter.js";
+import { organizeLineup } from "../src/lineup.js";
 import { buildMetadataLineup, buildMetadataM3u } from "../src/metadata-only.js";
 
 function streamLines(m3u) {
@@ -7,6 +9,10 @@ function streamLines(m3u) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => /^https?:\/\//i.test(line));
+}
+
+function sorted(values) {
+  return [...values].sort((a, b) => a.localeCompare(b));
 }
 
 test("metadata decoration preserves every raw playback URL byte-for-byte", () => {
@@ -38,6 +44,32 @@ test("metadata decoration preserves every raw playback URL byte-for-byte", () =>
   const m3u = buildMetadataM3u(lineup);
   assert.deepEqual(streamLines(m3u), raw.map((row) => row.url));
   assert.doesNotMatch(m3u, /\/jellyfin\/play\//);
+});
+
+test("full Jellyfin beautifier may reorder metadata but cannot alter any accepted stream URL", () => {
+  const raw = [
+    { name: "BBC One UK", tvgId: "dlhd-101", group: "UK", url: "https://resolver.vpn4u.cc/play/live/101.ts?key=x&sig=a%2Fb" },
+    { name: "ESPN USA", tvgId: "dlhd-102", group: "USA", url: "https://resolver.vpn4u.cc/play/live/102.ts?key=x&sig=c%3Dd" },
+    { name: "RTP 1 Portugal", tvgId: "dlhd-103", group: "Portugal", url: "https://resolver.vpn4u.cc/play/live/103.ts?key=x&sig=e%26f" },
+    { name: "Chelsea vs Arsenal - Sky Sports Football UK", tvgId: "dlhd-104", group: "Football", url: "https://resolver.vpn4u.cc/play/live/104.ts?key=x&event=chelsea%20arsenal" },
+    { name: "18+ Example", tvgId: "adult-1", group: "18+", url: "https://resolver.vpn4u.cc/play/live/900.ts?key=x" },
+    { name: "Pluto TV Action", tvgId: "pluto-1", group: "Free Channels", url: "https://example.invalid/pluto.m3u8" },
+    { name: "IPTV Org Example", tvgId: "iptv-org-1", group: "IPTV-Org", url: "https://iptv-org.github.io/example.m3u" },
+  ];
+
+  const acceptedRaw = filterJellyfinRows(raw);
+  const enhanced = organizeLineup(buildMetadataLineup(acceptedRaw, { iptvOrg: null, excludeAdult: true }));
+  const outputUrls = streamLines(buildMetadataM3u(enhanced));
+
+  assert.deepEqual(
+    sorted(outputUrls),
+    sorted(acceptedRaw.map((row) => row.url)),
+    "enhanced output must contain exactly the accepted raw URLs, regardless of metadata reordering",
+  );
+  assert.equal(new Set(outputUrls).size, outputUrls.length, "beautifier must not invent duplicate playback rows");
+  for (const url of outputUrls) {
+    assert.match(url, /^https:\/\/resolver\.vpn4u\.cc\/play\/live\//);
+  }
 });
 
 test("metadata layer filters adult rows when configured without rewriting accepted streams", () => {
