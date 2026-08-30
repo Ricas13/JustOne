@@ -4,6 +4,7 @@ import express from "express";
 import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
 import { discoverEpgShareUrls } from "./epg-sources.js";
+import { collapseSportsEvents, selectWorkingEventCandidate } from "./event-failover.js";
 import { filterJellyfinRows } from "./filter.js";
 import { buildXmlTv, guideCoverage, matchGuideChannel } from "./guide.js";
 import { organizeLineup } from "./lineup.js";
@@ -179,20 +180,24 @@ async function refresh(force = false) {
   if (!force && cache.lineup.length && !stale) return cache;
 
   try {
-    // The raw platform playlist remains the sole playback owner. This service
-    // reads that M3U only to decorate metadata; it never resolves or probes a
-    // stream and never substitutes a playback URL.
+    // The raw platform playlist remains the sole playback owner. Refresh only
+    // decorates metadata and groups duplicate sports events; it never probes or
+    // resolves streams. Duplicate-event probing happens only when that one
+    // selector URL is opened, and the selector redirects to the untouched raw
+    // /play/live/... URL that wins.
     const [playlistBody, iptvOrg] = await Promise.all([
       getText(rawPlaylistUrl(true)),
       loadIptvOrg(),
     ]);
     const raw = parseM3u(playlistBody);
     const filtered = filterJellyfinRows(raw);
-    const lineup = organizeLineup(
-      buildMetadataLineup(filtered, {
-        iptvOrg,
-        excludeAdult: config.excludeAdult,
-      }),
+    const lineup = collapseSportsEvents(
+      organizeLineup(
+        buildMetadataLineup(filtered, {
+          iptvOrg,
+          excludeAdult: config.excludeAdult,
+        }),
+      ),
     );
 
     const manualUrls = [...new Set(config.epgSourceUrls)];
@@ -233,6 +238,7 @@ async function refresh(force = false) {
       iptvIdentityLogoCandidates: identityLogos.candidates,
       generatedLogosRemaining,
       realLogosTotal,
+      failoverEvents: lineup.filter((ch) => ch.eventFailover).length,
     };
 
     cache = {
@@ -260,6 +266,7 @@ async function refresh(force = false) {
       `filtered=${filtered.length}`,
       `jellyfin=${lineup.length}`,
       "playback=raw-grok-urls",
+      `failover-events=${epgStats.failoverEvents}`,
       `epg=${docs.length}/${epgSources.length}`,
       `matched=${coverage.channelsWithPrograms}/${coverage.staticChannels}`,
       `coverage=${coverage.coveragePercent}%`,
@@ -289,6 +296,36 @@ app.get("/jellyfin/playlist.m3u8", async (req, res) => {
   }
 });
 
+app.get("/jellyfin/event/:token", async (req, res) => {
+  try {
+    const id = String(req.params.token || "").replace(/\.ts$/i, "");
+    const state = await refresh(false);
+    const channel = state.lineup.find((row) => row.eventFailover && row.id === id);
+    if (!channel) return res.status(404).json({ error: "event not found" });
+
+    const selected = await selectWorkingEventCandidate(channel);
+    if (!selected?.url) {
+      return res.status(502).json({
+        error: "no working event source",
+        event: channel.name,
+        candidates: channel.candidates?.length || 0,
+      });
+    }
+
+    // Critical transport boundary: this endpoint is a finder only. It does not
+    // proxy or rewrite media. Location is the exact original /play/live/... URL
+    // copied from the raw Grok playlist.
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("x-justone-event-quality", selected.quality || "");
+    res.setHeader("x-justone-event-source", selected.label || "");
+    res.statusCode = 302;
+    res.setHeader("Location", selected.url);
+    return res.end();
+  } catch (error) {
+    return res.status(502).json({ error: String(error.message || error) });
+  }
+});
+
 app.get("/jellyfin/guide.xml", async (req, res) => {
   try {
     const state = await refresh(req.query.refresh === "1");
@@ -306,6 +343,12 @@ app.get("/jellyfin/diagnostics", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json({
       playback: "raw-grok-urls",
+      failoverEvents: state.lineup.filter((ch) => ch.eventFailover).map((ch) => ({
+        id: ch.id,
+        name: ch.name,
+        sources: ch.candidates?.length || 0,
+        qualities: [...new Set((ch.candidates || []).map((candidate) => candidate.quality))],
+      })),
       epg: state.epgStats,
       selectedSources: state.epgSources,
       priority: priorityDiagnostics(state.lineup, state.docs),
@@ -331,6 +374,7 @@ app.get("/jellyfin/links", async (_req, res) => {
     playback: "raw-grok-urls",
     channels: state.lineup.length,
     rawChannels: state.rawCount,
+    failoverEvents: state.lineup.filter((ch) => ch.eventFailover).length,
     epgSources: state.docs.length,
     epgSelectedSources: state.epgSources.length,
     epgStats: state.epgStats,
@@ -345,6 +389,7 @@ app.get("/jellyfin/health", (_req, res) => {
     lastRefresh: cache.at ? new Date(cache.at).toISOString() : null,
     rawChannels: cache.rawCount,
     channels: cache.lineup.length,
+    failoverEvents: cache.lineup.filter((ch) => ch.eventFailover).length,
     epgSources: cache.docs.length,
     epgSelectedSources: cache.epgSources.length,
     epgStats: cache.epgStats,
