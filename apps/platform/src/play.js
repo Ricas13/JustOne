@@ -17,6 +17,12 @@ const HLS_MANIFEST_MAX_BYTES = Math.max(
   64 * 1024,
   Number(process.env.HLS_PROXY_MANIFEST_MAX_BYTES || 4 * 1024 * 1024),
 );
+const DIRECT_MEDIA_HANDOFF_ENABLED =
+  String(process.env.DIRECT_MEDIA_HANDOFF || "true") !== "false";
+const DIRECT_MEDIA_HANDOFF_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.DIRECT_MEDIA_HANDOFF_TIMEOUT_MS || 30000),
+);
 
 function log(...a) {
   process.stdout.write(a.map(String).join(" ") + "\n");
@@ -383,6 +389,130 @@ function proxyHlsManifest(req, res, up, dest, out, effectiveHeaders) {
   });
 }
 
+function privateHostname(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return true;
+  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host.endsWith(".local")) {
+    return true;
+  }
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
+  const match172 = /^172\.(\d+)\./.exec(host);
+  if (match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31) return true;
+  return false;
+}
+
+function externalHandoffUrl(value, providerUrl = config.streamProviderUrl) {
+  try {
+    const url = new URL(String(value));
+    const provider = new URL(providerUrl);
+    const publicOrigin = new URL(config.publicUrl).origin;
+    const cineproOrigin = new URL(config.cineproUrl).origin;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.origin === provider.origin || url.origin === publicOrigin || url.origin === cineproOrigin) {
+      return null;
+    }
+    if (privateHostname(url.hostname)) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+export function directHandoffEligible(
+  targetUrl,
+  {
+    filename = null,
+    download = false,
+    upstreamHeaders = {},
+    providerUrl = config.streamProviderUrl,
+    enabled = DIRECT_MEDIA_HANDOFF_ENABLED,
+  } = {},
+) {
+  if (!enabled || !filename || download) return false;
+  if (Object.keys(upstreamHeaders || {}).length) return false;
+
+  try {
+    const target = new URL(String(targetUrl));
+    const provider = new URL(providerUrl);
+    if (target.origin === provider.origin) {
+      return /\/extract\/?$/i.test(target.pathname);
+    }
+    return Boolean(externalHandoffUrl(target.href, providerUrl));
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveDirectHandoffTarget(
+  targetUrl,
+  {
+    filename = null,
+    download = false,
+    upstreamHeaders = {},
+    providerUrl = config.streamProviderUrl,
+    enabled = DIRECT_MEDIA_HANDOFF_ENABLED,
+    timeoutMs = DIRECT_MEDIA_HANDOFF_TIMEOUT_MS,
+  } = {},
+) {
+  if (
+    !directHandoffEligible(targetUrl, {
+      filename,
+      download,
+      upstreamHeaders,
+      providerUrl,
+      enabled,
+    })
+  ) {
+    return null;
+  }
+
+  const direct = externalHandoffUrl(targetUrl, providerUrl);
+  if (direct) return direct;
+
+  let dest;
+  try {
+    dest = new URL(String(targetUrl));
+  } catch {
+    return null;
+  }
+  const lib = dest.protocol === "https:" ? https : http;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const request = lib.request(
+      dest,
+      {
+        method: "GET",
+        headers: { host: dest.host, "user-agent": UA, accept: "*/*" },
+        timeout: Math.max(1000, Number(timeoutMs || DIRECT_MEDIA_HANDOFF_TIMEOUT_MS)),
+      },
+      (up) => {
+        const status = Number(up.statusCode || 0);
+        const location = up.headers.location;
+        up.resume();
+        if (location && status >= 300 && status < 400) {
+          try {
+            const next = new URL(location, dest).href;
+            finish(externalHandoffUrl(next, providerUrl));
+          } catch {
+            finish(null);
+          }
+          return;
+        }
+        finish(null);
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("direct handoff timeout")));
+    request.on("error", () => finish(null));
+    request.end();
+  });
+}
+
 export function proxyHlsToken(req, res, token) {
   const target = hlsTargetFor(token);
   if (!target) {
@@ -397,7 +527,7 @@ export function proxyHlsToken(req, res, token) {
   });
 }
 
-export function proxyStream(
+export async function proxyStream(
   req,
   res,
   targetUrl,
@@ -412,6 +542,22 @@ export function proxyStream(
   }
   const rememberedHeaders = sourceHeadersFor(targetUrl);
   const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
+
+  if (hops === 0) {
+    const directUrl = await resolveDirectHandoffTarget(targetUrl, {
+      filename,
+      download,
+      upstreamHeaders: effectiveHeaders,
+    });
+    if (directUrl && !res.headersSent) {
+      res.setHeader("X-JustOne-Delivery", "direct");
+      res.setHeader("Cache-Control", "no-store");
+      res.redirect(302, directUrl);
+      return;
+    }
+    if (!res.headersSent) res.setHeader("X-JustOne-Delivery", "proxy");
+  }
+
   const lib = dest.protocol === "https:" ? https : http;
   const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
   const p = lib.request(
