@@ -6,6 +6,23 @@ const cache = new Map();
 const TTL_MS = Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000);
 const PROBE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JustOne source resolver";
 const PROBE_BATCH_SIZE = 3;
+const PLAYBACK_SOURCE_PROBE_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.PLAYBACK_SOURCE_PROBE_TIMEOUT_MS || 5000),
+);
+const PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS = Math.max(
+  1000,
+  Number(process.env.PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS || 5 * 60 * 1000),
+);
+const PLAYBACK_SOURCE_FAILOVER_ATTEMPTS = Math.max(
+  1,
+  Math.min(10, Number(process.env.PLAYBACK_SOURCE_FAILOVER_ATTEMPTS || 4)),
+);
+const PLAYBACK_SOURCE_RECHECK_MS = Math.max(
+  0,
+  Number(process.env.PLAYBACK_SOURCE_RECHECK_MS || 15000),
+);
+const suppressedSources = new Map();
 
 function cacheGet(key) {
   const hit = cache.get(key);
@@ -20,6 +37,43 @@ function cacheGet(key) {
 function cacheSet(key, value) {
   cache.set(key, { value, exp: Date.now() + TTL_MS });
   rememberSourceHeaders(value?.url, value?.requestHeaders, TTL_MS);
+}
+
+function pruneSuppressedSources(now = Date.now()) {
+  for (const [url, exp] of suppressedSources) {
+    if (exp <= now) suppressedSources.delete(url);
+  }
+}
+
+function sourceSuppressed(url, now = Date.now()) {
+  if (!url) return false;
+  const key = String(url);
+  const exp = suppressedSources.get(key);
+  if (!exp) return false;
+  if (exp <= now) {
+    suppressedSources.delete(key);
+    return false;
+  }
+  return true;
+}
+
+export function suppressSource(url, ttlMs = PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS) {
+  if (!url) return false;
+  const key = String(url);
+  const exp = Date.now() + Math.max(1000, Number(ttlMs || PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS));
+  suppressedSources.set(key, exp);
+
+  // A failed playback candidate must not survive in the normal one-hour resolver
+  // cache. Remove every cached selection that points at it so concurrent/new
+  // playback requests converge on an alternative immediately.
+  for (const [cacheKey, hit] of cache) {
+    if (hit?.value?.url === key) cache.delete(cacheKey);
+  }
+  return true;
+}
+
+export function clearSuppressedSources() {
+  suppressedSources.clear();
 }
 
 function extractSources(data) {
@@ -135,6 +189,7 @@ function resultFromCandidate(candidate, candidates, quality, { validated = false
   const matched = Boolean(candidate && qualityRank(candidate.quality, quality) === 3);
   return {
     url: candidate?.url || null,
+    probeUrl: candidate?.probeUrl || null,
     quality: candidate?.quality || null,
     provider: candidate?.provider || null,
     resolver: candidate?.resolver || null,
@@ -144,6 +199,7 @@ function resultFromCandidate(candidate, candidates, quality, { validated = false
     wanted: quality,
     matched,
     validated,
+    validatedAt: validated ? Date.now() : null,
   };
 }
 
@@ -158,10 +214,15 @@ function remainingMs(deadline) {
   return Math.max(0, deadline - Date.now());
 }
 
-async function probeRequest(candidate, method, deadline) {
+async function probeRequest(
+  candidate,
+  method,
+  deadline,
+  timeoutLimitMs = config.sourceProbeTimeoutMs,
+) {
   const remaining = remainingMs(deadline);
   if (!remaining) return false;
-  const timeout = Math.min(config.sourceProbeTimeoutMs, remaining);
+  const timeout = Math.min(Math.max(500, Number(timeoutLimitMs)), remaining);
   const headers = {
     "user-agent": PROBE_UA,
     accept: "*/*",
@@ -192,6 +253,18 @@ export async function validateCandidate(candidate, deadline = Date.now() + confi
   if (!candidate?.probeUrl) return false;
   if (await probeRequest(candidate, "HEAD", deadline)) return true;
   return probeRequest(candidate, "GET", deadline);
+}
+
+// Playback cannot trust a HEAD success: hosts such as Google Drive can answer
+// metadata requests while refusing the actual file because a download quota or
+// signed URL has expired. A one-byte ranged GET proves that media bytes are
+// currently obtainable without carrying the media stream through JustOne.
+export async function validateCandidateForPlayback(
+  candidate,
+  deadline = Date.now() + PLAYBACK_SOURCE_PROBE_TIMEOUT_MS,
+) {
+  if (!candidate?.probeUrl) return false;
+  return probeRequest(candidate, "GET", deadline, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS);
 }
 
 async function chooseWorkingCandidate(candidates, quality, deadline) {
@@ -265,9 +338,18 @@ function healthCineproEpisode(tmdbId, season, episode) {
   return healthCineproRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`);
 }
 
-async function resolveVod({ key, quality, primaryCall, secondaryCall, background = false }) {
-  const cached = cacheGet(key);
-  if (cached) return cached;
+async function resolveVod({
+  key,
+  quality,
+  primaryCall,
+  secondaryCall,
+  background = false,
+  force = false,
+}) {
+  if (!force) {
+    const cached = cacheGet(key);
+    if (cached && (background || !sourceSuppressed(cached.url))) return cached;
+  }
 
   const deadline = Date.now() + config.sourceResolveTimeoutMs;
   const [primaryResult, secondaryResult] = await Promise.allSettled([
@@ -279,12 +361,18 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall, background
   const primarySources = extractSources(primaryData);
   const secondarySources = secondaryResult.status === "fulfilled" ? secondaryResult.value : [];
   const candidates = mergeCandidates(primarySources, secondarySources, quality);
-  const working = await chooseWorkingCandidate(candidates, quality, deadline);
+  const selectableCandidates = background
+    ? candidates
+    : candidates.filter((candidate) => !sourceSuppressed(candidate.url));
+  const working = await chooseWorkingCandidate(selectableCandidates, quality, deadline);
 
   let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
 
   if (!picked.url && primarySources.length && allowQualityFallback(quality)) {
-    picked = pickSource(primarySources, quality);
+    const primaryCandidates = selectableCandidates.filter((candidate) => candidate.resolver === "primary");
+    const exact = primaryCandidates.find((candidate) => qualityRank(candidate.quality, quality) === 3);
+    const fallback = primaryCandidates[0] || null;
+    picked = resultFromCandidate(exact || fallback, candidates, quality, { validated: false });
     picked.resolver = picked.url ? "primary" : null;
     picked.validationFallback = Boolean(picked.url);
   }
@@ -303,6 +391,56 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall, background
 
   if (picked.url) cacheSet(key, picked);
   return picked;
+}
+
+async function resolveForPlayback(resolveCall) {
+  let picked = await resolveCall(false);
+  let failedCandidates = 0;
+
+  for (let attempt = 0; attempt < PLAYBACK_SOURCE_FAILOVER_ATTEMPTS; attempt += 1) {
+    if (!picked?.url) break;
+
+    const recentlyChecked =
+      picked.playbackValidatedAt &&
+      Date.now() - picked.playbackValidatedAt <= PLAYBACK_SOURCE_RECHECK_MS;
+    if (recentlyChecked) {
+      picked.playbackValidated = true;
+      picked.failoverAttempts = failedCandidates;
+      return picked;
+    }
+
+    const ok = await validateCandidateForPlayback(
+      picked,
+      Date.now() + PLAYBACK_SOURCE_PROBE_TIMEOUT_MS,
+    );
+    if (ok) {
+      picked.playbackValidated = true;
+      picked.playbackValidatedAt = Date.now();
+      picked.failoverAttempts = failedCandidates;
+      return picked;
+    }
+
+    suppressSource(picked.url);
+    failedCandidates += 1;
+    if (attempt + 1 < PLAYBACK_SOURCE_FAILOVER_ATTEMPTS) {
+      picked = await resolveCall(true);
+    }
+  }
+
+  if (!picked) return picked;
+  return {
+    ...picked,
+    url: null,
+    probeUrl: null,
+    quality: null,
+    provider: null,
+    resolver: null,
+    matched: false,
+    validated: false,
+    playbackValidated: false,
+    failoverAttempts: failedCandidates,
+    playbackFailure: failedCandidates ? "sources-failed-byte-probe" : null,
+  };
 }
 
 async function inspectVodAvailability({
@@ -369,13 +507,48 @@ export function checkEpisodeAvailability(tmdbId, season, episode, { strict = fal
   });
 }
 
-export function resolveMovie(tmdbId, quality = "1080p", { background = false } = {}) {
+function resolveMovieOnce(tmdbId, quality, { background = false, force = false } = {}) {
   return resolveVod({
     key: `movie:${tmdbId}:${quality}`,
     quality,
     background,
+    force,
     primaryCall: () => cineproMovie(tmdbId),
     secondaryCall: () => fetchMovieStreams(tmdbId, { background }),
+  });
+}
+
+export function resolveMovie(
+  tmdbId,
+  quality = "1080p",
+  { background = false, force = false, playbackCheck = !background } = {},
+) {
+  if (!background && playbackCheck) {
+    return resolveForPlayback((retryForce) =>
+      resolveMovieOnce(tmdbId, quality, { background: false, force: force || retryForce }),
+    );
+  }
+  return resolveMovieOnce(tmdbId, quality, { background, force });
+}
+
+export function resolveMovieForPlayback(tmdbId, quality = "1080p") {
+  return resolveMovie(tmdbId, quality, { playbackCheck: true });
+}
+
+function resolveEpisodeOnce(
+  tmdbId,
+  season,
+  episode,
+  quality,
+  { background = false, force = false } = {},
+) {
+  return resolveVod({
+    key: `ep:${tmdbId}:${season}:${episode}:${quality}`,
+    quality,
+    background,
+    force,
+    primaryCall: () => cineproEpisode(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
   });
 }
 
@@ -384,15 +557,21 @@ export function resolveEpisode(
   season,
   episode,
   quality = "1080p",
-  { background = false } = {},
+  { background = false, force = false, playbackCheck = !background } = {},
 ) {
-  return resolveVod({
-    key: `ep:${tmdbId}:${season}:${episode}:${quality}`,
-    quality,
-    background,
-    primaryCall: () => cineproEpisode(tmdbId, season, episode),
-    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
-  });
+  if (!background && playbackCheck) {
+    return resolveForPlayback((retryForce) =>
+      resolveEpisodeOnce(tmdbId, season, episode, quality, {
+        background: false,
+        force: force || retryForce,
+      }),
+    );
+  }
+  return resolveEpisodeOnce(tmdbId, season, episode, quality, { background, force });
+}
+
+export function resolveEpisodeForPlayback(tmdbId, season, episode, quality = "1080p") {
+  return resolveEpisode(tmdbId, season, episode, quality, { playbackCheck: true });
 }
 
 export async function resolveLive(channelId, { force = false } = {}) {
@@ -413,5 +592,13 @@ export async function resolveLive(channelId, { force = false } = {}) {
 }
 
 export function cacheStats() {
-  return { size: cache.size, ttlMs: TTL_MS };
+  pruneSuppressedSources();
+  return {
+    size: cache.size,
+    ttlMs: TTL_MS,
+    suppressedSources: suppressedSources.size,
+    playbackSourceFailureCooldownMs: PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS,
+    playbackSourceFailoverAttempts: PLAYBACK_SOURCE_FAILOVER_ATTEMPTS,
+    playbackSourceRecheckMs: PLAYBACK_SOURCE_RECHECK_MS,
+  };
 }

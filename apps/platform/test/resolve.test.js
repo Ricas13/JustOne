@@ -4,8 +4,12 @@ import http from "node:http";
 import {
   mergeCandidates,
   validateCandidate,
+  validateCandidateForPlayback,
   checkMovieAvailability,
   pickSource,
+  resolveMovie,
+  suppressSource,
+  clearSuppressedSources,
 } from "../src/resolve.js";
 
 test("source candidates are deduplicated by URL and keep the existing resolver first at equal quality", () => {
@@ -72,6 +76,118 @@ test("validation tries HEAD first and falls back to a tiny ranged GET", async ()
     assert.equal(ranges[1], "bytes=0-0");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("playback byte probe rejects a host that answers HEAD but refuses the file", async () => {
+  const methods = [];
+  const ranges = [];
+  const server = http.createServer((req, res) => {
+    methods.push(req.method);
+    ranges.push(req.headers.range || "");
+    if (req.method === "HEAD") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "downloadQuotaExceeded" }));
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const candidate = {
+    probeUrl: `http://127.0.0.1:${address.port}/video.mp4`,
+    requestHeaders: {},
+  };
+
+  try {
+    assert.equal(await validateCandidate(candidate), true);
+    assert.equal(await validateCandidateForPlayback(candidate), false);
+    assert.deepEqual(methods, ["HEAD", "GET"]);
+    assert.equal(ranges[1], "bytes=0-0");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("playback failure suppresses the cached candidate and selects the next 4K source", async () => {
+  clearSuppressedSources();
+  const originalFetch = globalThis.fetch;
+  let deadRangeGets = 0;
+  let goodRangeGets = 0;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+
+    if (value.includes("/v1/movies/991234")) {
+      return new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (value.includes("/stream/movie/") && value.includes("991234")) {
+      return new Response(
+        JSON.stringify({
+          streams: [
+            { url: "https://dead.example/video.mp4", quality: "4k" },
+            { url: "https://good.example/video.mp4", quality: "4k" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (value === "https://dead.example/video.mp4") {
+      if (method === "HEAD") return new Response(null, { status: 200 });
+      deadRangeGets += 1;
+      return new Response(JSON.stringify({ error: "downloadQuotaExceeded" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (value === "https://good.example/video.mp4") {
+      if (method === "HEAD") return new Response(null, { status: 200 });
+      goodRangeGets += 1;
+      return new Response("x", {
+        status: 206,
+        headers: { "content-range": "bytes 0-0/10", "content-type": "video/mp4" },
+      });
+    }
+
+    throw new Error(`unexpected ${method} ${value}`);
+  };
+
+  try {
+    const picked = await resolveMovie("991234", "4k");
+    assert.equal(picked.url, "https://good.example/video.mp4");
+    assert.equal(picked.quality, "4k");
+    assert.equal(picked.matched, true);
+    assert.equal(picked.playbackValidated, true);
+    assert.equal(picked.failoverAttempts, 1);
+    assert.equal(deadRangeGets, 1);
+    assert.equal(goodRangeGets, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearSuppressedSources();
+  }
+});
+
+test("playback suppression does not hide candidates from maintenance discovery", () => {
+  clearSuppressedSources();
+  try {
+    suppressSource("https://media.example/a.mp4", 60000);
+    const rows = mergeCandidates(
+      [{ url: "https://media.example/a.mp4", quality: "4k" }],
+      [],
+      "4k",
+    );
+    assert.deepEqual(rows.map((row) => row.url), ["https://media.example/a.mp4"]);
+  } finally {
+    clearSuppressedSources();
   }
 });
 
