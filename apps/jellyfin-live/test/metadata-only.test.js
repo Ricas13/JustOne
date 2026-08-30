@@ -40,7 +40,7 @@ test("metadata decoration preserves every raw playback URL byte-for-byte", () =>
   assert.doesNotMatch(m3u, /\/jellyfin\/play\//);
 });
 
-test("metadata layer may filter adult rows without rewriting accepted streams", () => {
+test("metadata layer filters adult rows when configured without rewriting accepted streams", () => {
   const raw = [
     {
       name: "News Channel",
@@ -60,12 +60,35 @@ test("metadata layer may filter adult rows without rewriting accepted streams", 
       logo: "",
       url: "https://resolver.vpn4u.cc/play/live/701.ts?key=also-secret",
     },
+    {
+      name: "Babestation",
+      tvgName: "Babestation",
+      tvgId: "adult.babestation",
+      group: "UK",
+      number: 12,
+      logo: "",
+      url: "https://resolver.vpn4u.cc/play/live/702.ts?key=adult-secret",
+    },
   ];
 
   const lineup = buildMetadataLineup(raw, { iptvOrg: null, excludeAdult: true });
   assert.equal(lineup.length, 1);
   assert.equal(lineup[0].url, raw[0].url);
   assert.deepEqual(streamLines(buildMetadataM3u(lineup)), [raw[0].url]);
+});
+
+test("adult filtering can be disabled without another layer silently deleting rows", () => {
+  const raw = [{
+    name: "18+ Example",
+    tvgName: "18+ Example",
+    tvgId: "adult.example",
+    group: "Adult",
+    url: "https://resolver.vpn4u.cc/play/live/999.ts?token=exact",
+  }];
+
+  const lineup = buildMetadataLineup(raw, { iptvOrg: null, excludeAdult: false });
+  assert.equal(lineup.length, 1);
+  assert.equal(lineup[0].url, raw[0].url);
 });
 
 test("IPTV metadata enrichment changes metadata only", () => {
