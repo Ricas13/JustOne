@@ -57,10 +57,8 @@ function escaped(value) {
 
 export function normalizeCountryCode(code, name = "") {
   const title = String(name || "").trim();
-
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
-
   const cc = String(code || "").trim().toUpperCase();
   if (cc === "UK") return "GB";
   if (cc === "USA") return "US";
@@ -88,7 +86,6 @@ export function currentChannelName(country, name) {
   const cc = normalizeCountryCode(country, name);
   const original = String(name || "").trim();
   if (cc !== "PT") return original;
-
   const clean = original
     .replace(/\b(?:portugal|pt)\b/gi, " ")
     .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/gi, " ")
@@ -104,12 +101,10 @@ function cleanChannelName(country, name) {
     .replace(/\s+[—–]\s+/g, " - ")
     .replace(/\s+/g, " ")
     .trim();
-
   for (const suffix of COUNTRY_SUFFIXES.get(cc) || []) {
     const re = new RegExp(`\\s+${escaped(suffix)}(?=\\s*(?:UHD|FHD|HD|SD|4K|1080P|720P)?$)`, "i");
     out = out.replace(re, "").replace(/\s+/g, " ").trim();
   }
-
   return out;
 }
 
@@ -120,11 +115,8 @@ function replaceableLegacyLogo(url) {
   return `${value}${join}justone-rebrand=1`;
 }
 
-export function isLinearSportsChannel(channel) {
-  const name = String(channel?.name || channel?.tvgName || "").trim();
-  if (EVENT_SIGNAL_RE.test(name)) return false;
-  const head = name.split(/\s+(?:—|–|-)\s+/)[0] || name;
-  return LINEAR_SPORTS_RE.test(head);
+function sportMatch(value) {
+  return SPORT_GROUPS.find((item) => item.re.test(String(value || ""))) || null;
 }
 
 export function isSportsEvent(channel) {
@@ -132,9 +124,17 @@ export function isSportsEvent(channel) {
   const name = String(channel?.name || channel?.tvgName || "").trim();
   if (!name) return false;
   if (EVENT_SIGNAL_RE.test(name)) return true;
+  if (name.includes("|") && /\b20\d{2}\b/.test(name) && sportMatch(name)) return true;
   const group = String(channel?.group || "");
   if (/\b(?:event|ppv)\b/i.test(group)) return true;
   return false;
+}
+
+export function isLinearSportsChannel(channel) {
+  const name = String(channel?.name || channel?.tvgName || "").trim();
+  if (isSportsEvent(channel)) return false;
+  const head = name.split(/\s+(?:—|–|-)\s+/)[0] || name;
+  return LINEAR_SPORTS_RE.test(head);
 }
 
 function sportGroup(channel) {
@@ -146,15 +146,14 @@ function sportGroup(channel) {
     .join(" ");
   const hay = `${group} ${name} ${programmeText}`;
 
-  if (channel?.kind === "sport-slot") {
-    return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
-  }
-
+  if (channel?.kind === "sport-slot") return sportMatch(hay) || SPORT_FALLBACK;
   if (isLinearSportsChannel(channel)) return null;
 
-  const direct = SPORT_GROUPS.find((item) => item.re.test(hay));
-  if (isSportsEvent(channel)) return direct || SPORT_FALLBACK;
+  const explicitGroup = sportMatch(group);
+  if (explicitGroup) return explicitGroup;
 
+  const direct = sportMatch(hay);
+  if (isSportsEvent(channel)) return direct || SPORT_FALLBACK;
   if (/\b(?:sports?|event|ppv)\b/i.test(group)) return direct || SPORT_FALLBACK;
   return null;
 }
@@ -176,10 +175,17 @@ function preparedChannel(channel) {
   };
 }
 
+function eventTitle(channel) {
+  const name = String(channel?.name || "").trim();
+  const parts = name.split(/\s+(?:—|–|-)\s+/);
+  if (parts.length < 2) return name;
+  const tail = parts.slice(1).join(" - ");
+  if (LINEAR_SPORTS_RE.test(tail) || SOURCE_SUFFIX_RE.test(tail)) return parts[0].trim();
+  return name;
+}
+
 function compareSportChannels(a, b) {
-  const titleA = eventTitle(a);
-  const titleB = eventTitle(b);
-  const byEvent = collator.compare(titleA, titleB);
+  const byEvent = collator.compare(eventTitle(a), eventTitle(b));
   if (byEvent !== 0) return byEvent;
   return collator.compare(String(a?.name || ""), String(b?.name || ""));
 }
@@ -199,15 +205,6 @@ function artworkUrl(variant, token) {
   return withKey(`${config.publicUrl}/jellyfin/artwork/${variant}/${encodeURIComponent(token)}.png`);
 }
 
-function eventTitle(channel) {
-  const name = String(channel?.name || "").trim();
-  const parts = name.split(/\s+(?:—|–|-)\s+/);
-  if (parts.length < 2) return name;
-  const tail = parts.slice(1).join(" - ");
-  if (LINEAR_SPORTS_RE.test(tail) || SOURCE_SUFFIX_RE.test(tail)) return parts[0].trim();
-  return name;
-}
-
 function eventProgrammes(channel, sport) {
   const category = sport.label.replace(/^Sports\s*\|\s*/i, "") || "Sports";
   const existing = Array.isArray(channel.programmes) ? channel.programmes : [];
@@ -218,7 +215,6 @@ function eventProgrammes(channel, sport) {
     subtitle: category,
     categories: ["Sports", category],
   }];
-
   return base.map((programme, index) => ({
     ...programme,
     title: programme.title || eventTitle(channel),
@@ -245,7 +241,6 @@ export function organizeLineup(lineup) {
   const sports = [];
   const alwaysOn = [];
   const television = [];
-
   for (const channel of prepared) {
     const sport = sportGroup(channel);
     if (sport) sports.push({ channel, sport });
@@ -254,18 +249,13 @@ export function organizeLineup(lineup) {
   }
 
   const ordered = [];
-
   SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport, sportIndex) => {
     const rows = sports
       .filter((entry) => entry.sport.key === sport.key)
       .map((entry) => styleSportsEvent(entry.channel, sport))
       .sort(compareSportChannels);
     rows.forEach((channel, index) => {
-      ordered.push({
-        ...channel,
-        group: sport.label,
-        number: (sportIndex + 1) * 1000 + index + 1,
-      });
+      ordered.push({ ...channel, group: sport.label, number: (sportIndex + 1) * 1000 + index + 1 });
     });
   });
 
@@ -275,11 +265,7 @@ export function organizeLineup(lineup) {
       .filter((channel) => channel.country === country)
       .sort((a, b) => compareCountryChannels(country, a, b));
     rows.forEach((channel, index) => {
-      ordered.push({
-        ...channel,
-        group: `TV | ${countryLabel(country)}`,
-        number: 20000 + countryIndex * 1000 + index + 1,
-      });
+      ordered.push({ ...channel, group: `TV | ${countryLabel(country)}`, number: 20000 + countryIndex * 1000 + index + 1 });
     });
   });
 
@@ -289,11 +275,7 @@ export function organizeLineup(lineup) {
       .filter((channel) => channel.country === country)
       .sort((a, b) => compareCountryChannels(country, a, b));
     rows.forEach((channel, index) => {
-      ordered.push({
-        ...channel,
-        group: country ? `24/7 | ${countryLabel(country)}` : "24/7",
-        number: 80000 + countryIndex * 1000 + index + 1,
-      });
+      ordered.push({ ...channel, group: country ? `24/7 | ${countryLabel(country)}` : "24/7", number: 80000 + countryIndex * 1000 + index + 1 });
     });
   });
 
