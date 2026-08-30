@@ -86,8 +86,11 @@ function noteRateLimit(response) {
 
 async function waitForBackgroundSlot() {
   const turn = backgroundGate.then(async () => {
-    const wait = Math.max(0, backgroundNextAt - Date.now());
-    if (wait) await sleep(wait);
+    for (;;) {
+      const wait = Math.max(0, backgroundNextAt - Date.now());
+      if (!wait) break;
+      await sleep(wait);
+    }
     backgroundNextAt = Date.now() + BACKGROUND_MIN_INTERVAL_MS;
   });
   backgroundGate = turn.catch(() => {});
