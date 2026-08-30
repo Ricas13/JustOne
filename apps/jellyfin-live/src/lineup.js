@@ -67,7 +67,17 @@ export function organizeLineup(lineup) {
     .filter((ch) => ch.kind === "static")
     .map((ch) => {
       const country = normalizeCountryCode(ch.country, ch.name);
-      return { ...ch, country, name: currentChannelName(country, ch.name) };
+      const name = currentChannelName(country, ch.name);
+      const rebranded = name !== String(ch.name || "").trim();
+      return {
+        ...ch,
+        country,
+        name,
+        // A real-looking source logo may still be the obsolete Eleven artwork.
+        // Let the later EPG/IPTV identity pass supply the current DAZN badge.
+        logo: rebranded ? "" : ch.logo,
+        rebrandedFrom: rebranded ? ch.name : ch.rebrandedFrom,
+      };
     });
 
   const countries = [...new Set(statics.map((ch) => ch.country))]
