@@ -54,6 +54,57 @@ function normalize(v) {
     .trim();
 }
 
+function normalizeCountryCode(value) {
+  const cc = String(value || "").trim().toUpperCase();
+  if (cc === "UK") return "GB";
+  if (cc === "USA") return "US";
+  return cc;
+}
+
+function countrySuffixes(country) {
+  switch (normalizeCountryCode(country)) {
+    case "US": return ["usa", "us", "us2", "united states"];
+    case "GB": return ["uk", "gb", "united kingdom"];
+    case "PT": return ["pt", "portugal"];
+    case "CA": return ["ca", "canada"];
+    case "ES": return ["es", "spain"];
+    case "FR": return ["fr", "france"];
+    case "DE": return ["de", "germany"];
+    case "IT": return ["it", "italy"];
+    default: return [];
+  }
+}
+
+function iptvMatchKeys(value, country = "") {
+  let s = String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[._/+\-]+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  for (const suffix of countrySuffixes(country)) {
+    const re = new RegExp(`\\s+${suffix.replace(/\s+/g, "\\s+")}$`, "i");
+    if (re.test(s)) s = s.replace(re, "").trim();
+  }
+
+  s = s
+    .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return [];
+
+  const out = new Set([s, s.replace(/\s+/g, "")]);
+  if (/\stv$/.test(s)) {
+    const withoutTv = s.replace(/\stv$/, "").trim();
+    if (withoutTv) out.add(withoutTv);
+  }
+  return [...out].filter(Boolean);
+}
+
 function xml(v) {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -159,12 +210,16 @@ function dedupeCandidates(rows) {
 }
 
 function countryCode(ch) {
+  const title = txt(ch?.tvgName || ch?.name);
+  if (/^5\s*USA$/i.test(title)) return "GB";
+  if (/^BBC\s+America\b/i.test(title)) return "US";
+
   const hay = `${ch.group || ""} ${ch.name || ""}`.toLowerCase();
   for (const [name, code] of COUNTRY_CODES) {
-    if (new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`, "i").test(hay)) return code;
+    if (new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`, "i").test(hay)) return normalizeCountryCode(code);
   }
-  const suffix = /\.([a-z]{2})$/i.exec(ch.tvgId || "")?.[1]?.toUpperCase();
-  return suffix || "";
+  const suffix = /\.([a-z]{2})(?:\d)?$/i.exec(ch.tvgId || "")?.[1];
+  return normalizeCountryCode(suffix || "");
 }
 
 function londonOffsetMinutes(utcMs) {
@@ -227,35 +282,45 @@ function generatedArtwork(token, variant = "program") {
   return withKey(`${config.publicUrl}/jellyfin/artwork/${variant}/${encodeURIComponent(token)}.png`);
 }
 
-function iptvNameIndex(channels) {
-  const map = new Map();
-  for (const ch of channels || []) {
-    for (const name of [ch.name, ...(ch.alt_names || [])]) {
-      const key = normalize(name);
-      if (!key) continue;
-      const arr = map.get(key) || [];
-      arr.push(ch);
-      map.set(key, arr);
-    }
-  }
-  return map;
+function addIptvAlias(map, key, ch) {
+  if (!key) return;
+  const rows = map.get(key) || [];
+  if (!rows.some((row) => row.id === ch.id)) rows.push(ch);
+  map.set(key, rows);
 }
 
-function bestIptvMatch(ch, nameIndex) {
-  const variants = [ch.tvgName, ch.name]
-    .filter(Boolean)
-    .flatMap((n) => [n, n.replace(/\b(uk|usa|us|portugal|france|spain|germany|italy|canada)\b/gi, " ")])
-    .map(normalize)
-    .filter(Boolean);
-  const country = countryCode(ch);
-  for (const key of variants) {
-    const rows = nameIndex.get(key) || [];
-    if (!rows.length) continue;
-    if (country) {
-      const exact = rows.find((r) => String(r.country || "").toUpperCase() === country);
-      if (exact) return exact;
+function iptvNameIndex(channels) {
+  const aliases = new Map();
+  const byId = new Map();
+  for (const ch of channels || []) {
+    if (!ch?.id) continue;
+    byId.set(ch.id, ch);
+    const country = normalizeCountryCode(ch.country);
+    for (const value of [ch.id, ch.name, ...(ch.alt_names || [])]) {
+      for (const key of iptvMatchKeys(value, country)) {
+        addIptvAlias(aliases, `${country}|${key}`, ch);
+        addIptvAlias(aliases, `*|${key}`, ch);
+      }
     }
-    if (rows.length === 1) return rows[0];
+  }
+  return { aliases, byId };
+}
+
+function bestIptvMatch(ch, index) {
+  const country = countryCode(ch);
+  const direct = index.byId.get(String(ch.tvgId || ""));
+  if (direct && (!country || normalizeCountryCode(direct.country) === country)) return direct;
+
+  const variants = [ch.tvgId, ch.tvgName, ch.name].filter(Boolean);
+  for (const value of variants) {
+    for (const key of iptvMatchKeys(value, country)) {
+      if (country) {
+        const rows = index.aliases.get(`${country}|${key}`) || [];
+        if (rows.length === 1) return rows[0];
+      }
+      const globalRows = index.aliases.get(`*|${key}`) || [];
+      if (globalRows.length === 1) return globalRows[0];
+    }
   }
   return null;
 }
@@ -283,7 +348,7 @@ export function enrichStaticWithIptvOrg(rows, data = {}) {
       iptvOrgId: match.id,
       tvgId: match.id || ch.tvgId,
       logo: ch.logo || chooseLogo(data.logos || [], match.id),
-      country: String(match.country || countryCode(ch) || "").toUpperCase(),
+      country: normalizeCountryCode(match.country || countryCode(ch) || ""),
     };
   });
 }
