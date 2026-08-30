@@ -95,6 +95,24 @@ async function loadXmlGuide(url) {
   }
 }
 
+function scheduleKey(name) {
+  return String(name || "")
+    .split(/\s+[—–]\s+/)[0]
+    .toLowerCase()
+    .replace(/\b(uhd|fhd|hd|4k|1080p|720p)\b/g, "")
+    .replace(/[()\[\]]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function keepScheduledEvents(rows, schedule) {
+  return (rows || []).filter((ch) => {
+    if (!/\s+[—–]\s+/.test(ch.name || "")) return true;
+    return Boolean(schedule?.byEvent?.has(scheduleKey(ch.name)));
+  });
+}
+
 async function refresh(force = false) {
   const stale = Date.now() - cache.at > Math.max(1, config.refreshMin) * 60 * 1000;
   if (!force && cache.lineup.length && !stale) return cache;
@@ -106,7 +124,8 @@ async function refresh(force = false) {
     ]);
     const raw = parseM3u(playlistBody);
     const schedule = scheduleHtml ? parseScheduleMetadata(scheduleHtml) : null;
-    const lineup = buildLineup(raw, { schedule, iptvOrg });
+    const safeRaw = keepScheduledEvents(raw, schedule);
+    const lineup = buildLineup(safeRaw, { schedule, iptvOrg });
     const autoUrls = config.autoEpg ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources) : [];
     const epgSources = [...new Set([...config.epgSourceUrls, ...autoUrls])];
     const docs = (await Promise.all(epgSources.map(loadXmlGuide))).filter(Boolean);
