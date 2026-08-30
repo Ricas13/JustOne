@@ -12,6 +12,9 @@ build/
 .env.local
 *.pem
 
+# Local source resolver checkouts (managed independently by the updater)
+providers/
+
 # Data / libraries
 data/library/**/*.strm
 data/library/**/*.nfo
