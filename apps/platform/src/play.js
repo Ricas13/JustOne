@@ -187,14 +187,17 @@ export async function episodeDownloadFilename(tmdbId, season, episode, ext = "mp
   return downloadName(file, ext);
 }
 
-function hopHeaders(req, host) {
+function hopHeaders(req, host, upstreamHeaders = {}) {
   const headers = { ...req.headers, host };
+  for (const [key, value] of Object.entries(upstreamHeaders || {})) {
+    if (!key || value == null) continue;
+    headers[String(key).toLowerCase()] = String(value);
+  }
   delete headers.connection;
   delete headers["content-length"];
   delete headers["accept-encoding"];
-  headers["user-agent"] =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-  headers.accept = "*/*";
+  if (!headers["user-agent"]) headers["user-agent"] = UA;
+  if (!headers.accept) headers.accept = "*/*";
   return headers;
 }
 
@@ -227,7 +230,12 @@ function sanitizeOut(headers, filename, download) {
   return out;
 }
 
-export function proxyStream(req, res, targetUrl, { filename, download = false, hops = 0 } = {}) {
+export function proxyStream(
+  req,
+  res,
+  targetUrl,
+  { filename, download = false, hops = 0, upstreamHeaders = {} } = {},
+) {
   let dest;
   try {
     dest = new URL(internalize(targetUrl));
@@ -238,13 +246,18 @@ export function proxyStream(req, res, targetUrl, { filename, download = false, h
   const lib = dest.protocol === "https:" ? https : http;
   const p = lib.request(
     dest,
-    { method: "GET", headers: hopHeaders(req, dest.host), timeout: 120000 },
+    { method: "GET", headers: hopHeaders(req, dest.host, upstreamHeaders), timeout: 120000 },
     (up) => {
       const loc = up.headers.location;
       if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
         const next = new URL(loc, dest).href;
         up.resume();
-        return proxyStream(req, res, next, { filename, download, hops: hops + 1 });
+        return proxyStream(req, res, next, {
+          filename,
+          download,
+          hops: hops + 1,
+          upstreamHeaders,
+        });
       }
       const out = fixMediaType(sanitizeOut(up.headers, filename, download), dest.href);
       if (String(dest.pathname).includes(".m3u8") && !out["content-type"]) {
