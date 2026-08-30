@@ -14,9 +14,9 @@ test("raw platform playlist keeps the original Grok live transport path", () => 
   assert.doesNotMatch(body, /\/jellyfin\/playlist\.m3u8/);
 });
 
-test("portal primary IPTV URL is the original platform live playlist", async () => {
+test("portal keeps the original platform live playlist as the raw compatibility feed", async () => {
   const source = await fs.readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(source, /const M3U = `\$\{location\.origin\}\/live\/playlist\.m3u8`/);
-  assert.match(source, /links\?\.all \|\| M3U/);
-  assert.doesNotMatch(source, /keyedUrl\("\/jellyfin\/playlist\.m3u8"/);
+  assert.match(source, /RAW \/ COMPATIBILITY/);
+  assert.match(source, /urlBox\("raw-all",\s*"Everything",\s*links\.all \|\| "",\s*"Raw feed"\)/);
+  assert.match(source, /keyedUrl\("\/jellyfin\/playlist\.m3u8",\s*links\)/);
 });
