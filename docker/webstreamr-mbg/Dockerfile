@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS build
 
-ARG WEBSTREAMR_MBG_REF=main
+ARG WEBSTREAMR_MBG_REF=v0.73.2
 WORKDIR /app
 
 RUN apt-get update \
