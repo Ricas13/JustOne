@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { resolveMovie, resolveEpisode } from "../resolve.js";
 import { fetchMovieStreams, fetchEpisodeStreams } from "./webStreamrClient.js";
 
 function extractSources(data) {
@@ -85,6 +86,31 @@ async function inspect(primaryCall, secondaryCall) {
   };
 }
 
+function playable4kResult(picked) {
+  if (picked?.url && picked.quality === "4k" && picked.matched && picked.validated) {
+    return {
+      state: "available",
+      resolver: picked.resolver || null,
+      provider: picked.provider || null,
+    };
+  }
+
+  const providerErrors = picked?.providerErrors || {};
+  if (providerErrors.primary || providerErrors.secondary) {
+    return {
+      state: "indeterminate",
+      reason: "provider-error",
+      providerErrors,
+    };
+  }
+
+  return {
+    state: "unavailable",
+    reason: "no-working-4k-source",
+    available: picked?.available || [],
+  };
+}
+
 export function inspectMovieQualities(tmdbId) {
   return inspect(
     () => primaryRequest(`/v1/movies/${tmdbId}`),
@@ -97,4 +123,28 @@ export function inspectEpisodeQualities(tmdbId, season, episode) {
     () => primaryRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`),
     () => fetchEpisodeStreams(tmdbId, season, episode),
   );
+}
+
+export async function validateMovie4k(tmdbId) {
+  try {
+    return playable4kResult(await resolveMovie(tmdbId, "4k"));
+  } catch (error) {
+    return {
+      state: "indeterminate",
+      reason: "resolver-error",
+      error: String(error?.message || error),
+    };
+  }
+}
+
+export async function validateEpisode4k(tmdbId, season, episode) {
+  try {
+    return playable4kResult(await resolveEpisode(tmdbId, season, episode, "4k"));
+  } catch (error) {
+    return {
+      state: "indeterminate",
+      reason: "resolver-error",
+      error: String(error?.message || error),
+    };
+  }
 }

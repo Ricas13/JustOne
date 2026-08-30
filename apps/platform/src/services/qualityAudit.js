@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
-import { inspectMovieQualities, inspectEpisodeQualities } from "./qualityAvailability.js";
+import {
+  inspectMovieQualities,
+  inspectEpisodeQualities,
+  validateMovie4k,
+  validateEpisode4k,
+} from "./qualityAvailability.js";
 
 const TMDB_ID_RE = /\[tmdbid-(\d+)\]/i;
 const EPISODE_URL_RE = /\/play\/episode\/(\d+)\/(\d+)\/(\d+)/i;
@@ -241,6 +246,17 @@ function showQuarantineRoot() {
   return path.join(QUALITY_QUARANTINE, "TV-4K");
 }
 
+async function quarantineMovie(id, maps, stats, fourK) {
+  if (!fourK) return;
+  const target = path.join(movieQuarantineRoot(), path.basename(fourK));
+  if (!(await exists(target))) {
+    await moveFolder(fourK, target);
+    maps.fourK.delete(id);
+    maps.quarantine.set(id, target);
+    stats.moviesQuarantined += 1;
+  }
+}
+
 async function auditMovie(id, maps, stats) {
   const normal = maps.normal.get(id);
   let fourK = maps.fourK.get(id);
@@ -253,6 +269,16 @@ async function auditMovie(id, maps, stats) {
   stats.moviesChecked += 1;
 
   if (result.has4k) {
+    const playable = await validateMovie4k(id);
+    if (playable.state === "indeterminate") {
+      stats.moviesIndeterminate += 1;
+      return;
+    }
+    if (playable.state !== "available") {
+      await quarantineMovie(id, maps, stats, fourK);
+      return;
+    }
+
     if (!fourK && quarantined) {
       const target = path.join(config.movies4k, path.basename(quarantined));
       if (!(await exists(target))) {
@@ -284,15 +310,7 @@ async function auditMovie(id, maps, stats) {
     return;
   }
 
-  if (fourK) {
-    const target = path.join(movieQuarantineRoot(), path.basename(fourK));
-    if (!(await exists(target))) {
-      await moveFolder(fourK, target);
-      maps.fourK.delete(id);
-      maps.quarantine.set(id, target);
-      stats.moviesQuarantined += 1;
-    }
-  }
+  await quarantineMovie(id, maps, stats, fourK);
 }
 
 async function episodeRefs(showDir, limit) {
@@ -331,6 +349,17 @@ async function episodeRefs(showDir, limit) {
   return refs;
 }
 
+async function quarantineShow(id, maps, stats, fourK) {
+  if (!fourK) return;
+  const target = path.join(showQuarantineRoot(), path.basename(fourK));
+  if (!(await exists(target))) {
+    await moveFolder(fourK, target);
+    maps.fourK.delete(id);
+    maps.quarantine.set(id, target);
+    stats.showsQuarantined += 1;
+  }
+}
+
 async function auditShow(id, maps, stats) {
   const normal = maps.normal.get(id);
   let fourK = maps.fourK.get(id);
@@ -348,12 +377,31 @@ async function auditShow(id, maps, stats) {
   }
 
   const results = await Promise.all(
-    refs.map((ref) => inspectEpisodeQualities(ref.tmdbId, ref.season, ref.episode)),
+    refs.map(async (ref) => {
+      const advertised = await inspectEpisodeQualities(ref.tmdbId, ref.season, ref.episode);
+      const playable = advertised.has4k
+        ? await validateEpisode4k(ref.tmdbId, ref.season, ref.episode)
+        : null;
+      return { advertised, playable };
+    }),
   );
   stats.showsChecked += 1;
 
-  const allSamples4k = results.length === refs.length && results.every((result) => result.has4k);
-  const definitelyNotConsistent4k = results.some(canAssertNo4k);
+  const allSamples4k =
+    results.length === refs.length &&
+    results.every(
+      ({ advertised, playable }) => advertised.has4k && playable?.state === "available",
+    );
+  const definitelyNotConsistent4k = results.some(
+    ({ advertised, playable }) =>
+      canAssertNo4k(advertised) ||
+      (advertised.has4k && playable?.state === "unavailable"),
+  );
+  const hasIndeterminate = results.some(
+    ({ advertised, playable }) =>
+      (!advertised.has4k && !canAssertNo4k(advertised)) ||
+      (advertised.has4k && playable?.state === "indeterminate"),
+  );
 
   if (allSamples4k) {
     if (!fourK && quarantined) {
@@ -382,20 +430,12 @@ async function auditShow(id, maps, stats) {
     return;
   }
 
-  if (!definitelyNotConsistent4k) {
+  if (!definitelyNotConsistent4k || hasIndeterminate) {
     stats.showsIndeterminate += 1;
     return;
   }
 
-  if (fourK) {
-    const target = path.join(showQuarantineRoot(), path.basename(fourK));
-    if (!(await exists(target))) {
-      await moveFolder(fourK, target);
-      maps.fourK.delete(id);
-      maps.quarantine.set(id, target);
-      stats.showsQuarantined += 1;
-    }
-  }
+  await quarantineShow(id, maps, stats, fourK);
 }
 
 export function qualityAuditStatus() {
