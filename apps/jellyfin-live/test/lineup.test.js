@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCountryCode, organizeLineup } from "../src/lineup.js";
+import { currentChannelName, normalizeCountryCode, organizeLineup } from "../src/lineup.js";
 
 test("sports stay first and static channels are ordered USA UK Portugal then other countries", () => {
   const lineup = [
@@ -26,6 +26,23 @@ test("Portugal follows familiar terrestrial order before secondary channels", ()
     { id: "rtp1", kind: "static", name: "RTP 1 Portugal", country: "PT" },
   ]);
   assert.deepEqual(out.map((x) => x.id), ["rtp1", "rtp2", "sic", "tvi", "rtp3", "sicn"]);
+});
+
+test("Portuguese Eleven channels use current DAZN names", () => {
+  assert.equal(currentChannelName("PT", "Eleven Sports 1 Portugal"), "DAZN 1");
+  assert.equal(currentChannelName("PT", "ELEVEN 4 HD"), "DAZN 4");
+  assert.equal(currentChannelName("PT", "DAZN Eleven 6"), "DAZN 6");
+
+  const out = organizeLineup([
+    { id: "e2", kind: "static", name: "Eleven Sports 2 Portugal", country: "PT" },
+    { id: "e1", kind: "static", name: "Eleven Sports 1 Portugal", country: "PT" },
+  ]);
+  assert.deepEqual(out.map((x) => x.name), ["DAZN 1", "DAZN 2"]);
+});
+
+test("Eleven branding outside Portugal is not rewritten", () => {
+  assert.equal(currentChannelName("PL", "Eleven Sports 1"), "Eleven Sports 1");
+  assert.equal(currentChannelName("BE", "Eleven Sports 1"), "Eleven Sports 1");
 });
 
 test("UK follows familiar main-channel order", () => {

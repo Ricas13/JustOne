@@ -21,6 +21,15 @@ test("generated channel artwork is replaced by a usable guide logo", () => {
   assert.equal(result.changed, true);
 });
 
+test("stale rebrand logos are allowed to refresh", () => {
+  const stale = "https://playlist.example/eleven.png?justone-rebrand=1";
+  assert.equal(isGeneratedChannelLogo(stale), true);
+  const result = chooseChannelLogo(stale, "https://guide.example/dazn1.png");
+  assert.equal(result.logo, "https://guide.example/dazn1.png");
+  assert.equal(result.source, "epg");
+  assert.equal(result.changed, true);
+});
+
 test("guide coverage feeds matched XMLTV logos back into the tuner lineup", () => {
   const xml = `<?xml version="1.0"?><tv>
     <channel id="BBC.One.HD.uk">

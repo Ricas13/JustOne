@@ -42,6 +42,29 @@ function countryRank(code) {
   return preferred >= 0 ? preferred : 100;
 }
 
+export function currentChannelName(country, name) {
+  const cc = normalizeCountryCode(country, name);
+  const original = String(name || "").trim();
+  if (cc !== "PT") return original;
+
+  // Eleven's Portuguese linear channels were rebranded under DAZN. Keep this
+  // Portugal-only so Eleven-branded services in other countries are untouched.
+  const clean = original
+    .replace(/\b(?:portugal|pt)\b/gi, " ")
+    .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const rebrand = /^(?:(?:eleven(?:\s+sports)?)|(?:dazn\s+eleven))\s*([1-6])$/i.exec(clean);
+  return rebrand ? `DAZN ${rebrand[1]}` : original;
+}
+
+function replaceableLegacyLogo(url) {
+  const value = String(url || "").trim();
+  if (!value) return value;
+  const join = value.includes("?") ? "&" : "?";
+  return `${value}${join}justone-rebrand=1`;
+}
+
 export function organizeLineup(lineup) {
   const sports = (lineup || [])
     .filter((ch) => ch.kind === "sport-slot")
@@ -49,7 +72,20 @@ export function organizeLineup(lineup) {
 
   const statics = (lineup || [])
     .filter((ch) => ch.kind === "static")
-    .map((ch) => ({ ...ch, country: normalizeCountryCode(ch.country, ch.name) }));
+    .map((ch) => {
+      const country = normalizeCountryCode(ch.country, ch.name);
+      const name = currentChannelName(country, ch.name);
+      const rebranded = name !== String(ch.name || "").trim();
+      return {
+        ...ch,
+        country,
+        name,
+        // Preserve the old image only as a last-resort fallback. The marker
+        // tells later logo enrichment that this otherwise-real URL is stale.
+        logo: rebranded ? replaceableLegacyLogo(ch.logo) : ch.logo,
+        rebrandedFrom: rebranded ? ch.name : ch.rebrandedFrom,
+      };
+    });
 
   const countries = [...new Set(statics.map((ch) => ch.country))]
     .sort((a, b) => {
