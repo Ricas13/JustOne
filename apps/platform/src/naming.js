@@ -24,14 +24,19 @@ function pad(n, w = 2) {
 }
 
 export function movieFolder(title, year, tmdbId) {
-  const clean = cleanTitle(title);
+  // Keep the media-server ID in the folder and a clean title/year in the STRM
+  // filename, mirroring the TRaSH/Jellyfin naming pattern as closely as a
+  // resolver-only library can.
+  const clean = cleanTitleWithoutYear(title, year);
   const folder = `${clean} (${year}) [tmdbid-${tmdbId}]`;
   return { folder, file: `${clean} (${year}).strm` };
 }
 
-export function seriesFolder(title, year, { tvdbId } = {}) {
+export function seriesFolder(title, year, { tvdbId, tmdbId } = {}) {
   const base = `${cleanTitleWithoutYear(title, year)} (${year})`;
-  return tvdbId ? `${base} [tvdbid-${tvdbId}]` : base;
+  if (tvdbId) return `${base} [tvdbid-${tvdbId}]`;
+  if (tmdbId) return `${base} [tmdbid-${tmdbId}]`;
+  return base;
 }
 
 export function episodeFile(seriesTitle, year, season, episode, episodeTitle) {

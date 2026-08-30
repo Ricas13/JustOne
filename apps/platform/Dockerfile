@@ -1,6 +1,6 @@
 FROM node:20-alpine
 WORKDIR /app
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg git docker-cli docker-cli-compose
 COPY package.json ./
 RUN npm install --omit=dev
 COPY src ./src

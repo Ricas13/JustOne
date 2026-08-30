@@ -33,6 +33,11 @@ import {
 } from "./play.js";
 import { isAuthed, isPublicPath, isStreamPath, hasPlaylistKey, setAuthCookie, clearAuthCookie } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
+import {
+  startAutoUpdater,
+  triggerProviderUpdate,
+  getAutoUpdaterStatus,
+} from "./services/autoUpdater.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -448,6 +453,30 @@ app.post("/library/generate", (req, res) => {
   res.status(202).json({ ok: true, started: true, ...libraryStatus() });
 });
 
+app.get("/api/update-providers/status", (_req, res) => {
+  res.json(getAutoUpdaterStatus());
+});
+
+app.post("/api/update-providers", (_req, res) => {
+  // Docker socket access is effectively host-admin access. Never expose this
+  // mutation when the dashboard itself has no admin password configured.
+  if (!config.adminPassword) {
+    return res.status(503).json({
+      error: "ADMIN_PASSWORD must be configured before manual provider updates are allowed",
+    });
+  }
+
+  const result = triggerProviderUpdate("manual");
+  if (!result.started) {
+    return res.status(409).json({ ok: false, ...result, updater: getAutoUpdaterStatus() });
+  }
+  return res.status(202).json({
+    ok: true,
+    ...result,
+    message: "source resolver update check started; progress is written to platform logs",
+  });
+});
+
 app.use("/cinepro", proxyTo(config.cineproUrl));
 app.use("/stremio", proxyTo(STREMIO_UPSTREAM));
 app.use("/api/proxy", proxyOriginal(config.dlhdUrl));
@@ -494,4 +523,5 @@ app.listen(config.port, "0.0.0.0", () => {
   process.stdout.write(`JustOne platform on :${config.port} (redirect resolver)\n`);
   if (!config.adminPassword) process.stdout.write("WARN: ADMIN_PASSWORD is empty — dashboard is open\n");
   bootstrap().catch((e) => process.stdout.write("bootstrap " + String(e) + "\n"));
+  startAutoUpdater();
 });

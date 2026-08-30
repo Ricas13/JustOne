@@ -8,17 +8,23 @@ test("movie folder uses Jellyfin TMDb id and a clean STRM filename", () => {
   assert.equal(out.file, "Blade Runner - 2049 (2017).strm");
 });
 
-test("series folder uses the TRaSH Jellyfin TVDb id format", () => {
+test("movie title does not duplicate an existing year suffix", () => {
+  const out = movieFolder("Example Movie (2026)", 2026, 12345);
+  assert.equal(out.folder, "Example Movie (2026) [tmdbid-12345]");
+  assert.equal(out.file, "Example Movie (2026).strm");
+});
+
+test("series folder uses the TRaSH Jellyfin TVDb id format when available", () => {
   assert.equal(
     seriesFolder("The Office", 2005, { tvdbId: 73244, tmdbId: 2316 }),
     "The Office (2005) [tvdbid-73244]",
   );
 });
 
-test("series without TVDb id falls back to plain title and year", () => {
+test("series without TVDb id falls back to Jellyfin TMDb id format", () => {
   assert.equal(
     seriesFolder("Example Show", 2026, { tvdbId: null, tmdbId: 123 }),
-    "Example Show (2026)",
+    "Example Show (2026) [tmdbid-123]",
   );
 });
 
