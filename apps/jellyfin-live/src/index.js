@@ -106,6 +106,26 @@ function scheduleKey(name) {
     .trim();
 }
 
+function gmtOffsetMinutes(ms) {
+  const zone = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    timeZoneName: "shortOffset",
+    hour: "2-digit",
+  }).formatToParts(new Date(ms)).find((p) => p.type === "timeZoneName")?.value || "GMT";
+  const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/i.exec(zone);
+  if (!m) return 0;
+  const mins = Number(m[2]) * 60 + Number(m[3] || 0);
+  return m[1] === "-" ? -mins : mins;
+}
+
+function respectScheduleTimezone(html, schedule) {
+  if (!/Schedule Time UK GMT/i.test(html || "") || !schedule?.byEvent) return schedule;
+  for (const row of schedule.byEvent.values()) {
+    row.start += gmtOffsetMinutes(row.start) * 60 * 1000;
+  }
+  return schedule;
+}
+
 function keepScheduledEvents(rows, schedule) {
   return (rows || []).filter((ch) => {
     if (!/\s+[—–]\s+/.test(ch.name || "")) return true;
@@ -123,7 +143,7 @@ async function refresh(force = false) {
       loadIptvOrg(),
     ]);
     const raw = parseM3u(playlistBody);
-    const schedule = scheduleHtml ? parseScheduleMetadata(scheduleHtml) : null;
+    const schedule = scheduleHtml ? respectScheduleTimezone(scheduleHtml, parseScheduleMetadata(scheduleHtml)) : null;
     const safeRaw = keepScheduledEvents(raw, schedule);
     const lineup = buildLineup(safeRaw, { schedule, iptvOrg });
     const autoUrls = config.autoEpg ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources) : [];
