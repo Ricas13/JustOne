@@ -574,19 +574,91 @@ export function resolveEpisodeForPlayback(tmdbId, season, episode, quality = "10
   return resolveEpisode(tmdbId, season, episode, quality, { playbackCheck: true });
 }
 
+function liveFailure(status, reason, failover = null) {
+  return {
+    url: null,
+    quality: null,
+    available: [],
+    wanted: "live",
+    matched: false,
+    validated: false,
+    providerStatus: status || null,
+    liveFailure: reason,
+    failover,
+  };
+}
+
 export async function resolveLive(channelId, { force = false } = {}) {
   const key = `live:${channelId}`;
   if (!force) {
     const cached = cacheGet(key);
     if (cached) return cached;
+  } else {
+    // A forced refresh is authoritative: stale live state must not survive a
+    // failed provider refresh and then reappear on the next normal request.
+    cache.delete(key);
   }
-  const r = await fetch(`${config.dlhdUrl}/api/stream/${channelId}.m3u8`, {
-    redirect: "manual",
-    signal: AbortSignal.timeout(20000),
-  });
+
+  const endpoint = `${config.dlhdUrl}/api/stream/${channelId}.m3u8`;
+  let r;
+  try {
+    r = await fetch(endpoint, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(18000),
+    });
+  } catch {
+    cache.delete(key);
+    return liveFailure(null, "resolver-error");
+  }
+
+  const status = Number(r.status || 0);
   const loc = r.headers.get("location");
-  const url = loc && /^https?:/i.test(loc) ? loc : `${config.dlhdUrl}/api/stream/${channelId}.m3u8`;
-  const picked = { url, quality: "live", available: ["live"], wanted: "live", matched: true };
+  const failover = r.headers.get("x-dlhd-failover");
+
+  if (!(status >= 300 && status < 400 && loc)) {
+    try {
+      await r.body?.cancel();
+    } catch {
+      /* ignore cleanup errors */
+    }
+    cache.delete(key);
+    return liveFailure(
+      status,
+      status === 503 ? "sources-exhausted" : `resolver-http-${status || "unknown"}`,
+      failover,
+    );
+  }
+
+  let url = null;
+  try {
+    const resolved = new URL(loc, endpoint);
+    if (resolved.protocol === "http:" || resolved.protocol === "https:") url = resolved.href;
+  } catch {
+    /* invalid redirect */
+  }
+  try {
+    await r.body?.cancel();
+  } catch {
+    /* ignore cleanup errors */
+  }
+
+  if (!url) {
+    cache.delete(key);
+    return liveFailure(status, "invalid-redirect", failover);
+  }
+
+  const picked = {
+    url,
+    quality: "live",
+    available: ["live"],
+    wanted: "live",
+    matched: true,
+    validated: true,
+    providerStatus: status,
+    delivery: r.headers.get("x-dlhd-delivery") || null,
+    source: r.headers.get("x-dlhd-source") || null,
+    attempt: r.headers.get("x-dlhd-attempt") || null,
+  };
   cacheSet(key, picked);
   return picked;
 }
