@@ -250,6 +250,25 @@ async function cineproEpisode(tmdbId, season, episode) {
   return r.json();
 }
 
+// Health checks use a separate strict HTTP owner. We intentionally do not
+// change the existing CinePro playback calls above; pruning needs to know the
+// difference between "zero sources" and "the resolver itself returned 5xx".
+async function healthCineproRequest(pathname) {
+  const response = await fetch(`${config.cineproUrl}${pathname}`, {
+    signal: AbortSignal.timeout(config.sourceProviderTimeoutMs),
+  });
+  if (!response.ok) throw new Error(`primary resolver returned ${response.status}`);
+  return response.json();
+}
+
+function healthCineproMovie(tmdbId) {
+  return healthCineproRequest(`/v1/movies/${tmdbId}`);
+}
+
+function healthCineproEpisode(tmdbId, season, episode) {
+  return healthCineproRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`);
+}
+
 async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
   const cached = cacheGet(key);
   if (cached) return cached;
@@ -335,7 +354,7 @@ async function inspectVodAvailability({ primaryCall, secondaryCall, strict = fal
 export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
   return inspectVodAvailability({
     strict,
-    primaryCall: () => cineproMovie(tmdbId),
+    primaryCall: () => healthCineproMovie(tmdbId),
     secondaryCall: () => fetchMovieStreams(tmdbId),
   });
 }
@@ -343,7 +362,7 @@ export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
 export function checkEpisodeAvailability(tmdbId, season, episode, { strict = false } = {}) {
   return inspectVodAvailability({
     strict,
-    primaryCall: () => cineproEpisode(tmdbId, season, episode),
+    primaryCall: () => healthCineproEpisode(tmdbId, season, episode),
     secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
   });
 }
