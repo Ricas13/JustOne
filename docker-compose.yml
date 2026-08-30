@@ -1,4 +1,4 @@
-# Only the platform container is on Traefik. CinePro/dlhd/stremio stay internal
+# Platform and the Jellyfin Live organizer are on Traefik. CinePro/dlhd/stremio stay internal
 # so they cannot steal Host(resolver.vpn4u.cc) when exposedByDefault is true.
 
 services:
@@ -91,6 +91,42 @@ services:
       - "traefik.http.routers.justone-platform.priority=10000"
       - "traefik.http.routers.justone-platform.service=justone-platform"
       - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
+
+  jellyfin-live:
+    build:
+      context: ./apps/jellyfin-live
+    container_name: justone-jellyfin-live
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      JELLYFIN_LIVE_PORT: "8090"
+      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      PLATFORM_URL: http://platform:8080
+      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
+      DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
+      EPG_URL: ${EPG_URL:-}
+      JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
+      JELLYFIN_AUTO_EPG: ${JELLYFIN_AUTO_EPG:-true}
+      JELLYFIN_EPG_MAX_SOURCES: ${JELLYFIN_EPG_MAX_SOURCES:-12}
+      JELLYFIN_EPG_CACHE_MIN: ${JELLYFIN_EPG_CACHE_MIN:-60}
+      JELLYFIN_REFRESH_MIN: ${JELLYFIN_REFRESH_MIN:-10}
+      JELLYFIN_EXCLUDE_ADULT: ${JELLYFIN_EXCLUDE_ADULT:-true}
+    depends_on:
+      - platform
+    networks:
+      - justone
+      - media_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=media_net"
+      - "traefik.http.routers.justone-jellyfin.rule=Host(`resolver.vpn4u.cc`) && PathPrefix(`/jellyfin`)"
+      - "traefik.http.routers.justone-jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.justone-jellyfin.tls=true"
+      - "traefik.http.routers.justone-jellyfin.tls.certresolver=le"
+      - "traefik.http.routers.justone-jellyfin.priority=11000"
+      - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
+      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
 
   stremio-addon:
     build:
