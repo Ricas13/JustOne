@@ -108,10 +108,16 @@ export function mergeCandidates(primarySources, secondarySources, quality) {
   ].filter(Boolean);
 
   const deduped = [];
-  const seen = new Set();
+  const byUrl = new Map();
   for (const row of rows) {
-    if (seen.has(row.url)) continue;
-    seen.add(row.url);
+    const existing = byUrl.get(row.url);
+    if (existing) {
+      // If two resolvers found the same stream, retain the first resolver's
+      // ordering/identity but merge any host-specific request headers.
+      existing.requestHeaders = { ...row.requestHeaders, ...existing.requestHeaders };
+      continue;
+    }
+    byUrl.set(row.url, row);
     deduped.push(row);
   }
 
