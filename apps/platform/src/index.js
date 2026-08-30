@@ -433,7 +433,7 @@ app.post("/library/episode", async (req, res) => {
     if (!body.showTitle || !body.tmdbId || body.season == null || body.episode == null) {
       return res.status(400).json({ error: "showTitle, tmdbId, season, episode required" });
     }
-    const qs = body.qualities?.length ? qualities : config.qualities;
+    const qs = body.qualities?.length ? body.qualities : config.qualities;
     const written = [];
     for (const quality of qs) {
       written.push(await writeEpisodeStrm({ ...body, quality }));
