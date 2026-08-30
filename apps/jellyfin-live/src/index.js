@@ -5,7 +5,7 @@ import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
 import { discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
-import { buildXmlTv, guideCoverage } from "./guide.js";
+import { buildXmlTv, guideCoverage, matchGuideChannel } from "./guide.js";
 import { organizeLineup } from "./lineup.js";
 import {
   buildLineup,
@@ -171,6 +171,42 @@ function keepScheduledEvents(rows, schedule) {
   });
 }
 
+function priorityDiagnostics(lineup, docs) {
+  const out = {};
+  for (const country of ["US", "GB", "PT"]) {
+    const rows = (lineup || []).filter((ch) => ch.kind === "static" && String(ch.country || "").toUpperCase() === country);
+    const unmatched = [];
+    const matchedWithoutPrograms = [];
+    let withPrograms = 0;
+    for (const ch of rows) {
+      const hit = matchGuideChannel(ch, docs);
+      if (!hit) {
+        unmatched.push({
+          name: ch.name,
+          tvgId: ch.tvgId,
+          aliases: [...new Set((ch.candidates || []).map((x) => x?.label).filter(Boolean))].slice(0, 6),
+        });
+        continue;
+      }
+      const programs = hit.doc.programmes?.get(hit.id) || [];
+      if (programs.length) {
+        withPrograms += 1;
+      } else {
+        matchedWithoutPrograms.push({ name: ch.name, guideId: hit.id, score: hit.score });
+      }
+    }
+    out[country] = {
+      total: rows.length,
+      withPrograms,
+      unmatchedCount: unmatched.length,
+      matchedWithoutProgramsCount: matchedWithoutPrograms.length,
+      unmatched,
+      matchedWithoutPrograms,
+    };
+  }
+  return out;
+}
+
 async function refresh(force = false) {
   const stale = Date.now() - cache.at > Math.max(1, config.refreshMin) * 60 * 1000;
   if (!force && cache.lineup.length && !stale) return cache;
@@ -281,6 +317,20 @@ app.get("/jellyfin/guide.xml", async (req, res) => {
     res.send(buildXmlTv(state.lineup, state.docs));
   } catch (e) {
     res.status(502).send(String(e.message || e));
+  }
+});
+
+app.get("/jellyfin/diagnostics", async (req, res) => {
+  try {
+    const state = await refresh(req.query.refresh === "1");
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      epg: state.epgStats,
+      selectedSources: state.epgSources,
+      priority: priorityDiagnostics(state.lineup, state.docs),
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
   }
 });
 
