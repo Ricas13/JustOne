@@ -25,8 +25,8 @@ const COUNTRY_SUFFIXES = new Map([
 ]);
 
 const SPORT_GROUPS = [
-  { key: "football", label: "Sports | Football", re: /\b(?:football|soccer|premier league|champions league|europa league|uefa|fifa|la liga|bundesliga|serie a|ligue 1|mls)\b/i },
-  { key: "motorsport", label: "Sports | Motorsport", re: /\b(?:formula ?1|f1|motogp|moto ?gp|nascar|indycar|motorsport|superbike|racing|grand prix)\b/i },
+  { key: "football", label: "Sports | Football", re: /\b(?:football|soccer|premier league|champions league|europa league|conference league|uefa|fifa|la liga|bundesliga|serie a|ligue 1|mls|league one|league two|efl championship|premiership|primera divisi[oó]n|brasileir[aã]o|eredivisie|primeira liga|liga portugal|libertadores|sudamericana|fa cup|carabao)\b/i },
+  { key: "motorsport", label: "Sports | Motorsport", re: /\b(?:formula ?1|f1|motogp|moto ?gp|nascar|indycar|motorsport|superbike|racing|grand prix|gran premio)\b/i },
   { key: "combat", label: "Sports | Boxing & MMA", re: /\b(?:boxing|mma|ufc|bellator|combat|fight|wwe|aew|wrestling)\b/i },
   { key: "tennis", label: "Sports | Tennis", re: /\b(?:tennis|atp|wta|wimbledon|roland garros|australian open|us open)\b/i },
   { key: "basketball", label: "Sports | Basketball", re: /\b(?:basketball|nba|wnba|euroleague|fiba)\b/i },
@@ -36,11 +36,15 @@ const SPORT_GROUPS = [
   { key: "golf", label: "Sports | Golf", re: /\b(?:golf|pga|lpga|ryder cup|solheim)\b/i },
   { key: "rugby", label: "Sports | Rugby", re: /\b(?:rugby|six nations)\b/i },
   { key: "cricket", label: "Sports | Cricket", re: /\b(?:cricket|ipl|t20|test match)\b/i },
+  { key: "cycling", label: "Sports | Cycling", re: /\b(?:cycling|tour de france|giro d['’]italia|vuelta|stage \d+)\b/i },
+  { key: "water", label: "Sports | Water Sports", re: /\b(?:surf|world surf league|wsl tour|canoe|kayak|rowing|sailing|swimming|diving|water polo)\b/i },
+  { key: "athletics", label: "Sports | Athletics", re: /\b(?:athletics|track and field|marathon)\b/i },
 ];
 
 const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
 const LINEAR_SPORTS_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes)\b/i;
 const SOURCE_SUFFIX_RE = /\b(?:backup|event|stream|feed|ppv|main\s+event)\b/i;
+const EVENT_SIGNAL_RE = /(?:\b(?:vs\.?|v\.?|at)\b|\s:\s|\b(?:day|stage|round|session|heat|race|qualifying|practice)\s*\d+\b|\b(?:semi-?final|quarter-?final|final)\b|\bworld championships?\b|\bchampionship tour\b|\bvarious events\b|\bgrand prix\b|\bgran premio\b|\bmain event\b|\bppv\b)/i;
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 const displayNames = typeof Intl.DisplayNames === "function"
@@ -118,30 +122,43 @@ function replaceableLegacyLogo(url) {
 
 export function isLinearSportsChannel(channel) {
   const name = String(channel?.name || channel?.tvgName || "").trim();
+  if (EVENT_SIGNAL_RE.test(name)) return false;
   const head = name.split(/\s+(?:—|–|-)\s+/)[0] || name;
   return LINEAR_SPORTS_RE.test(head);
 }
 
-function sportGroup(channel) {
-  if (channel?.kind === "sport-slot") {
-    const hay = `${channel.group || ""} ${channel.name || ""}`;
-    return SPORT_GROUPS.find((group) => group.re.test(hay)) || SPORT_FALLBACK;
-  }
-
-  // A linear network remains a normal country channel even when its provider
-  // happens to put it in a group called "Football", "F1", "Sports", etc.
-  // Event rows that look like "Event title - Sky Sports ..." are still events
-  // because the network name is only a source suffix, not the event title.
-  if (isLinearSportsChannel(channel)) return null;
-
+export function isSportsEvent(channel) {
+  if (channel?.kind === "sport-slot") return true;
+  const name = String(channel?.name || channel?.tvgName || "").trim();
+  if (!name) return false;
+  if (EVENT_SIGNAL_RE.test(name)) return true;
   const group = String(channel?.group || "");
-  const direct = SPORT_GROUPS.find((item) => item.re.test(group));
-  if (direct) return direct;
+  if (/\b(?:event|ppv)\b/i.test(group)) return true;
+  return false;
+}
 
-  if (/\b(?:sports?|event|ppv)\b/i.test(group)) {
-    const hay = `${group} ${channel?.name || ""}`;
+function sportGroup(channel) {
+  const name = String(channel?.name || "");
+  const group = String(channel?.group || "");
+  const programmeText = (channel?.programmes || [])
+    .flatMap((programme) => [programme?.title, programme?.subtitle, ...(programme?.categories || [])])
+    .filter(Boolean)
+    .join(" ");
+  const hay = `${group} ${name} ${programmeText}`;
+
+  if (channel?.kind === "sport-slot") {
     return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
   }
+
+  // True linear networks remain normal country channels. Event rows can use a
+  // linear network as their source suffix, but EVENT_SIGNAL_RE distinguishes
+  // those from the actual network channel.
+  if (isLinearSportsChannel(channel)) return null;
+
+  const direct = SPORT_GROUPS.find((item) => item.re.test(hay));
+  if (isSportsEvent(channel)) return direct || SPORT_FALLBACK;
+
+  if (/\b(?:sports?|event|ppv)\b/i.test(group)) return direct || SPORT_FALLBACK;
   return null;
 }
 
@@ -163,6 +180,10 @@ function preparedChannel(channel) {
 }
 
 function compareSportChannels(a, b) {
+  const titleA = eventTitle(a);
+  const titleB = eventTitle(b);
+  const byEvent = collator.compare(titleA, titleB);
+  if (byEvent !== 0) return byEvent;
   return collator.compare(String(a?.name || ""), String(b?.name || ""));
 }
 
