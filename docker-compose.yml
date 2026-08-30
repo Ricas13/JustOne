@@ -1,9 +1,13 @@
+name: ${COMPOSE_PROJECT_NAME:-justone}
+
 # Platform and the Jellyfin Live organizer are on Traefik. Source resolvers, dlhd and stremio stay internal
 # so they cannot steal Host(resolver.vpn4u.cc) when exposedByDefault is true.
-
 services:
   cinepro:
-    image: ghcr.io/cinepro-org/core:latest
+    build:
+      context: ./providers/cinepro
+      dockerfile: Dockerfile
+    image: justone-cinepro:local
     container_name: justone-cinepro
     restart: unless-stopped
     environment:
@@ -21,8 +25,7 @@ services:
     build:
       context: .
       dockerfile: docker/webstreamr-mbg/Dockerfile
-      args:
-        WEBSTREAMR_MBG_REF: ${WEBSTREAMR_MBG_REF:-v0.73.2}
+    image: justone-webstreamr-mbg:local
     container_name: justone-stream-provider
     restart: unless-stopped
     environment:
@@ -74,10 +77,10 @@ services:
       DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
       STREMIO_UPSTREAM: http://stremio-addon:7000
-      PATH_MOVIES_1080: ${PATH_MOVIES_1080:-/mnt/resolver-files/Movies/Movies}
-      PATH_MOVIES_4K: ${PATH_MOVIES_4K:-/mnt/resolver-files/Movies/Movies-4K}
-      PATH_TV_1080: ${PATH_TV_1080:-/mnt/resolver-files/TV/TV}
-      PATH_TV_4K: ${PATH_TV_4K:-/mnt/resolver-files/TV/TV-4K}
+      PATH_MOVIES_1080: ${PATH_MOVIES_1080:-/mnt/library-resolver/Movies/Movies}
+      PATH_MOVIES_4K: ${PATH_MOVIES_4K:-/mnt/library-resolver/Movies/Movies-4K}
+      PATH_TV_1080: ${PATH_TV_1080:-/mnt/library-resolver/TV/TV}
+      PATH_TV_4K: ${PATH_TV_4K:-/mnt/library-resolver/TV/TV-4K}
       PATH_LIVE: ${PATH_LIVE:-/mnt/resolver-files/Live}
       GENERATE_ON_START: ${GENERATE_ON_START:-true}
       MOVIE_PAGES: ${MOVIE_PAGES:-40}
@@ -96,8 +99,32 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
+      AUTO_UPDATE_ENABLED: ${AUTO_UPDATE_ENABLED:-true}
+      AUTO_UPDATE_INTERVAL_HOURS: ${AUTO_UPDATE_INTERVAL_HOURS:-24}
+      AUTO_UPDATE_STARTUP_DELAY_MS: ${AUTO_UPDATE_STARTUP_DELAY_MS:-15000}
+      AUTO_UPDATE_GIT_TIMEOUT_MS: ${AUTO_UPDATE_GIT_TIMEOUT_MS:-30000}
+      AUTO_UPDATE_BUILD_TIMEOUT_MS: ${AUTO_UPDATE_BUILD_TIMEOUT_MS:-1200000}
+      AUTO_UPDATE_UP_TIMEOUT_MS: ${AUTO_UPDATE_UP_TIMEOUT_MS:-120000}
+      AUTO_UPDATE_PROJECT_DIR: /workspace
+      AUTO_UPDATE_COMPOSE_FILE: /workspace/docker-compose.yml
+      AUTO_UPDATE_COMPOSE_ENV_FILE: /workspace/.env
+      AUTO_UPDATE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-justone}
+      AUTO_UPDATE_STATE_DIR: /var/lib/justone-updater
+      CINEPRO_SOURCE_DIR: /workspace/providers/cinepro
+      WEBSTREAMR_MBG_SOURCE_DIR: /workspace/providers/webstreamr-mbg
+      CINEPRO_COMPOSE_SERVICE: cinepro
+      WEBSTREAMR_MBG_COMPOSE_SERVICE: webstreamr-mbg
     volumes:
+      # STRM libraries are separated from the Live TV/runtime files.
+      - ${LIBRARY_RESOLVER_ROOT:-/mnt/library-resolver}:/mnt/library-resolver
       - ${RESOLVER_FILES:-/mnt/resolver-files}:/mnt/resolver-files
+      # The updater needs the Compose project definition plus writable provider checkouts.
+      - ./:/workspace:ro
+      - ./providers/cinepro:/workspace/providers/cinepro
+      - ./providers/webstreamr-mbg:/workspace/providers/webstreamr-mbg
+      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - provider_update_state:/var/lib/justone-updater
     ports:
       - "127.0.0.1:18080:8080"
     depends_on:
@@ -172,6 +199,7 @@ services:
 
 volumes:
   webstreamr_mbg_cache:
+  provider_update_state:
 
 networks:
   justone:
