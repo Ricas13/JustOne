@@ -114,13 +114,10 @@ async function live() {
       <h2>Extra M3U sources</h2>
       <p class="muted">Add a playlist URL. Group title becomes the source name.</p>
       <form id="add">
-        <input name="name" list="hints" placeholder="Name (e.g. VAVOO)" required />
+        <input name="name" placeholder="Name" required />
         <input name="url" type="url" placeholder="https://…/playlist.m3u8" required />
         <button type="submit">Add source</button>
       </form>
-      <datalist id="hints">
-        <option value="Toonami Aftermath"></option>
-      </datalist>
       <table>${rows || "<tr><td class=muted>No extra sources yet.</td></tr>"}</table>
     </div>
     <pre id="preview">Loading…</pre>`;
