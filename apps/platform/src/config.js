@@ -14,8 +14,8 @@ export const config = {
   sourceResolveTimeoutMs: Math.max(1000, Number(process.env.SOURCE_RESOLVE_TIMEOUT_MS || 15000)),
   sourceProbeTimeoutMs: Math.max(500, Number(process.env.SOURCE_PROBE_TIMEOUT_MS || 2500)),
   dlhdUrl: (process.env.DLHD_URL || "http://dlhd:3000").replace(/\/$/, ""),
-  dlstreams247: process.env.DLSTREAMS_247 || "https://dlstreams.st/24-7-channels.php",
-  dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlstreams.st/",
+  dlstreams247: process.env.DLSTREAMS_247 || "https://dlhd.st/24-7-channels.php",
+  dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlhd.st/",
   libraryResolverRoot: process.env.LIBRARY_RESOLVER_ROOT || "/mnt/library-resolver",
   movies1080: process.env.PATH_MOVIES_1080 || "/mnt/library-resolver/Movies/Movies",
   movies4k: process.env.PATH_MOVIES_4K || "/mnt/library-resolver/Movies/Movies-4K",
@@ -53,6 +53,8 @@ export const config = {
 
   // Availability pruning is deliberately conservative. Both source resolvers
   // must answer successfully before a missing-source strike can be recorded.
+  // The default sweep is slightly larger than one day's growth so the new-item
+  // queue drains and older catalog entries still receive round-robin checks.
   catalogHealthEnabled: String(process.env.CATALOG_HEALTH_ENABLED || "true") !== "false",
   catalogHealthIntervalHours: Math.max(
     1,
@@ -60,11 +62,11 @@ export const config = {
   ),
   catalogHealthMoviesPerRun: Math.max(
     0,
-    Number(process.env.CATALOG_HEALTH_MOVIES_PER_RUN || 1000),
+    Number(process.env.CATALOG_HEALTH_MOVIES_PER_RUN || 2500),
   ),
   catalogHealthShowsPerRun: Math.max(
     0,
-    Number(process.env.CATALOG_HEALTH_SHOWS_PER_RUN || 100),
+    Number(process.env.CATALOG_HEALTH_SHOWS_PER_RUN || 150),
   ),
   catalogHealthRetryFailuresPerRun: Math.max(
     0,
@@ -97,7 +99,7 @@ export const config = {
   catalogHealthStrict: String(process.env.CATALOG_HEALTH_STRICT || "false") === "true",
   catalogHealthShowSamples: Math.max(
     1,
-    Math.min(5, Number(process.env.CATALOG_HEALTH_SHOW_SAMPLES || 2)),
+    Math.min(5, Number(process.env.CATALOG_HEALTH_SHOW_SAMPLES || 3)),
   ),
 
   strmIoDelayMs: Math.max(0, Number(process.env.STRM_IO_DELAY_MS || 20)),
