@@ -58,6 +58,13 @@ export function currentChannelName(country, name) {
   return rebrand ? `DAZN ${rebrand[1]}` : original;
 }
 
+function replaceableLegacyLogo(url) {
+  const value = String(url || "").trim();
+  if (!value) return value;
+  const join = value.includes("?") ? "&" : "?";
+  return `${value}${join}justone-rebrand=1`;
+}
+
 export function organizeLineup(lineup) {
   const sports = (lineup || [])
     .filter((ch) => ch.kind === "sport-slot")
@@ -73,9 +80,9 @@ export function organizeLineup(lineup) {
         ...ch,
         country,
         name,
-        // A real-looking source logo may still be the obsolete Eleven artwork.
-        // Let the later EPG/IPTV identity pass supply the current DAZN badge.
-        logo: rebranded ? "" : ch.logo,
+        // Preserve the old image only as a last-resort fallback. The marker
+        // tells later logo enrichment that this otherwise-real URL is stale.
+        logo: rebranded ? replaceableLegacyLogo(ch.logo) : ch.logo,
         rebrandedFrom: rebranded ? ch.name : ch.rebrandedFrom,
       };
     });
