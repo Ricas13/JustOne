@@ -117,7 +117,9 @@ function replaceableLegacyLogo(url) {
 }
 
 export function isLinearSportsChannel(channel) {
-  return LINEAR_SPORTS_RE.test(`${channel?.name || ""} ${channel?.tvgName || ""}`);
+  const name = String(channel?.name || channel?.tvgName || "").trim();
+  const head = name.split(/\s+(?:—|–|-)\s+/)[0] || name;
+  return LINEAR_SPORTS_RE.test(head);
 }
 
 function sportGroup(channel) {
@@ -126,12 +128,17 @@ function sportGroup(channel) {
     return SPORT_GROUPS.find((group) => group.re.test(hay)) || SPORT_FALLBACK;
   }
 
+  // A linear network remains a normal country channel even when its provider
+  // happens to put it in a group called "Football", "F1", "Sports", etc.
+  // Event rows that look like "Event title - Sky Sports ..." are still events
+  // because the network name is only a source suffix, not the event title.
+  if (isLinearSportsChannel(channel)) return null;
+
   const group = String(channel?.group || "");
   const direct = SPORT_GROUPS.find((item) => item.re.test(group));
   if (direct) return direct;
 
   if (/\b(?:sports?|event|ppv)\b/i.test(group)) {
-    if (isLinearSportsChannel(channel)) return null;
     const hay = `${group} ${channel?.name || ""}`;
     return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
   }
