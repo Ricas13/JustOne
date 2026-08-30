@@ -114,8 +114,9 @@ async function scanRoot(root, kind) {
 }
 
 function nextIds(ids, lastId, limit) {
-  if (!limit || !ids.length) return [];
-  const sorted = [...ids].sort((a, b) => Number(a) - Number(b));
+  const values = [...ids];
+  if (!limit || !values.length) return [];
+  const sorted = values.sort((a, b) => Number(a) - Number(b));
   let start = sorted.findIndex((id) => Number(id) > Number(lastId || 0));
   if (start < 0) start = 0;
   const out = [];
@@ -243,7 +244,7 @@ function showQuarantineRoot() {
 async function auditMovie(id, maps, stats) {
   const normal = maps.normal.get(id);
   let fourK = maps.fourK.get(id);
-  let quarantined = maps.quarantine.get(id);
+  const quarantined = maps.quarantine.get(id);
 
   if (normal) stats.namesMigrated += await migrateMovieFilename(normal, id);
   if (fourK) stats.namesMigrated += await migrateMovieFilename(fourK, id);
@@ -308,9 +309,17 @@ async function episodeRefs(showDir, limit) {
     }
   }
   if (!files.length) return [];
-  const indexes = new Set([0, Math.floor((files.length - 1) / 2), files.length - 1]);
+
+  const indexes = new Set();
+  if (limit === 1 || files.length === 1) indexes.add(0);
+  else {
+    for (let i = 0; i < limit; i += 1) {
+      indexes.add(Math.round((i * (files.length - 1)) / (limit - 1)));
+    }
+  }
+
   const refs = [];
-  for (const index of [...indexes].slice(0, limit)) {
+  for (const index of indexes) {
     try {
       const body = await fs.readFile(files[index], "utf8");
       const match = body.match(EPISODE_URL_RE);
@@ -325,7 +334,7 @@ async function episodeRefs(showDir, limit) {
 async function auditShow(id, maps, stats) {
   const normal = maps.normal.get(id);
   let fourK = maps.fourK.get(id);
-  let quarantined = maps.quarantine.get(id);
+  const quarantined = maps.quarantine.get(id);
   const sampleRoot = normal || fourK || quarantined;
   if (!sampleRoot) return;
 
