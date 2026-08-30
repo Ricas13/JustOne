@@ -42,6 +42,22 @@ function countryRank(code) {
   return preferred >= 0 ? preferred : 100;
 }
 
+export function currentChannelName(country, name) {
+  const cc = normalizeCountryCode(country, name);
+  const original = String(name || "").trim();
+  if (cc !== "PT") return original;
+
+  // Eleven's Portuguese linear channels were rebranded under DAZN. Keep this
+  // Portugal-only so Eleven-branded services in other countries are untouched.
+  const clean = original
+    .replace(/\b(?:portugal|pt)\b/gi, " ")
+    .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const rebrand = /^(?:(?:eleven(?:\s+sports)?)|(?:dazn\s+eleven))\s*([1-6])$/i.exec(clean);
+  return rebrand ? `DAZN ${rebrand[1]}` : original;
+}
+
 export function organizeLineup(lineup) {
   const sports = (lineup || [])
     .filter((ch) => ch.kind === "sport-slot")
@@ -49,7 +65,10 @@ export function organizeLineup(lineup) {
 
   const statics = (lineup || [])
     .filter((ch) => ch.kind === "static")
-    .map((ch) => ({ ...ch, country: normalizeCountryCode(ch.country, ch.name) }));
+    .map((ch) => {
+      const country = normalizeCountryCode(ch.country, ch.name);
+      return { ...ch, country, name: currentChannelName(country, ch.name) };
+    });
 
   const countries = [...new Set(statics.map((ch) => ch.country))]
     .sort((a, b) => {
