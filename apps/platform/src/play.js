@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
@@ -6,6 +7,16 @@ import { sourceHeadersFor } from "./services/sourceHeaders.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 const titleCache = new Map();
+const hlsTargets = new Map();
+const HLS_TOKEN_TTL_MS = Math.max(
+  60 * 1000,
+  Number(process.env.HLS_PROXY_TOKEN_TTL_MS || 12 * 60 * 60 * 1000),
+);
+const HLS_TARGET_MAX = Math.max(1000, Number(process.env.HLS_PROXY_TARGET_MAX || 50000));
+const HLS_MANIFEST_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.HLS_PROXY_MANIFEST_MAX_BYTES || 4 * 1024 * 1024),
+);
 
 function log(...a) {
   process.stdout.write(a.map(String).join(" ") + "\n");
@@ -184,17 +195,19 @@ export async function episodeDownloadFilename(tmdbId, season, episode, ext = "mp
   const title = s?.name || `tmdbid-${tmdbId}`;
   const year = String(s?.first_air_date || "").slice(0, 4) || "0000";
   const epMeta = await tmdbGet(`/tv/${tmdbId}/season/${season}/episode/${episode}`);
-  const file = episodeFile(title, year, season, episode, epMeta?.name);
+  const file = episodeFile(title, year, season, episode, epMeta?.name, tmdbId);
   return downloadName(file, ext);
 }
 
-function hopHeaders(req, host, upstreamHeaders = {}) {
+function hopHeaders(req, host, upstreamHeaders = {}, { stripRange = false } = {}) {
   const headers = { ...req.headers, host };
   delete headers.connection;
   delete headers["content-length"];
   delete headers["accept-encoding"];
-  // Preserve the existing proxy defaults, then allow a selected stream to
-  // override them only when its resolver explicitly requires custom headers.
+  if (stripRange) {
+    delete headers.range;
+    delete headers.Range;
+  }
   headers["user-agent"] = UA;
   headers.accept = "*/*";
   for (const [key, value] of Object.entries(upstreamHeaders || {})) {
@@ -233,11 +246,162 @@ function sanitizeOut(headers, filename, download) {
   return out;
 }
 
+function pruneHlsTargets(now = Date.now()) {
+  for (const [token, target] of hlsTargets) {
+    if (target.exp <= now) hlsTargets.delete(token);
+  }
+  while (hlsTargets.size > HLS_TARGET_MAX) {
+    const oldest = hlsTargets.keys().next().value;
+    if (!oldest) break;
+    hlsTargets.delete(oldest);
+  }
+}
+
+function registerHlsTarget(url, headers = {}, hls = false) {
+  pruneHlsTargets();
+  const token = crypto.randomBytes(18).toString("base64url");
+  hlsTargets.set(token, {
+    url,
+    headers: { ...(headers || {}) },
+    hls: Boolean(hls),
+    exp: Date.now() + HLS_TOKEN_TTL_MS,
+  });
+  return token;
+}
+
+export function hlsTargetFor(token) {
+  const target = hlsTargets.get(String(token || ""));
+  if (!target) return null;
+  if (target.exp <= Date.now()) {
+    hlsTargets.delete(String(token));
+    return null;
+  }
+  return target;
+}
+
+function hlsProxyUrl(url, headers, hls = false) {
+  const token = registerHlsTarget(url, headers, hls);
+  return withKey(`${config.publicUrl}/play/hls/${encodeURIComponent(token)}`);
+}
+
+function resolveHlsUrl(value, baseUrl) {
+  const raw = String(value || "").trim();
+  if (!raw || /^(?:data|skd|urn):/i.test(raw)) return null;
+  try {
+    const resolved = new URL(raw, baseUrl);
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+    return resolved.href;
+  } catch {
+    return null;
+  }
+}
+
+export function rewriteHlsManifest(text, baseUrl, makeProxyUrl) {
+  const lines = String(text || "").split(/\r?\n/);
+  const out = [];
+  let nextLineIsPlaylist = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      out.push(line);
+      continue;
+    }
+
+    if (!trimmed.startsWith("#")) {
+      const resolved = resolveHlsUrl(trimmed, baseUrl);
+      if (!resolved) {
+        out.push(line);
+      } else {
+        const hls = nextLineIsPlaylist || /\.m3u8(?:$|[?#])/i.test(resolved);
+        out.push(makeProxyUrl(resolved, hls));
+      }
+      nextLineIsPlaylist = false;
+      continue;
+    }
+
+    const uriIsPlaylist = /^#EXT-X-(?:MEDIA|I-FRAME-STREAM-INF|RENDITION-REPORT)/i.test(trimmed);
+    const rewritten = line.replace(
+      /URI=(?:"([^"]*)"|'([^']*)'|([^,\s]*))/gi,
+      (match, dq, sq, bare) => {
+        const value = dq ?? sq ?? bare ?? "";
+        const resolved = resolveHlsUrl(value, baseUrl);
+        if (!resolved) return match;
+        const hls = uriIsPlaylist || /\.m3u8(?:$|[?#])/i.test(resolved);
+        return `URI="${makeProxyUrl(resolved, hls)}"`;
+      },
+    );
+    out.push(rewritten);
+    nextLineIsPlaylist = /^#EXT-X-STREAM-INF/i.test(trimmed);
+  }
+
+  return out.join("\n");
+}
+
+function isHlsResponse(headers, dest, forceHls) {
+  if (forceHls) return true;
+  const ct = String(headers?.["content-type"] || headers?.["Content-Type"] || "").toLowerCase();
+  return ct.includes("mpegurl") || ct.includes("m3u8") || /\.m3u8$/i.test(dest.pathname);
+}
+
+function proxyHlsManifest(req, res, up, dest, out, effectiveHeaders) {
+  const chunks = [];
+  let bytes = 0;
+  let failed = false;
+
+  up.on("data", (chunk) => {
+    if (failed) return;
+    bytes += chunk.length;
+    if (bytes > HLS_MANIFEST_MAX_BYTES) {
+      failed = true;
+      up.destroy(new Error("hls manifest too large"));
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  up.on("end", () => {
+    if (failed || res.headersSent) return;
+    const body = Buffer.concat(chunks).toString("utf8");
+    const rewritten = rewriteHlsManifest(body, dest.href, (url, hls) =>
+      hlsProxyUrl(url, effectiveHeaders, hls),
+    );
+    delete out["content-length"];
+    delete out["content-range"];
+    delete out["accept-ranges"];
+    delete out["transfer-encoding"];
+    out["content-type"] = "application/vnd.apple.mpegurl";
+    out["cache-control"] = "no-store";
+    res.writeHead(up.statusCode && up.statusCode < 400 ? 200 : up.statusCode || 502, out);
+    res.end(rewritten);
+  });
+
+  up.on("error", (error) => {
+    log("hls proxy", String(error?.message || error));
+    if (!res.headersSent) res.status(502).json({ error: "hls stream failed" });
+    else res.destroy();
+  });
+}
+
+export function proxyHlsToken(req, res, token) {
+  const target = hlsTargetFor(token);
+  if (!target) {
+    res.status(410).json({ error: "hls token expired" });
+    return;
+  }
+  proxyStream(req, res, target.url, {
+    filename: null,
+    download: false,
+    upstreamHeaders: target.headers,
+    hls: target.hls,
+  });
+}
+
 export function proxyStream(
   req,
   res,
   targetUrl,
-  { filename, download = false, hops = 0, upstreamHeaders = {} } = {},
+  { filename, download = false, hops = 0, upstreamHeaders = {}, hls = false } = {},
 ) {
   let dest;
   try {
@@ -249,9 +413,14 @@ export function proxyStream(
   const rememberedHeaders = sourceHeadersFor(targetUrl);
   const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
   const lib = dest.protocol === "https:" ? https : http;
+  const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
   const p = lib.request(
     dest,
-    { method: "GET", headers: hopHeaders(req, dest.host, effectiveHeaders), timeout: 120000 },
+    {
+      method: "GET",
+      headers: hopHeaders(req, dest.host, effectiveHeaders, { stripRange: likelyHls }),
+      timeout: 120000,
+    },
     (up) => {
       const loc = up.headers.location;
       if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
@@ -262,17 +431,19 @@ export function proxyStream(
           download,
           hops: hops + 1,
           upstreamHeaders: effectiveHeaders,
+          hls,
         });
       }
       const out = fixMediaType(sanitizeOut(up.headers, filename, download), dest.href);
-      if (String(dest.pathname).includes(".m3u8") && !out["content-type"]) {
-        out["content-type"] = "application/vnd.apple.mpegurl";
-      }
       if (req.method === "HEAD") {
         delete out["content-length"];
         res.writeHead(up.statusCode && up.statusCode < 400 ? up.statusCode : 200, out);
         up.resume();
         res.end();
+        return;
+      }
+      if (isHlsResponse(up.headers, dest, hls)) {
+        proxyHlsManifest(req, res, up, dest, out, effectiveHeaders);
         return;
       }
       res.writeHead(up.statusCode || 502, out);
