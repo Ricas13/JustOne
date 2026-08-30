@@ -1,3 +1,4 @@
+import { chooseChannelLogo } from "./channel-logos.js";
 import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
@@ -301,6 +302,9 @@ export function guideCoverage(lineup, docs) {
   let staticChannels = 0;
   let matchedChannels = 0;
   let channelsWithPrograms = 0;
+  let guideLogosApplied = 0;
+  let generatedLogosRemaining = 0;
+  let existingLogosKept = 0;
   const countryBuckets = new Map();
 
   for (const ch of lineup || []) {
@@ -311,6 +315,17 @@ export function guideCoverage(lineup, docs) {
     bucket.staticChannels += 1;
 
     const hit = matchGuideChannel(ch, docs);
+    const logoChoice = chooseChannelLogo(ch.logo, hit?.meta?.icon);
+    if (logoChoice.changed) {
+      ch.logo = logoChoice.logo;
+      ch.logoSource = logoChoice.source;
+      guideLogosApplied += 1;
+    } else if (logoChoice.source === "generated") {
+      generatedLogosRemaining += 1;
+    } else {
+      existingLogosKept += 1;
+    }
+
     if (hit) {
       matchedChannels += 1;
       bucket.matchedChannels += 1;
@@ -334,6 +349,9 @@ export function guideCoverage(lineup, docs) {
     matchedChannels,
     channelsWithPrograms,
     coveragePercent: staticChannels ? Math.round((channelsWithPrograms / staticChannels) * 1000) / 10 : 0,
+    guideLogosApplied,
+    generatedLogosRemaining,
+    existingLogosKept,
     byCountry,
   };
 }
