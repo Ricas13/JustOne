@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import express from "express";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
+import { discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
 import {
   artworkPng,
@@ -15,6 +17,7 @@ import {
 } from "./organizer.js";
 
 const app = express();
+const EPG_CONCURRENCY = Math.max(1, Math.min(4, Number(process.env.JELLYFIN_EPG_CONCURRENCY || 2)));
 let cache = {
   at: 0,
   rawCount: 0,
@@ -22,6 +25,7 @@ let cache = {
   byId: new Map(),
   docs: [],
   epgSources: [],
+  epgStats: {},
   error: null,
 };
 let iptvCache = { at: 0, channels: [], logos: [], guides: [] };
@@ -57,7 +61,11 @@ async function getText(url, timeout = 30000) {
     signal: AbortSignal.timeout(timeout),
   });
   if (!r.ok) throw new Error(`${url} ${r.status}`);
-  return r.text();
+  let body = Buffer.from(await r.arrayBuffer());
+  if (body.length >= 2 && body[0] === 0x1f && body[1] === 0x8b) {
+    body = zlib.gunzipSync(body);
+  }
+  return body.toString("utf8");
 }
 
 async function getJson(url, timeout = 30000) {
@@ -69,15 +77,26 @@ async function getJson(url, timeout = 30000) {
   return r.json();
 }
 
+async function safeJson(label, url) {
+  try {
+    const value = await getJson(url, 45000);
+    return Array.isArray(value) ? value : [];
+  } catch (e) {
+    log("iptv-org fail", label, String(e.message || e));
+    return [];
+  }
+}
+
 async function loadIptvOrg() {
   if (!config.autoEpg) return { channels: [], logos: [], guides: [] };
   if (iptvCache.channels.length && Date.now() - iptvCache.at < 12 * 60 * 60 * 1000) return iptvCache;
   const [channels, logos, guides] = await Promise.all([
-    getJson("https://iptv-org.github.io/api/channels.json").catch(() => []),
-    getJson("https://iptv-org.github.io/api/logos.json").catch(() => []),
-    getJson("https://iptv-org.github.io/api/guides.json").catch(() => []),
+    safeJson("channels", "https://iptv-org.github.io/api/channels.json"),
+    safeJson("logos", "https://iptv-org.github.io/api/logos.json"),
+    safeJson("guides", "https://iptv-org.github.io/api/guides.json"),
   ]);
   iptvCache = { at: Date.now(), channels, logos, guides };
+  log("iptv-org", `channels=${channels.length}`, `logos=${logos.length}`, `guides=${guides.length}`);
   return iptvCache;
 }
 
@@ -85,15 +104,31 @@ async function loadXmlGuide(url) {
   const hit = xmlCache.get(url);
   if (hit && Date.now() - hit.at < Math.max(5, config.epgCacheMin) * 60 * 1000) return hit.doc;
   try {
-    const body = await getText(url, 45000);
+    const body = await getText(url, 90000);
     if (!/<tv[\s>]/i.test(body)) throw new Error("not xmltv");
     const doc = parseXmlTv(body);
+    if (!doc.channels.size) throw new Error("xmltv contained no channels");
     xmlCache.set(url, { at: Date.now(), doc });
+    log("xmltv loaded", `channels=${doc.channels.size}`, url);
     return doc;
   } catch (e) {
     log("xmltv fail", url, String(e.message || e));
     return hit?.doc || null;
   }
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length || 1) }, worker));
+  return out;
 }
 
 function scheduleKey(name) {
@@ -148,9 +183,33 @@ async function refresh(force = false) {
     const schedule = scheduleHtml ? respectScheduleTimezone(scheduleHtml, parseScheduleMetadata(scheduleHtml)) : null;
     const safeRaw = keepScheduledEvents(filtered, schedule);
     const lineup = buildLineup(safeRaw, { schedule, iptvOrg });
-    const autoUrls = config.autoEpg ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources) : [];
-    const epgSources = [...new Set([...config.epgSourceUrls, ...autoUrls])];
-    const docs = (await Promise.all(epgSources.map(loadXmlGuide))).filter(Boolean);
+
+    const manualUrls = [...new Set(config.epgSourceUrls)];
+    const iptvUrls = config.autoEpg
+      ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources)
+      : [];
+    const baseSources = [...new Set([...manualUrls, ...iptvUrls])];
+    const fallbackBudget = Math.max(0, config.epgMaxSources - baseSources.length);
+    const fallbackUrls = config.autoEpg && fallbackBudget
+      ? await discoverEpgShareUrls(lineup, fallbackBudget).catch((e) => {
+          log("epg fallback fail", String(e.message || e));
+          return [];
+        })
+      : [];
+    const epgSources = [...new Set([...baseSources, ...fallbackUrls])];
+    const docs = (await mapLimit(epgSources, EPG_CONCURRENCY, loadXmlGuide)).filter(Boolean);
+    const matchedChannels = lineup.filter((x) => x.kind === "static" && x.iptvOrgId).length;
+    const epgStats = {
+      iptvChannels: iptvOrg.channels.length,
+      iptvGuideRows: iptvOrg.guides.length,
+      matchedChannels,
+      manualSources: manualUrls.length,
+      iptvSources: iptvUrls.length,
+      fallbackSources: fallbackUrls.length,
+      selectedSources: epgSources.length,
+      loadedSources: docs.length,
+    };
+
     cache = {
       at: Date.now(),
       rawCount: raw.length,
@@ -158,9 +217,19 @@ async function refresh(force = false) {
       byId: new Map(lineup.map((x) => [x.id, x])),
       docs,
       epgSources,
+      epgStats,
       error: null,
     };
-    log("refresh", `raw=${raw.length}`, `filtered=${filtered.length}`, `jellyfin=${lineup.length}`, `epg=${docs.length}`);
+    log(
+      "refresh",
+      `raw=${raw.length}`,
+      `filtered=${filtered.length}`,
+      `jellyfin=${lineup.length}`,
+      `epg=${docs.length}/${epgSources.length}`,
+      `matched=${matchedChannels}`,
+      `iptv-guides=${iptvOrg.guides.length}`,
+      `fallback=${fallbackUrls.length}`,
+    );
   } catch (e) {
     cache.error = String(e.message || e);
     log("refresh fail", cache.error);
@@ -245,7 +314,9 @@ app.get("/jellyfin/links", async (_req, res) => {
     guide: withKey(`${config.publicUrl}/jellyfin/guide.xml`),
     channels: state.lineup.length,
     rawChannels: state.rawCount,
-    epgSources: state.epgSources.length,
+    epgSources: state.docs.length,
+    epgSelectedSources: state.epgSources.length,
+    epgStats: state.epgStats,
   });
 });
 
@@ -256,7 +327,9 @@ app.get("/jellyfin/health", (_req, res) => {
     lastRefresh: cache.at ? new Date(cache.at).toISOString() : null,
     rawChannels: cache.rawCount,
     channels: cache.lineup.length,
-    epgSources: cache.epgSources.length,
+    epgSources: cache.docs.length,
+    epgSelectedSources: cache.epgSources.length,
+    epgStats: cache.epgStats,
     error: cache.error,
   });
 });
