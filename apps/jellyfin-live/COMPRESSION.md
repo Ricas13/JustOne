@@ -1,0 +1,1 @@
+Jellyfin metadata compression is applied at the Traefik edge via the `justone-jellyfin-compress` middleware. The application continues to serve normal M3U/XML responses; clients that advertise a supported `Accept-Encoding` receive a compressed HTTP response without any URL or XMLTV format change.
