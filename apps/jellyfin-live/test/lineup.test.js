@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { currentChannelName, normalizeCountryCode, organizeLineup } from "../src/lineup.js";
+import {
+  currentChannelName,
+  isLinearSportsChannel,
+  normalizeCountryCode,
+  organizeLineup,
+} from "../src/lineup.js";
 
 test("sports stay first and TV is ordered USA UK Portugal then other countries", () => {
   const lineup = [
@@ -22,18 +27,80 @@ test("sports stay first and TV is ordered USA UK Portugal then other countries",
   assert.deepEqual(out.map((x) => x.number), [1001, 20001, 21001, 22001, 23001]);
 });
 
+test("sports event groups get generated logos and programme artwork", () => {
+  const [event] = organizeLineup([
+    {
+      id: "football-01",
+      kind: "static",
+      name: "Chelsea vs Luton Town - Sky Sports Football UK",
+      country: "GB",
+      group: "Football",
+      logo: "https://provider.example/logo.png",
+      url: "https://resolver.example/play/live/501.ts?key=secret&token=x%2Fy",
+    },
+  ]);
+
+  assert.equal(event.kind, "sport-slot");
+  assert.equal(event.eventStyle, true);
+  assert.equal(event.group, "Sports | Football");
+  assert.match(event.logo, /\/jellyfin\/artwork\/channel\/football-01\.png/);
+  assert.equal(event.logoSource, "generated-sports-event");
+  assert.equal(event.programmes.length, 1);
+  assert.equal(event.programmes[0].title, "Chelsea vs Luton Town");
+  assert.match(event.programmes[0].icon, /\/jellyfin\/artwork\/program\/football-01\.event\.0\.png/);
+  assert.deepEqual(event.programmes[0].categories.slice(0, 2), ["Sports", "Football"]);
+  assert.equal(event.url, "https://resolver.example/play/live/501.ts?key=secret&token=x%2Fy");
+});
+
+test("existing scheduled sports programmes keep timing but receive consistent generated artwork", () => {
+  const start = Date.UTC(2026, 7, 30, 18, 0);
+  const end = Date.UTC(2026, 7, 30, 20, 0);
+  const [event] = organizeLineup([
+    {
+      id: "tennis-01",
+      kind: "sport-slot",
+      name: "ATP - Singles",
+      group: "Tennis",
+      programmes: [{ start, end, title: "Aleksandar Vukic vs Rei Sakamoto", categories: ["Tennis"] }],
+      url: "https://resolver.example/play/live/777.ts",
+    },
+  ]);
+
+  assert.equal(event.programmes[0].start, start);
+  assert.equal(event.programmes[0].end, end);
+  assert.equal(event.programmes[0].title, "Aleksandar Vukic vs Rei Sakamoto");
+  assert.match(event.programmes[0].icon, /\/jellyfin\/artwork\/program\/tennis-01\.event\.0\.png/);
+});
+
 test("sports event groups are separated without pulling linear sports networks out of countries", () => {
   const out = organizeLineup([
     { id: "f1", kind: "static", name: "Formula 1 - Sky Sports F1 UK", country: "GB", group: "Formula 1", url: "https://example/f1" },
     { id: "ufc", kind: "static", name: "UFC 999 - Main Event", country: "US", group: "MMA", url: "https://example/ufc" },
     { id: "espn", kind: "static", name: "ESPN USA", country: "US", group: "USA", url: "https://example/espn" },
     { id: "sporttv", kind: "static", name: "Sport TV 1 Portugal", country: "PT", group: "Portugal", url: "https://example/sporttv" },
+    { id: "sky", kind: "static", name: "Sky Sports Main Event UK", country: "GB", group: "Sports", url: "https://example/sky" },
   ]);
 
   assert.equal(out.find((x) => x.id === "f1")?.group, "Sports | Motorsport");
   assert.equal(out.find((x) => x.id === "ufc")?.group, "Sports | Boxing & MMA");
   assert.equal(out.find((x) => x.id === "espn")?.group, "TV | USA");
   assert.equal(out.find((x) => x.id === "sporttv")?.group, "TV | Portugal");
+  assert.equal(out.find((x) => x.id === "sky")?.group, "TV | UK");
+  assert.equal(out.find((x) => x.id === "sky")?.kind, "static");
+});
+
+test("common sports networks are recognized as linear channels", () => {
+  for (const name of [
+    "Sky Sports Main Event UK",
+    "Sport TV 1 Portugal",
+    "ESPN USA",
+    "TNT Sports 1 UK",
+    "DAZN 1 Portugal",
+    "Eurosport 1 UK",
+    "beIN Sports 1",
+  ]) {
+    assert.equal(isLinearSportsChannel({ name }), true, name);
+  }
 });
 
 test("organisation preserves raw playback URLs exactly", () => {

@@ -1,5 +1,7 @@
 import { compareCountryChannels } from "./country-order.js";
+import { config, withKey } from "./config.js";
 
+const HOUR = 60 * 60 * 1000;
 const PRIORITY_COUNTRIES = ["US", "GB", "PT"];
 const SPECIAL_NAMES = new Map([
   ["US", "USA"],
@@ -37,6 +39,8 @@ const SPORT_GROUPS = [
 ];
 
 const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
+const LINEAR_SPORTS_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes)\b/i;
+const SOURCE_SUFFIX_RE = /\b(?:backup|event|stream|feed|ppv|main\s+event)\b/i;
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 const displayNames = typeof Intl.DisplayNames === "function"
@@ -50,8 +54,6 @@ function escaped(value) {
 export function normalizeCountryCode(code, name = "") {
   const title = String(name || "").trim();
 
-  // These names are easy to misclassify from the word "USA" / source grouping.
-  // 5USA is a UK channel, while BBC America is a US channel.
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
 
@@ -83,8 +85,6 @@ export function currentChannelName(country, name) {
   const original = String(name || "").trim();
   if (cc !== "PT") return original;
 
-  // Eleven's Portuguese linear channels were rebranded under DAZN. Keep this
-  // Portugal-only so Eleven-branded services in other countries are untouched.
   const clean = original
     .replace(/\b(?:portugal|pt)\b/gi, " ")
     .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/gi, " ")
@@ -101,8 +101,6 @@ function cleanChannelName(country, name) {
     .replace(/\s+/g, " ")
     .trim();
 
-  // Country suffixes are useful in the source playlist for matching, but are
-  // redundant once Jellyfin already groups the channel by country.
   for (const suffix of COUNTRY_SUFFIXES.get(cc) || []) {
     const re = new RegExp(`\\s+${escaped(suffix)}(?=\\s*(?:UHD|FHD|HD|SD|4K|1080P|720P)?$)`, "i");
     out = out.replace(re, "").replace(/\s+/g, " ").trim();
@@ -118,19 +116,22 @@ function replaceableLegacyLogo(url) {
   return `${value}${join}justone-rebrand=1`;
 }
 
+export function isLinearSportsChannel(channel) {
+  return LINEAR_SPORTS_RE.test(`${channel?.name || ""} ${channel?.tvgName || ""}`);
+}
+
 function sportGroup(channel) {
   if (channel?.kind === "sport-slot") {
     const hay = `${channel.group || ""} ${channel.name || ""}`;
     return SPORT_GROUPS.find((group) => group.re.test(hay)) || SPORT_FALLBACK;
   }
 
-  // Raw Grok event streams already carry sport/event-oriented group names.
-  // Classify from that source group first so linear channels such as ESPN stay
-  // inside their country rather than being pulled out of USA TV.
   const group = String(channel?.group || "");
   const direct = SPORT_GROUPS.find((item) => item.re.test(group));
   if (direct) return direct;
+
   if (/\b(?:sports?|event|ppv)\b/i.test(group)) {
+    if (isLinearSportsChannel(channel)) return null;
     const hay = `${group} ${channel?.name || ""}`;
     return SPORT_GROUPS.find((item) => item.re.test(hay)) || SPORT_FALLBACK;
   }
@@ -149,8 +150,6 @@ function preparedChannel(channel) {
     ...channel,
     country,
     name,
-    // Preserve the old image only as a last-resort fallback. The marker tells
-    // later logo enrichment that this otherwise-real URL is stale.
     logo: rebranded ? replaceableLegacyLogo(channel.logo) : channel.logo,
     rebrandedFrom: rebranded ? channel.name : channel.rebrandedFrom,
   };
@@ -171,6 +170,51 @@ function sortCountries(countries) {
   });
 }
 
+function artworkUrl(variant, token) {
+  return withKey(`${config.publicUrl}/jellyfin/artwork/${variant}/${encodeURIComponent(token)}.png`);
+}
+
+function eventTitle(channel) {
+  const name = String(channel?.name || "").trim();
+  const parts = name.split(/\s+(?:—|–|-)\s+/);
+  if (parts.length < 2) return name;
+  const tail = parts.slice(1).join(" - ");
+  if (LINEAR_SPORTS_RE.test(tail) || SOURCE_SUFFIX_RE.test(tail)) return parts[0].trim();
+  return name;
+}
+
+function eventProgrammes(channel, sport) {
+  const category = sport.label.replace(/^Sports\s*\|\s*/i, "") || "Sports";
+  const existing = Array.isArray(channel.programmes) ? channel.programmes : [];
+  const base = existing.length ? existing : [{
+    start: Math.floor(Date.now() / (6 * HOUR)) * 6 * HOUR,
+    end: Math.floor(Date.now() / (6 * HOUR)) * 6 * HOUR + 12 * HOUR,
+    title: eventTitle(channel),
+    subtitle: category,
+    categories: ["Sports", category],
+  }];
+
+  return base.map((programme, index) => ({
+    ...programme,
+    title: programme.title || eventTitle(channel),
+    subtitle: programme.subtitle || category,
+    categories: [...new Set(["Sports", category, ...(programme.categories || [])])],
+    icon: artworkUrl("program", `${channel.id}.event.${index}`),
+  }));
+}
+
+function styleSportsEvent(channel, sport) {
+  return {
+    ...channel,
+    kind: "sport-slot",
+    eventStyle: true,
+    iptvOrgId: "",
+    logo: artworkUrl("channel", channel.id),
+    logoSource: "generated-sports-event",
+    programmes: eventProgrammes(channel, sport),
+  };
+}
+
 export function organizeLineup(lineup) {
   const prepared = (lineup || []).map(preparedChannel);
   const sports = [];
@@ -189,7 +233,7 @@ export function organizeLineup(lineup) {
   SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport, sportIndex) => {
     const rows = sports
       .filter((entry) => entry.sport.key === sport.key)
-      .map((entry) => entry.channel)
+      .map((entry) => styleSportsEvent(entry.channel, sport))
       .sort(compareSportChannels);
     rows.forEach((channel, index) => {
       ordered.push({
