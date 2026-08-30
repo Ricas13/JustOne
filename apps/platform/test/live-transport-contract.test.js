@@ -9,7 +9,7 @@ test("raw platform playlist keeps the original Grok live transport path", () => 
   ]);
 
   assert.match(body, /#EXTM3U/);
-  assert.match(body, /\/play\/live\/123\.ts(?:\?|$)/);
+  assert.match(body, /\/play\/live\/123\.ts(?:\?|\r?\n)/);
   assert.doesNotMatch(body, /\/jellyfin\/play\//);
   assert.doesNotMatch(body, /\/jellyfin\/playlist\.m3u8/);
 });
