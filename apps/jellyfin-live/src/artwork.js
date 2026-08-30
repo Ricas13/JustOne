@@ -21,7 +21,7 @@ const FONT = {
   6:["01110","10000","10000","11110","10001","10001","01110"], 7:["11111","00001","00010","00100","01000","01000","01000"],
   8:["01110","10001","10001","01110","10001","10001","01110"], 9:["01110","10001","10001","01111","00001","00001","01110"],
   "&":["01100","10010","10100","01000","10101","10010","01101"], "-":["00000","00000","00000","11111","00000","00000","00000"],
-  ".":["00000","00000","00000","00000","00000","01100","01100"], ":":["00000","01100","01100","00000","01100","01100","00000"],
+  ".":["00000","00000","00000","00000","00000","01100","01100"], ":[":["00000","01100","01100","00000","01100","01100","00000"],
   "/":["00001","00010","00100","01000","10000","00000","00000"], "+":["00000","00100","00100","11111","00100","00100","00000"],
   "'":["00100","00100","00000","00000","00000","00000","00000"], " ":["00000","00000","00000","00000","00000","00000","00000"],
 };
@@ -216,9 +216,37 @@ export function artworkPng(token, variant = "program", context = null) {
   const sport = sportText(context?.sport);
 
   if (variant === "channel") {
-    const title = safeText(context?.title || String(token).replace(/^sport-/, ""));
-    const lines = wrapText(title, 17, 2);
+    const rawTitle = context?.title || String(token).replace(/^sport-/, "");
+    const event = parseEvent(rawTitle);
+    const isSportsEvent = context?.channel?.kind === "sport-slot" || context?.channel?.eventFailover;
 
+    if (isSportsEvent && event.teamA && event.teamB) {
+      const topLabel = safeText(event.competition || sport);
+      drawText(raw, width, topLabel, width / 2, 28, fitScale(topLabel, 440, 3, 2), muted, "center");
+
+      circle(raw, width, 125, 174, 72, panel);
+      circle(raw, width, 387, 174, 72, panel);
+      circle(raw, width, 125, 174, 63, accentA);
+      circle(raw, width, 387, 174, 63, accentB);
+
+      const leftInit = initials(event.teamA);
+      const rightInit = initials(event.teamB);
+      drawText(raw, width, leftInit, 125, 151, fitScale(leftInit, 96, 7, 4), white, "center");
+      drawText(raw, width, rightInit, 387, 151, fitScale(rightInit, 96, 7, 4), white, "center");
+      drawText(raw, width, "VS", width / 2, 153, 6, white, "center");
+
+      const aLines = wrapText(event.teamA, 18, 2);
+      const bLines = wrapText(event.teamB, 18, 2);
+      aLines.forEach((line, i) => drawText(raw, width, line, width / 2, 298 + i * 42, fitScale(line, 440, 4, 2), white, "center"));
+      const bStart = aLines.length > 1 ? 386 : 350;
+      bLines.forEach((line, i) => drawText(raw, width, line, width / 2, bStart + i * 42, fitScale(line, 440, 4, 2), white, "center"));
+      drawText(raw, width, sport, width / 2, 468, fitScale(sport, 420, 3, 2), muted, "center");
+      rect(raw, width, 0, height - 8, width, 8, accentB);
+      return encode(raw, width, height);
+    }
+
+    const title = safeText(rawTitle);
+    const lines = wrapText(title, 17, 2);
     drawText(raw, width, sport, width / 2, 32, fitScale(sport, 420, 3, 2), muted, "center");
     circle(raw, width, width / 2, 154, 82, panel);
     circle(raw, width, width / 2, 154, 72, accentA);
