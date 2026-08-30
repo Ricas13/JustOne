@@ -4,6 +4,10 @@ const BACKGROUND_MIN_INTERVAL_MS = Math.max(
   250,
   Number(process.env.WEBSTREAMR_BACKGROUND_MIN_INTERVAL_MS || 1500),
 );
+const INTERACTIVE_GRACE_MS = Math.max(
+  0,
+  Number(process.env.WEBSTREAMR_INTERACTIVE_GRACE_MS || 2500),
+);
 const RATE_LIMIT_FALLBACK_MS = Math.max(
   5000,
   Number(process.env.WEBSTREAMR_RATE_LIMIT_FALLBACK_MS || 60000),
@@ -95,6 +99,8 @@ async function fetchStreams(type, id, { background = false } = {}) {
   if (background) {
     await waitForBackgroundSlot();
     if (Date.now() < cooldownUntil) throw cooldownError();
+  } else if (INTERACTIVE_GRACE_MS) {
+    backgroundNextAt = Math.max(backgroundNextAt, Date.now() + INTERACTIVE_GRACE_MS);
   }
 
   const endpoint = `${config.streamProviderUrl}/stream/${type}/${encodeURIComponent(id)}.json`;
@@ -157,5 +163,6 @@ export function webStreamrStatus() {
     lastRateLimitAt,
     lastRetryAfterMs,
     backgroundMinIntervalMs: BACKGROUND_MIN_INTERVAL_MS,
+    interactiveGraceMs: INTERACTIVE_GRACE_MS,
   };
 }
