@@ -13,8 +13,35 @@ const JSON_HEADERS = {
 
 const PROBE_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const PROBE_TIMEOUT_MS = 5000;
+const PROBE_TIMEOUT_MS = 2500;
+const LIVE_RESOLVE_BUDGET_MS = 15000;
 const MANIFEST_MAX_BYTES = 512 * 1024;
+
+function remainingMs(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
+}
+
+function probeSignal(deadline: number): AbortSignal {
+  const remaining = remainingMs(deadline);
+  if (!remaining) throw new Error("live resolve budget exhausted");
+  return AbortSignal.timeout(Math.max(1, Math.min(PROBE_TIMEOUT_MS, remaining)));
+}
+
+async function withinDeadline<T>(promise: Promise<T>, deadline: number): Promise<T> {
+  const remaining = remainingMs(deadline);
+  if (!remaining) throw new Error("live resolve budget exhausted");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("live resolve budget exhausted")), remaining);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function probeHeaders(referer: string | null = null, range = false): Record<string, string> {
   const headers: Record<string, string> = {
@@ -104,14 +131,18 @@ async function readManifest(response: Response): Promise<string | null> {
   return new TextDecoder().decode(merged);
 }
 
-async function probeBinary(url: string, referer: string | null): Promise<boolean> {
+async function probeBinary(
+  url: string,
+  referer: string | null,
+  deadline: number,
+): Promise<boolean> {
   let response: Response | null = null;
   try {
     response = await fetch(url, {
       method: "GET",
       headers: probeHeaders(referer, true),
       redirect: "follow",
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      signal: probeSignal(deadline),
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -156,7 +187,8 @@ function firstVariant(text: string, base: string): string | null {
   return null;
 }
 
-function firstAttributeUri(text: string, tag: RegExp, base: string): string | null {
+function lastAttributeUri(text: string, tag: RegExp, base: string): string | null {
+  let found: string | null = null;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!tag.test(trimmed)) continue;
@@ -164,33 +196,37 @@ function firstAttributeUri(text: string, tag: RegExp, base: string): string | nu
     const raw = match?.[1] ?? match?.[2] ?? match?.[3];
     if (!raw) continue;
     const resolved = httpUrl(raw, base);
-    if (resolved) return resolved;
+    if (resolved) found = resolved;
   }
-  return null;
+  return found;
 }
 
-function firstMediaSegment(text: string, base: string): string | null {
+function latestMediaSegment(text: string, base: string): string | null {
+  let found: string | null = null;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    return httpUrl(trimmed, base);
+    const resolved = httpUrl(trimmed, base);
+    if (resolved) found = resolved;
   }
-  return null;
+  return found;
 }
 
 async function canPlay(
   url: string,
   mimeType: string,
-  referer: string | null = null,
+  referer: string | null,
+  deadline: number,
   depth = 0,
 ): Promise<boolean> {
+  if (!remainingMs(deadline)) return false;
   let response: Response | null = null;
   try {
     response = await fetch(url, {
       method: "GET",
       headers: probeHeaders(referer),
       redirect: "follow",
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      signal: probeSignal(deadline),
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -204,8 +240,12 @@ async function canPlay(
       /\.m3u8(?:$|[?#])/i.test(response.url || url);
 
     if (!looksHls) {
-      await response.body?.cancel().catch(() => undefined);
-      return !clearlyNonMediaContentType(contentType);
+      const reader = response.body?.getReader();
+      if (!reader) return false;
+      const { value } = await reader.read();
+      await reader.cancel().catch(() => undefined);
+      if (!value?.length) return false;
+      return !clearlyNonMediaContentType(contentType) && !clearlyNonMediaPrefix(value);
     }
 
     const manifest = await readManifest(response);
@@ -215,25 +255,22 @@ async function canPlay(
     if (/#EXT-X-STREAM-INF:/i.test(manifest)) {
       if (depth >= 2) return false;
       const variant = firstVariant(manifest, base);
-      if (!variant || !(await canPlay(variant, "application/x-mpegURL", referer, depth + 1))) {
-        return false;
-      }
-
-      const rendition = firstAttributeUri(manifest, /^#EXT-X-MEDIA:/i, base);
-      if (rendition && !(await canPlay(rendition, "application/x-mpegURL", referer, depth + 1))) {
-        return false;
-      }
-      return true;
+      return Boolean(
+        variant &&
+          (await canPlay(variant, "application/x-mpegURL", referer, deadline, depth + 1)),
+      );
     }
 
-    const key = firstAttributeUri(manifest, /^#EXT-X-KEY:/i, base);
-    if (key && !(await probeBinary(key, referer))) return false;
+    // Live playlists are rolling windows. Probe the newest listed segment, not
+    // the oldest one, because the oldest can expire while the live edge works.
+    const key = lastAttributeUri(manifest, /^#EXT-X-KEY:/i, base);
+    if (key && !(await probeBinary(key, referer, deadline))) return false;
 
-    const map = firstAttributeUri(manifest, /^#EXT-X-MAP:/i, base);
-    if (map && !(await probeBinary(map, referer))) return false;
+    const map = lastAttributeUri(manifest, /^#EXT-X-MAP:/i, base);
+    if (map && !(await probeBinary(map, referer, deadline))) return false;
 
-    const segment = firstMediaSegment(manifest, base);
-    return Boolean(segment && (await probeBinary(segment, referer)));
+    const segment = latestMediaSegment(manifest, base);
+    return Boolean(segment && (await probeBinary(segment, referer, deadline)));
   } catch {
     try {
       await response?.body?.cancel();
@@ -263,13 +300,16 @@ export async function handlePlaylist(res: ServerResponse, origin: string) {
 }
 
 export async function handleStreamResolver(res: ServerResponse, channelId: number, origin: string) {
-  for (let attempt = 0; attempt < PLAYER_IDS.length; attempt += 1) {
+  const deadline = Date.now() + LIVE_RESOLVE_BUDGET_MS;
+  const session = { cache: new Map(), sourceByEmbed: new Map() };
+
+  for (let attempt = 0; attempt < PLAYER_IDS.length && remainingMs(deadline); attempt += 1) {
     const server = PLAYER_IDS[attempt];
     try {
-      const { resolved } = await resolveLive(channelId, server);
+      const { resolved } = await withinDeadline(resolveLive(channelId, server, session), deadline);
       const direct = resolved.playableUrl;
 
-      if (await canPlay(direct, resolved.mimeType)) {
+      if (await canPlay(direct, resolved.mimeType, null, deadline)) {
         res.writeHead(302, {
           Location: direct,
           "X-DLHD-Delivery": "direct",
@@ -282,7 +322,10 @@ export async function handleStreamResolver(res: ServerResponse, channelId: numbe
         return;
       }
 
-      if (await canPlay(direct, resolved.mimeType, resolved.embedUrl)) {
+      if (
+        remainingMs(deadline) &&
+        (await canPlay(direct, resolved.mimeType, resolved.embedUrl, deadline))
+      ) {
         res.writeHead(302, {
           Location: buildProxyUrl(direct, resolved.embedUrl, origin),
           "X-DLHD-Delivery": "proxy",
@@ -295,13 +338,14 @@ export async function handleStreamResolver(res: ServerResponse, channelId: numbe
         return;
       }
     } catch {
-      // Resolution or playback validation failed; try the next player.
+      // Resolution or playback validation failed; try the next player while budget remains.
     }
   }
 
+  const exhaustedByBudget = remainingMs(deadline) <= 0;
   res.writeHead(503, {
     "Content-Type": "text/plain; charset=utf-8",
-    "X-DLHD-Failover": "exhausted",
+    "X-DLHD-Failover": exhaustedByBudget ? "budget-exhausted" : "exhausted",
     "Access-Control-Allow-Origin": "*",
   });
   res.end(`Failed to resolve a playable live stream for channel ${channelId}`);
