@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
+import { filterJellyfinRows } from "./filter.js";
 import {
   artworkPng,
   buildLineup,
@@ -143,8 +144,9 @@ async function refresh(force = false) {
       loadIptvOrg(),
     ]);
     const raw = parseM3u(playlistBody);
+    const filtered = filterJellyfinRows(raw);
     const schedule = scheduleHtml ? respectScheduleTimezone(scheduleHtml, parseScheduleMetadata(scheduleHtml)) : null;
-    const safeRaw = keepScheduledEvents(raw, schedule);
+    const safeRaw = keepScheduledEvents(filtered, schedule);
     const lineup = buildLineup(safeRaw, { schedule, iptvOrg });
     const autoUrls = config.autoEpg ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources) : [];
     const epgSources = [...new Set([...config.epgSourceUrls, ...autoUrls])];
@@ -158,7 +160,7 @@ async function refresh(force = false) {
       epgSources,
       error: null,
     };
-    log("refresh", `raw=${raw.length}`, `jellyfin=${lineup.length}`, `epg=${docs.length}`);
+    log("refresh", `raw=${raw.length}`, `filtered=${filtered.length}`, `jellyfin=${lineup.length}`, `epg=${docs.length}`);
   } catch (e) {
     cache.error = String(e.message || e);
     log("refresh fail", cache.error);
