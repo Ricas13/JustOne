@@ -18,7 +18,7 @@ const FREE_GROUPS = new Set([
   "free iptv",
 ]);
 
-const ADULT_RE = /(^|\b)(?:18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(\b|$)/i;
+const ADULT_RE = /(?:^|[^a-z0-9])(?:18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(?=$|[^a-z0-9])/i;
 const FREE_PROVIDER_RE = /\b(?:pluto\s*tv|samsung\s*tv\s*plus|plex\s*(?:live\s*)?tv|the\s+roku\s+channel|lg\s+channels|xumo(?:\s+play)?|tubi(?:\s+tv)?)\b/i;
 const IPTV_ORG_RE = /\biptv[\s._-]*org\b/i;
 
