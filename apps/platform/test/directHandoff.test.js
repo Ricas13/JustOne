@@ -102,3 +102,24 @@ test("lazy extract never hands an internal redirect to the client", async () => 
     await close(server);
   }
 });
+
+test("lazy extract rejects private-network handoff targets", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(302, { location: "http://192.168.1.10/video/master.m3u8" });
+    res.end();
+  });
+  const address = await listen(server);
+  const providerUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const target = await resolveDirectHandoffTarget(`${providerUrl}/config/extract/?index=0`, {
+      filename,
+      providerUrl,
+      enabled: true,
+      timeoutMs: 2000,
+    });
+    assert.equal(target, null);
+  } finally {
+    await close(server);
+  }
+});
