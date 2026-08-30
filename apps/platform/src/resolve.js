@@ -230,7 +230,10 @@ function runProviderCall(call) {
   });
 }
 
-// Existing primary resolver integration is intentionally kept intact.
+function runSecondaryCall(call, background) {
+  return background ? Promise.resolve().then(call) : runProviderCall(call);
+}
+
 async function cineproMovie(tmdbId) {
   const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
     signal: AbortSignal.timeout(90000),
@@ -262,14 +265,14 @@ function healthCineproEpisode(tmdbId, season, episode) {
   return healthCineproRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`);
 }
 
-async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
+async function resolveVod({ key, quality, primaryCall, secondaryCall, background = false }) {
   const cached = cacheGet(key);
   if (cached) return cached;
 
   const deadline = Date.now() + config.sourceResolveTimeoutMs;
   const [primaryResult, secondaryResult] = await Promise.allSettled([
     runProviderCall(primaryCall),
-    runProviderCall(secondaryCall),
+    runSecondaryCall(secondaryCall, background),
   ]);
 
   const primaryData = primaryResult.status === "fulfilled" ? primaryResult.value : null;
@@ -280,8 +283,6 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
 
   let picked = resultFromCandidate(working, candidates, quality, { validated: Boolean(working) });
 
-  // Keep the legacy primary-only fallback for ordinary playback, but never use
-  // it to turn a strict 4K library item into a lower-resolution stream.
   if (!picked.url && primarySources.length && allowQualityFallback(quality)) {
     picked = pickSource(primarySources, quality);
     picked.resolver = picked.url ? "primary" : null;
@@ -304,10 +305,15 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
   return picked;
 }
 
-async function inspectVodAvailability({ primaryCall, secondaryCall, strict = false }) {
+async function inspectVodAvailability({
+  primaryCall,
+  secondaryCall,
+  strict = false,
+  background = false,
+}) {
   const [primaryResult, secondaryResult] = await Promise.allSettled([
     runProviderCall(primaryCall),
-    runProviderCall(secondaryCall),
+    runSecondaryCall(secondaryCall, background),
   ]);
 
   if (primaryResult.status !== "fulfilled" || secondaryResult.status !== "fulfilled") {
@@ -348,34 +354,44 @@ async function inspectVodAvailability({ primaryCall, secondaryCall, strict = fal
 export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
   return inspectVodAvailability({
     strict,
+    background: true,
     primaryCall: () => healthCineproMovie(tmdbId),
-    secondaryCall: () => fetchMovieStreams(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId, { background: true }),
   });
 }
 
 export function checkEpisodeAvailability(tmdbId, season, episode, { strict = false } = {}) {
   return inspectVodAvailability({
     strict,
+    background: true,
     primaryCall: () => healthCineproEpisode(tmdbId, season, episode),
-    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background: true }),
   });
 }
 
-export function resolveMovie(tmdbId, quality = "1080p") {
+export function resolveMovie(tmdbId, quality = "1080p", { background = false } = {}) {
   return resolveVod({
     key: `movie:${tmdbId}:${quality}`,
     quality,
+    background,
     primaryCall: () => cineproMovie(tmdbId),
-    secondaryCall: () => fetchMovieStreams(tmdbId),
+    secondaryCall: () => fetchMovieStreams(tmdbId, { background }),
   });
 }
 
-export function resolveEpisode(tmdbId, season, episode, quality = "1080p") {
+export function resolveEpisode(
+  tmdbId,
+  season,
+  episode,
+  quality = "1080p",
+  { background = false } = {},
+) {
   return resolveVod({
     key: `ep:${tmdbId}:${season}:${episode}:${quality}`,
     quality,
+    background,
     primaryCall: () => cineproEpisode(tmdbId, season, episode),
-    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode),
+    secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
   });
 }
 
