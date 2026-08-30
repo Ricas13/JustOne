@@ -265,7 +265,7 @@ export function organizeLineup(lineup) {
     });
   });
 
-  const alwaysOnCountries = sortCountries(new Set(alwaysOn.map((channel) => channel.country));
+  const alwaysOnCountries = sortCountries(new Set(alwaysOn.map((channel) => channel.country)));
   alwaysOnCountries.forEach((country, countryIndex) => {
     const rows = alwaysOn
       .filter((channel) => channel.country === country)
