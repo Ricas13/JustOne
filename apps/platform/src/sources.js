@@ -7,46 +7,17 @@ function log(...a) {
 }
 
 const cache = new Map();
+const REMOVED_BUNDLED_SOURCES = new Set([
+  "toonami-est",
+  "toonami-pst",
+  "iptv-org-sports",
+  "iptv-org-news",
+  "iptv-org-us",
+  "free-tv",
+]);
 
 export function defaultSources() {
-  return [
-    {
-      id: "toonami-est",
-      name: "Toonami Aftermath EST",
-      url: "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
-      enabled: true,
-    },
-    {
-      id: "toonami-pst",
-      name: "Toonami Aftermath PST",
-      url: "http://api.toonamiaftermath.com:3000/pst/playlist.m3u8",
-      enabled: true,
-    },
-    {
-      id: "iptv-org-sports",
-      name: "IPTV-org Sports",
-      url: "https://iptv-org.github.io/iptv/categories/sports.m3u",
-      enabled: true,
-    },
-    {
-      id: "iptv-org-news",
-      name: "IPTV-org News",
-      url: "https://iptv-org.github.io/iptv/categories/news.m3u",
-      enabled: true,
-    },
-    {
-      id: "iptv-org-us",
-      name: "IPTV-org USA",
-      url: "https://iptv-org.github.io/iptv/countries/us.m3u",
-      enabled: true,
-    },
-    {
-      id: "free-tv",
-      name: "Free-TV (Pluto / Samsung / Plex)",
-      url: "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8",
-      enabled: true,
-    },
-  ];
+  return [];
 }
 
 function sourcesFile() {
@@ -62,6 +33,7 @@ export async function readSources() {
   } catch {
     /* first run */
   }
+  list = list.filter((s) => !REMOVED_BUNDLED_SOURCES.has(String(s?.id || "")));
   const have = new Set(list.map((s) => s.id));
   for (const d of defaultSources()) {
     if (!have.has(d.id)) list.push(d);
@@ -95,6 +67,7 @@ export function parseM3u(text, source) {
           name: meta.name,
           group: meta.group,
           logo: meta.logo,
+          tvgId: meta.tvg,
           url,
           kind: "ext",
         });
