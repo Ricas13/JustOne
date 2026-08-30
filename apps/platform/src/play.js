@@ -190,15 +190,17 @@ export async function episodeDownloadFilename(tmdbId, season, episode, ext = "mp
 
 function hopHeaders(req, host, upstreamHeaders = {}) {
   const headers = { ...req.headers, host };
+  delete headers.connection;
+  delete headers["content-length"];
+  delete headers["accept-encoding"];
+  // Preserve the existing proxy defaults, then allow a selected stream to
+  // override them only when its resolver explicitly requires custom headers.
+  headers["user-agent"] = UA;
+  headers.accept = "*/*";
   for (const [key, value] of Object.entries(upstreamHeaders || {})) {
     if (!key || value == null) continue;
     headers[String(key).toLowerCase()] = String(value);
   }
-  delete headers.connection;
-  delete headers["content-length"];
-  delete headers["accept-encoding"];
-  if (!headers["user-agent"]) headers["user-agent"] = UA;
-  if (!headers.accept) headers.accept = "*/*";
   return headers;
 }
 
