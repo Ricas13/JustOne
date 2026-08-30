@@ -56,7 +56,7 @@ function normalizedName(value) {
 }
 
 function isAdultChannel(ch) {
-  return /(^|\b)(18\+|adult|xxx|porn|playboy|brazzers|redlight)(\b|$)/i.test(
+  return /(^|\b)(18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(\b|$)/i.test(
     `${ch?.name || ""} ${ch?.group || ""}`,
   );
 }
