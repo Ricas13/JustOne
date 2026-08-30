@@ -205,9 +205,33 @@ async function chooseWorkingCandidate(candidates, quality, deadline) {
   return null;
 }
 
+function runProviderCall(call) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("source resolver timed out")),
+      config.sourceProviderTimeoutMs,
+    );
+    timer.unref?.();
+    Promise.resolve()
+      .then(call)
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+// Existing primary resolver integration is intentionally kept intact. The new
+// discovery layer applies its own external budget via runProviderCall().
 async function cineproMovie(tmdbId) {
   const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
-    signal: AbortSignal.timeout(config.sourceProviderTimeoutMs),
+    signal: AbortSignal.timeout(90000),
   });
   return r.json();
 }
@@ -215,7 +239,7 @@ async function cineproMovie(tmdbId) {
 async function cineproEpisode(tmdbId, season, episode) {
   const r = await fetch(
     `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`,
-    { signal: AbortSignal.timeout(config.sourceProviderTimeoutMs) },
+    { signal: AbortSignal.timeout(90000) },
   );
   return r.json();
 }
@@ -226,8 +250,8 @@ async function resolveVod({ key, quality, primaryCall, secondaryCall }) {
 
   const deadline = Date.now() + config.sourceResolveTimeoutMs;
   const [primaryResult, secondaryResult] = await Promise.allSettled([
-    primaryCall(),
-    secondaryCall(),
+    runProviderCall(primaryCall),
+    runProviderCall(secondaryCall),
   ]);
 
   const primaryData = primaryResult.status === "fulfilled" ? primaryResult.value : null;
