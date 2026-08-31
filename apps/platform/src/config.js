@@ -13,6 +13,7 @@ export const config = {
   sourceProviderTimeoutMs: Math.max(500, Number(process.env.SOURCE_PROVIDER_TIMEOUT_MS || 5000)),
   sourceResolveTimeoutMs: Math.max(1000, Number(process.env.SOURCE_RESOLVE_TIMEOUT_MS || 15000)),
   sourceProbeTimeoutMs: Math.max(500, Number(process.env.SOURCE_PROBE_TIMEOUT_MS || 2500)),
+  dlhdProxyUrl: (process.env.DLHD_PROXY_URL || "").replace(/\/$/, ""),
   dlhdUrl: (process.env.DLHD_URL || "http://dlhd:3000").replace(/\/$/, ""),
   dlstreams247: process.env.DLSTREAMS_247 || "https://dlstreams.st/24-7-channels.php",
   dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlstreams.st/",
