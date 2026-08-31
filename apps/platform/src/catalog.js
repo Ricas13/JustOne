@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
 import { writeMovieStrm, writeEpisodeStrm } from "./strm.js";
-import { checkMovieAvailability, checkEpisodeAvailability } from "./resolve.js";
+import {
+  checkMovieAdmission,
+  checkMovieAvailability,
+  checkEpisodeAvailability,
+} from "./resolve.js";
 
 const TMDB = "https://api.themoviedb.org/3";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,6 +23,7 @@ let statusCache = {
   shows: 0,
   quarantinedMovies: 0,
   quarantinedShows: 0,
+  deferredMovies: 0,
   healthFailures: 0,
 };
 
@@ -36,10 +41,11 @@ function defaultCursor() {
 
 function defaultState() {
   return {
-    version: 1,
+    version: 2,
     movies: defaultCursor(),
     shows: defaultCursor(),
     lastGrowthAt: null,
+    deferredMovies: [],
     health: {
       lastRunAt: null,
       movieLastId: 0,
@@ -60,13 +66,31 @@ function normalizeCursor(raw) {
   };
 }
 
+function normalizeDeferredMovie(raw) {
+  const id = raw?.id ? String(raw.id) : "";
+  if (!id) return null;
+  return {
+    id,
+    title: String(raw?.title || `tmdbid-${id}`),
+    release_date: String(raw?.release_date || ""),
+    firstDeferredAt: raw?.firstDeferredAt || null,
+    lastCheckedAt: raw?.lastCheckedAt || null,
+    reason: String(raw?.reason || "pending-admission"),
+    attempts: Math.max(0, Number(raw?.attempts || 0)),
+  };
+}
+
 function normalizeState(raw) {
   const base = defaultState();
   return {
     ...base,
     ...(raw || {}),
+    version: 2,
     movies: normalizeCursor(raw?.movies),
     shows: normalizeCursor(raw?.shows),
+    deferredMovies: Array.isArray(raw?.deferredMovies)
+      ? raw.deferredMovies.map(normalizeDeferredMovie).filter(Boolean)
+      : [],
     health: {
       ...base.health,
       ...(raw?.health || {}),
@@ -222,6 +246,7 @@ function refreshStatus(index = indexCache) {
     shows: index.shows.size,
     quarantinedMovies: index.quarantinedMovies.size,
     quarantinedShows: index.quarantinedShows.size,
+    deferredMovies: stateCache?.deferredMovies?.length || 0,
     healthFailures: Object.keys(failures).length,
     cursors: stateCache
       ? {
@@ -250,8 +275,8 @@ function knownIds(index, kind) {
   return new Set([...active.keys(), ...quarantined.keys()]);
 }
 
-function targetFor(index, kind) {
-  const count = knownCount(index, kind);
+function targetFor(index, kind, deferredCount = 0) {
+  const count = knownCount(index, kind) + (kind === "movie" ? deferredCount : 0);
   const initial = kind === "movie" ? config.initialMoviesTarget : config.initialShowsTarget;
   const perRun = kind === "movie" ? config.moviesAddPerRun : config.showsAddPerRun;
   const ceiling = kind === "movie" ? config.maxMovies : config.maxShows;
@@ -371,6 +396,38 @@ function queueNew(state, kind, id) {
   if (queue.length > max) queue.splice(0, queue.length - max);
 }
 
+function deferredMovieIds(state) {
+  return new Set((state.deferredMovies || []).map((row) => String(row.id)));
+}
+
+function deferMovie(state, row, result = null) {
+  const id = String(row?.id || "");
+  if (!id) return;
+  const now = new Date().toISOString();
+  const current = (state.deferredMovies || []).find((entry) => String(entry.id) === id);
+  const next = {
+    id,
+    title: String(row?.title || current?.title || `tmdbid-${id}`),
+    release_date: String(row?.release_date || current?.release_date || ""),
+    firstDeferredAt: current?.firstDeferredAt || now,
+    lastCheckedAt: result ? now : current?.lastCheckedAt || null,
+    reason: String(result?.reason || current?.reason || "pending-admission"),
+    attempts: Number(current?.attempts || 0) + (result ? 1 : 0),
+  };
+  const index = (state.deferredMovies || []).findIndex((entry) => String(entry.id) === id);
+  if (index >= 0) state.deferredMovies[index] = next;
+  else state.deferredMovies.push(next);
+}
+
+function removeDeferredMovie(state, id) {
+  const value = String(id);
+  state.deferredMovies = (state.deferredMovies || []).filter((row) => String(row.id) !== value);
+}
+
+export function catalogAdmissionDecision(result) {
+  return result?.state === "available" ? "admit" : "defer";
+}
+
 function registerPath(index, kind, id, folderPath) {
   const map = kind === "movie" ? index.movies : index.shows;
   addPath(map, id, folderPath);
@@ -428,10 +485,11 @@ export async function growCatalog({ progress } = {}) {
   const state = await loadState();
   const index = await buildIndex();
   const qualities = config.qualities.length ? config.qualities : ["1080p", "4k"];
-  const movieTarget = targetFor(index, "movie");
+  const movieTarget = targetFor(index, "movie", state.deferredMovies.length);
   const showTarget = targetFor(index, "show");
   const stats = {
     movieTitlesAdded: 0,
+    movieTitlesDeferred: 0,
     movieStrmsWritten: 0,
     showTitlesAdded: 0,
     episodeStrmsWritten: 0,
@@ -442,17 +500,21 @@ export async function growCatalog({ progress } = {}) {
   log(
     "growth",
     `knownMovies=${knownCount(index, "movie")}`,
-    `addMovies=${movieTarget}`,
+    `deferredMovies=${state.deferredMovies.length}`,
+    `queueMovies=${movieTarget}`,
     `knownShows=${knownCount(index, "show")}`,
     `addShows=${showTarget}`,
   );
 
-  const movieRows = await discoverRows("movie", movieTarget, knownIds(index, "movie"), progress);
+  const movieExisting = knownIds(index, "movie");
+  for (const id of deferredMovieIds(state)) movieExisting.add(id);
+  const movieRows = await discoverRows("movie", movieTarget, movieExisting, progress);
   for (const row of movieRows) {
-    stats.movieStrmsWritten += await writeMovie(row, index, qualities);
-    stats.movieTitlesAdded += 1;
-    queueNew(state, "movie", row.id);
-    if (stats.movieTitlesAdded % 100 === 0) log("movies added", stats.movieTitlesAdded);
+    // TMDB discovery only decides what exists. New movie STRMs stay out of the
+    // playable library until the background admission pass obtains real media
+    // bytes from at least one resolver candidate.
+    deferMovie(state, row);
+    stats.movieTitlesDeferred += 1;
   }
 
   const showRows = await discoverRows("show", showTarget, knownIds(index, "show"), progress);
@@ -503,14 +565,14 @@ async function showSamples(entry, limit = 2) {
   return samples;
 }
 
-async function availability(kind, id, entry) {
-  if (kind === "movie") return checkMovieAvailability(id, { strict: config.catalogHealthStrict });
+async function availability(kind, id, entry, { strict } = {}) {
+  if (kind === "movie") return checkMovieAvailability(id, { strict: strict ?? true });
   const samples = await showSamples(entry, config.catalogHealthShowSamples);
   if (!samples.length) return { state: "indeterminate", reason: "no-sample-episodes" };
   let sawIndeterminate = false;
   for (const sample of samples) {
     const result = await checkEpisodeAvailability(sample.tmdbId, sample.season, sample.episode, {
-      strict: config.catalogHealthStrict,
+      strict: strict ?? config.catalogHealthStrict,
     });
     if (result.state === "available") return result;
     if (result.state === "indeterminate") sawIndeterminate = true;
@@ -649,9 +711,18 @@ async function mapLimit(rows, limit, fn) {
   await Promise.all(workers);
 }
 
-async function processHealth(kind, id, entry, index, state, now, isQuarantined = false) {
+async function processHealth(
+  kind,
+  id,
+  entry,
+  index,
+  state,
+  now,
+  isQuarantined = false,
+  { strict, immediate = false } = {},
+) {
   const key = failureKey(kind, id);
-  const result = await availability(kind, id, entry);
+  const result = await availability(kind, id, entry, { strict });
   const current = state.health.failures[key];
 
   if (result.state === "available") {
@@ -675,7 +746,13 @@ async function processHealth(kind, id, entry, index, state, now, isQuarantined =
     quarantined: Boolean(current?.quarantined || isQuarantined),
   };
 
-  if (!isQuarantined && decision.quarantine) {
+  // Entries created before catalog admission existed may already have one
+  // definitive no-source strike. On retry, a second strict confirmation can
+  // quarantine them immediately. Normal movie health still keeps the configured
+  // separated-miss threshold, but no longer waits an extra seven-day age grace.
+  const movieThresholdReached =
+    kind === "movie" && decision.misses >= config.catalogHealthFailureThreshold;
+  if (!isQuarantined && (immediate || movieThresholdReached || decision.quarantine)) {
     const moved = await quarantine(kind, id, index);
     if (moved) state.health.failures[key].quarantined = true;
   }
@@ -705,8 +782,33 @@ export async function sweepCatalogHealth({ force = false, progress } = {}) {
     indeterminate: 0,
     quarantined: 0,
     restored: 0,
+    admissionChecked: 0,
+    admissionAdmitted: 0,
+    admissionUnavailable: 0,
+    admissionIndeterminate: 0,
   };
   const beforeQuarantine = index.quarantinedMovies.size + index.quarantinedShows.size;
+  const qualities = config.qualities.length ? config.qualities : ["1080p", "4k"];
+
+  // Deferred movies are the admission queue. They are not visible to Jellyfin
+  // until one resolver supplies bytes that pass the same ranged GET used by
+  // playback. Provider errors and no-source results stay deferred for a later run.
+  const admissionBatch = (state.deferredMovies || []).slice(0, config.catalogHealthMoviesPerRun);
+  for (const movie of admissionBatch) {
+    progress?.(`admission movie ${movie.id}`);
+    const result = await checkMovieAdmission(movie.id);
+    stats.admissionChecked += 1;
+    if (catalogAdmissionDecision(result) === "admit") {
+      await writeMovie(movie, index, qualities);
+      removeDeferredMovie(state, movie.id);
+      stats.admissionAdmitted += 1;
+      log("admitted movie", movie.id, result.reason);
+      continue;
+    }
+    deferMovie(state, movie, result);
+    if (result.state === "indeterminate") stats.admissionIndeterminate += 1;
+    else stats.admissionUnavailable += 1;
+  }
 
   const retryRows = Object.values(state.health.failures)
     .filter((entry) => !entry.quarantined && dueFailure(entry, now))
@@ -721,15 +823,34 @@ export async function sweepCatalogHealth({ force = false, progress } = {}) {
     .slice(0, config.catalogHealthQuarantinedPerRun);
 
   const selected = [];
-  for (const row of retryRows) selected.push({ kind: row.kind, id: String(row.id), quarantined: false });
-  for (const row of quarantineRows) selected.push({ kind: row.kind, id: String(row.id), quarantined: true });
+  for (const row of retryRows) {
+    selected.push({
+      kind: row.kind,
+      id: String(row.id),
+      quarantined: false,
+      strict: row.kind === "movie" ? true : undefined,
+      immediate: row.kind === "movie",
+    });
+  }
+  for (const row of quarantineRows) {
+    selected.push({
+      kind: row.kind,
+      id: String(row.id),
+      quarantined: true,
+      strict: row.kind === "movie" ? true : undefined,
+    });
+  }
 
   const selectedKeys = new Set(selected.map((row) => failureKey(row.kind, row.id)));
-  const newMovies = takeQueued(state, "movie", config.catalogHealthMoviesPerRun);
+  const movieBudgetRemaining = Math.max(
+    0,
+    config.catalogHealthMoviesPerRun - admissionBatch.length,
+  );
+  const newMovies = takeQueued(state, "movie", movieBudgetRemaining);
   const newShows = takeQueued(state, "show", config.catalogHealthShowsPerRun);
   for (const id of newMovies) {
     if (!selectedKeys.has(failureKey("movie", id)) && index.movies.has(id)) {
-      selected.push({ kind: "movie", id, quarantined: false });
+      selected.push({ kind: "movie", id, quarantined: false, strict: true, immediate: true });
       selectedKeys.add(failureKey("movie", id));
     }
   }
@@ -740,14 +861,16 @@ export async function sweepCatalogHealth({ force = false, progress } = {}) {
     }
   }
 
-  const movieSlots = Math.max(0, config.catalogHealthMoviesPerRun - newMovies.length);
+  const movieSlots = Math.max(0, movieBudgetRemaining - newMovies.length);
   const showSlots = Math.max(0, config.catalogHealthShowsPerRun - newShows.length);
   const movieIds = nextIds(index.movies, state.health.movieLastId, movieSlots, new Set(newMovies));
   const showIds = nextIds(index.shows, state.health.showLastId, showSlots, new Set(newShows));
   if (movieIds.length) state.health.movieLastId = movieIds[movieIds.length - 1];
   if (showIds.length) state.health.showLastId = showIds[showIds.length - 1];
   for (const id of movieIds) {
-    if (!selectedKeys.has(failureKey("movie", id))) selected.push({ kind: "movie", id, quarantined: false });
+    if (!selectedKeys.has(failureKey("movie", id))) {
+      selected.push({ kind: "movie", id, quarantined: false, strict: true });
+    }
   }
   for (const id of showIds) {
     if (!selectedKeys.has(failureKey("show", id))) selected.push({ kind: "show", id, quarantined: false });
@@ -764,7 +887,16 @@ export async function sweepCatalogHealth({ force = false, progress } = {}) {
     const entry = map.get(String(row.id));
     if (!entry) return;
     progress?.(`health ${row.kind} ${row.id}`);
-    const outcome = await processHealth(row.kind, row.id, entry, index, state, now, row.quarantined);
+    const outcome = await processHealth(
+      row.kind,
+      row.id,
+      entry,
+      index,
+      state,
+      now,
+      row.quarantined,
+      { strict: row.strict, immediate: row.immediate },
+    );
     stats.checked += 1;
     stats[outcome] += 1;
   });
@@ -784,6 +916,8 @@ export async function sweepCatalogHealth({ force = false, progress } = {}) {
     `indeterminate=${stats.indeterminate}`,
     `quarantined=${stats.quarantined}`,
     `restored=${stats.restored}`,
+    `admission=${stats.admissionAdmitted}/${stats.admissionChecked}`,
+    `deferred=${state.deferredMovies.length}`,
   );
   return stats;
 }
