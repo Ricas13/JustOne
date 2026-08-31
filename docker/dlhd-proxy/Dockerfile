@@ -27,6 +27,13 @@ RUN git clone --filter=blob:none "${UPSTREAM_REPO}" /tmp/dlhd-proxy \
 # application rebuild.
 RUN python -c 'from pathlib import Path; p=Path("dlhd_proxy/step_daddy.py"); s=p.read_text(); s=s.replace("import json\n", "import json\nimport os\n", 1); old="self._base_url = \"https://daddylivestream.com\""; new="self._base_url = os.getenv(\"DLHD_BASE_URL\", \"https://dlstreams.st\").rstrip(\"/\")"; assert old in s, "upstream base-url anchor changed"; p.write_text(s.replace(old, new, 1))'
 
+# DLHD's current player no longer exposes CHANNEL_KEY/auth.php/server_lookup.
+# It embeds the live HLS source as source:window.atob(...). Apply a small local
+# compatibility patch that supports that protocol first and retains the pinned
+# upstream legacy auth flow as fallback.
+COPY patch_upstream.py /tmp/patch_upstream.py
+RUN python /tmp/patch_upstream.py && rm /tmp/patch_upstream.py
+
 # Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
 # now imports Pydantic APIs that are unavailable while Reflex applies its v1
 # compatibility patch, so an unpinned install crashes even on plain import.
