@@ -1,4 +1,5 @@
 import { chooseChannelLogo } from "./channel-logos.js";
+import { countrySuffixes as identityCountrySuffixes, normalizeCountryCode } from "./channel-identity.js";
 import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
@@ -48,10 +49,7 @@ function decodeEntities(value) {
 }
 
 function normalizeCountry(value) {
-  const cc = String(value || "").trim().toUpperCase();
-  if (cc === "UK") return "GB";
-  if (cc === "USA") return "US";
-  return cc;
+  return normalizeCountryCode(value);
 }
 
 function sourceCountry(url) {
@@ -60,17 +58,7 @@ function sourceCountry(url) {
 }
 
 function countrySuffixes(country) {
-  switch (normalizeCountry(country)) {
-    case "US": return ["usa", "us", "united states", "us2"];
-    case "GB": return ["uk", "gb", "united kingdom"];
-    case "PT": return ["pt", "portugal"];
-    case "CA": return ["ca", "canada"];
-    case "ES": return ["es", "spain"];
-    case "FR": return ["fr", "france"];
-    case "DE": return ["de", "germany"];
-    case "IT": return ["it", "italy"];
-    default: return [];
-  }
+  return identityCountrySuffixes(country);
 }
 
 export function canonicalGuideName(value, country = "") {
@@ -79,13 +67,23 @@ export function canonicalGuideName(value, country = "") {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/&/g, " and ")
+    .replace(/\+/g, " plus ")
     .replace(/\bskysp\b/g, "sky sports")
     .replace(/\bnetwrk\b/g, "network")
     .replace(/\bfball\b/g, "football")
     .replace(/\bmain ev\b/g, "main event")
     .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
-    .replace(/[._/+\-]+/g, " ")
+    .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\bnova\s+sports?\b/g, "novasports")
+    .replace(/\bcyta\s+vision\b/g, "cytavision")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Quality is commonly appended after the country ("Greece HD"). Remove it
+  // before stripping the country suffix so ordinary regional channels match.
+  s = s
+    .replace(/\b(?:uhd|fhd|hd|sd|2160p|1080p|720p|576p|480p)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -95,7 +93,6 @@ export function canonicalGuideName(value, country = "") {
   }
 
   return s
-    .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/g, " ")
     .replace(/\b(?:east feed|west feed|pacific feed|national feed)\b/g, " ")
     .replace(/\b(?:channel|network|television)\b/g, " ")
     .replace(/\btv\b/g, " ")
@@ -113,6 +110,12 @@ function guideKeys(value, country = "") {
     out.add(canonical);
     const compact = canonical.replace(/\s+/g, "");
     if (compact.length >= 3) out.add(compact);
+    const singularSport = canonical.replace(/\bsports\b/g, "sport");
+    if (singularSport !== canonical) {
+      out.add(singularSport);
+      const singularCompact = singularSport.replace(/\s+/g, "");
+      if (singularCompact.length >= 3) out.add(singularCompact);
+    }
   }
   return [...out];
 }
@@ -223,12 +226,15 @@ export function matchGuideChannel(ch, docs) {
   let best = null;
   for (const doc of orderedDocs) {
     const index = indexDoc(doc);
-    const countryPenalty = country && index.country && country !== index.country ? 12 : 0;
+    // A known country-specific EPG pack must not be used for another country.
+    // Wrong-country fuzzy matches are worse than an honest empty schedule and
+    // were responsible for visibly incorrect guide data on regional networks.
+    if (country && index.country && country !== index.country) continue;
     for (const variant of variants) {
       for (const id of candidateIds(index, variant)) {
         const entry = index.entries.get(id);
         if (!entry) continue;
-        const score = similarity(variant, entry) - countryPenalty;
+        const score = similarity(variant, entry);
         const programmeCount = (doc.programmes?.get(id) || []).length;
         const isBetter = !best
           || score > best.score

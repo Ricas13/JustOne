@@ -1,4 +1,8 @@
 import { compareCountryChannels } from "./country-order.js";
+import {
+  countrySuffixes,
+  normalizeCountryCode as normalizeIdentityCountryCode,
+} from "./channel-identity.js";
 import { config, withKey } from "./config.js";
 
 const PRIORITY_COUNTRIES = ["US", "GB", "PT"];
@@ -6,21 +10,6 @@ const SPECIAL_NAMES = new Map([
   ["US", "USA"],
   ["GB", "UK"],
   ["PT", "Portugal"],
-]);
-
-const COUNTRY_SUFFIXES = new Map([
-  ["US", ["USA", "US", "United States"]],
-  ["GB", ["UK", "GB", "United Kingdom"]],
-  ["PT", ["Portugal", "PT"]],
-  ["CA", ["Canada", "CA"]],
-  ["ES", ["Spain", "ES"]],
-  ["FR", ["France", "FR"]],
-  ["DE", ["Germany", "DE"]],
-  ["IT", ["Italy", "IT"]],
-  ["NL", ["Netherlands", "NL"]],
-  ["IE", ["Ireland", "IE"]],
-  ["AU", ["Australia", "AU"]],
-  ["BR", ["Brazil", "BR"]],
 ]);
 
 // Keep the compact, familiar sports ordering from the cleaner afternoon M3U.
@@ -48,7 +37,7 @@ const SPORT_GROUPS = [
 ];
 
 const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
-const LINEAR_SPORTS_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes|v\s+sport)\b/i;
+const LINEAR_SPORTS_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|novasports|nova\s+sports?|cosmote\s+sport|cytavision\s+sports?|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes|v\s+sport)\b/i;
 const SOURCE_SUFFIX_RE = /\b(?:backup|event|stream|feed|ppv|main\s+event)\b/i;
 const EVENT_SIGNAL_RE = /(?:\bvs\.?\b|@|\s:\s|\b(?:day|stage|round|session|heat|race|qualifying|practice)\s*\d+\b|\b(?:semi-?final|quarter-?final|final)\b|\bworld championships?\b|\bchampionship tour\b|\bvarious events\b|\bgrand prix\b|\bgran premio\b|\bppv\b)/i;
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -65,10 +54,7 @@ export function normalizeCountryCode(code, name = "") {
   const title = String(name || "").trim();
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
-  const cc = String(code || "").trim().toUpperCase();
-  if (cc === "UK") return "GB";
-  if (cc === "USA") return "US";
-  return cc;
+  return normalizeIdentityCountryCode(code);
 }
 
 export function countryLabel(code) {
@@ -107,8 +93,8 @@ function cleanChannelName(country, name) {
     .replace(/\s+[—–]\s+/g, " - ")
     .replace(/\s+/g, " ")
     .trim();
-  for (const suffix of COUNTRY_SUFFIXES.get(cc) || []) {
-    const re = new RegExp(`\\s+${escaped(suffix)}(?=\\s*(?:UHD|FHD|HD|SD|4K|1080P|720P)?$)`, "i");
+  for (const suffix of countrySuffixes(cc)) {
+    const re = new RegExp(`\\s+${escaped(suffix)}(?=\\s*(?:UHD|FHD|HD|SD|4K|2160P|1080P|720P|576P|480P)?$)`, "i");
     out = out.replace(re, "").replace(/\s+/g, " ").trim();
   }
   return out;

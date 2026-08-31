@@ -66,6 +66,12 @@ function sportText(value) {
   return safeText(value || "LIVE SPORTS").replace(/^SPORTS\s*\|\s*/i, "") || "LIVE SPORTS";
 }
 
+function regularGroupText(value) {
+  return safeText(String(value || "")
+    .replace(/^TV\s*\|\s*/i, "")
+    .replace(/^24\s*\/\s*7\s*\|\s*/i, "")) || "LIVE TV";
+}
+
 function tokenOf(url) {
   try {
     const raw = new URL(String(url)).pathname.split("/").pop() || "";
@@ -214,11 +220,12 @@ export function artworkPng(token, variant = "program", context = null) {
   const accentA = [112 + seed[2] % 95, 90 + seed[5] % 110, 96 + seed[8] % 105, 255];
   const accentB = [86 + seed[11] % 105, 96 + seed[14] % 100, 122 + seed[17] % 90, 255];
   const sport = sportText(context?.sport);
+  const isSportsEvent = context?.channel?.kind === "sport-slot" || context?.channel?.eventFailover;
+  const isRegularChannel = context?.channel?.kind === "static" && !context?.channel?.eventFailover;
 
   if (variant === "channel") {
     const rawTitle = context?.title || String(token).replace(/^sport-/, "");
     const event = parseEvent(rawTitle);
-    const isSportsEvent = context?.channel?.kind === "sport-slot" || context?.channel?.eventFailover;
 
     if (isSportsEvent && event.teamA && event.teamB) {
       const topLabel = safeText(event.competition || sport);
@@ -247,7 +254,9 @@ export function artworkPng(token, variant = "program", context = null) {
 
     const title = safeText(rawTitle);
     const lines = wrapText(title, 17, 2);
-    drawText(raw, width, sport, width / 2, 32, fitScale(sport, 420, 3, 2), muted, "center");
+    const topLabel = isSportsEvent ? sport : "LIVE TV";
+    const bottomLabel = isSportsEvent ? `SPORTS ${sport}` : regularGroupText(context?.channel?.group);
+    drawText(raw, width, topLabel, width / 2, 32, fitScale(topLabel, 420, 3, 2), muted, "center");
     circle(raw, width, width / 2, 154, 82, panel);
     circle(raw, width, width / 2, 154, 72, accentA);
     const init = initials(title);
@@ -258,7 +267,27 @@ export function artworkPng(token, variant = "program", context = null) {
       drawText(raw, width, line, width / 2, startY + i * 58, fitScale(line, 430, 6, 3), white, "center");
     });
 
-    drawText(raw, width, `SPORTS ${sport}`, width / 2, 445, fitScale(`SPORTS ${sport}`, 420, 3, 2), muted, "center");
+    drawText(raw, width, bottomLabel, width / 2, 445, fitScale(bottomLabel, 420, 3, 2), muted, "center");
+    rect(raw, width, 0, height - 8, width, 8, accentB);
+    return encode(raw, width, height);
+  }
+
+  if (isRegularChannel) {
+    const title = safeText(context?.channel?.name || context?.title || token);
+    const lines = wrapText(title, 28, 3);
+    const badge = initials(title);
+    const group = regularGroupText(context?.channel?.group);
+
+    drawText(raw, width, "LIVE TV", width / 2, 42, 4, muted, "center");
+    circle(raw, width, width / 2, 212, 92, panel);
+    circle(raw, width, width / 2, 212, 80, accentA);
+    drawText(raw, width, badge, width / 2, 186, fitScale(badge, 118, 8, 5), white, "center");
+
+    const startY = lines.length === 1 ? 370 : lines.length === 2 ? 342 : 316;
+    lines.forEach((line, i) => {
+      drawText(raw, width, line, width / 2, startY + i * 72, fitScale(line, 1080, 7, 3), white, "center");
+    });
+    drawText(raw, width, group, width / 2, 604, fitScale(group, 880, 3, 2), muted, "center");
     rect(raw, width, 0, height - 8, width, 8, accentB);
     return encode(raw, width, height);
   }

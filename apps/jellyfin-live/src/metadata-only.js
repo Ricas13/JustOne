@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
 import { config, withKey } from "./config.js";
+import {
+  channelBroadcastCountries,
+  channelCoversCountry,
+  channelIdentityKeys,
+  normalizeCountryCode,
+} from "./channel-identity.js";
 
 const COUNTRY_CODES = new Map([
   ["uk", "GB"], ["united kingdom", "GB"], ["england", "GB"], ["scotland", "GB"], ["wales", "GB"],
@@ -30,13 +36,6 @@ function hash(value, length = 14) {
   return crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, length);
 }
 
-function normalizeCountryCode(value) {
-  const cc = String(value || "").trim().toUpperCase();
-  if (cc === "UK") return "GB";
-  if (cc === "USA") return "US";
-  return cc;
-}
-
 function countryCode(ch) {
   const title = text(ch?.tvgName || ch?.name);
   if (/^5\s*USA$/i.test(title)) return "GB";
@@ -58,23 +57,16 @@ function countryCode(ch) {
   return normalizeCountryCode(suffix || "");
 }
 
-function normalizedName(value) {
-  return text(value)
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/\b(?:uhd|fhd|hd|sd|4k|1080p|720p)\b/g, " ")
-    .replace(/[._/+\-]+/g, " ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function isAdultChannel(ch) {
   return /(^|\b)(18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(\b|$)/i.test(
     `${ch?.name || ""} ${ch?.group || ""}`,
   );
+}
+
+function addNameIndex(map, composite, channel) {
+  const rows = map.get(composite) || [];
+  if (!rows.some((row) => row.id === channel.id)) rows.push(channel);
+  map.set(composite, rows);
 }
 
 function channelIndex(channels = []) {
@@ -83,30 +75,35 @@ function channelIndex(channels = []) {
   for (const ch of channels) {
     if (!ch?.id || ch.is_nsfw) continue;
     byId.set(String(ch.id), ch);
-    const country = normalizeCountryCode(ch.country);
-    for (const value of [ch.name, ...(ch.alt_names || [])]) {
-      const key = normalizedName(value);
-      if (!key) continue;
-      const composite = `${country}|${key}`;
-      const rows = byName.get(composite) || [];
-      rows.push(ch);
-      byName.set(composite, rows);
+    const countries = channelBroadcastCountries(ch);
+    const indexCountries = countries.length ? countries : [normalizeCountryCode(ch.country) || ""];
+    for (const value of [ch.id, ch.name, ...(ch.alt_names || [])]) {
+      for (const cc of indexCountries) {
+        for (const key of channelIdentityKeys(value, cc)) {
+          if (cc) addNameIndex(byName, `${cc}|${key}`, ch);
+          addNameIndex(byName, `*|${key}`, ch);
+        }
+      }
     }
   }
   return { byId, byName };
 }
 
 function matchIptvChannel(row, index) {
-  const direct = index.byId.get(String(row.tvgId || ""));
   const country = countryCode(row);
-  if (direct && (!country || normalizeCountryCode(direct.country) === country)) return direct;
+  const direct = index.byId.get(String(row.tvgId || ""));
+  if (direct && channelCoversCountry(direct, country)) return direct;
 
-  for (const value of [row.tvgName, row.name]) {
-    const key = normalizedName(value);
-    if (!key) continue;
-    if (country) {
-      const exact = index.byName.get(`${country}|${key}`) || [];
-      if (exact.length === 1) return exact[0];
+  for (const value of [row.tvgId, row.tvgName, row.name]) {
+    for (const key of channelIdentityKeys(value, country)) {
+      if (country) {
+        const exact = index.byName.get(`${country}|${key}`) || [];
+        if (exact.length === 1) return exact[0];
+      }
+      if (!country) {
+        const global = index.byName.get(`*|${key}`) || [];
+        if (global.length === 1) return global[0];
+      }
     }
   }
   return null;
@@ -115,7 +112,7 @@ function matchIptvChannel(row, index) {
 function logoIndex(logos = []) {
   const map = new Map();
   for (const logo of logos) {
-    if (!logo?.channel || !/^https?:\/\//i.test(String(logo.url || ""))) continue;
+    if (!logo?.channel || logo.in_use === false || !/^https?:\/\//i.test(String(logo.url || ""))) continue;
     const rows = map.get(logo.channel) || [];
     rows.push(logo);
     map.set(logo.channel, rows);
@@ -124,13 +121,15 @@ function logoIndex(logos = []) {
 }
 
 function bestLogo(rows = []) {
-  return [...rows]
-    .sort((a, b) => {
-      const horizontalA = Array.isArray(a.tags) && a.tags.includes("horizontal") ? 1 : 0;
-      const horizontalB = Array.isArray(b.tags) && b.tags.includes("horizontal") ? 1 : 0;
-      if (horizontalA !== horizontalB) return horizontalB - horizontalA;
-      return Number(b.width || 0) - Number(a.width || 0);
-    })[0]?.url || "";
+  const score = (row) => {
+    let value = 0;
+    if (/PNG|JPEG|JPG|WEBP/i.test(row.format || "")) value += 20;
+    if (/horizontal/i.test((row.tags || []).join(" "))) value += 5;
+    if (!/white/i.test((row.tags || []).join(" "))) value += 2;
+    value += Math.min(Number(row.width || 0) / 1000, 3);
+    return value;
+  };
+  return [...rows].sort((a, b) => score(b) - score(a))[0]?.url || "";
 }
 
 function generatedLogo(id) {
@@ -217,12 +216,17 @@ export function buildMetadataLineup(rawRows, { iptvOrg = null, excludeAdult = tr
   const logos = logoIndex(iptvOrg?.logos || []);
 
   const out = source.map((row, index) => {
+    const inferredCountry = normalizeCountryCode(countryCode(row));
     const matched = iptvOrg ? matchIptvChannel(row, channels) : null;
-    const country = normalizeCountryCode(matched?.country || countryCode(row));
+    // Multinational networks such as Eurosport have a canonical IPTV-org home
+    // country but country-specific feeds. Preserve the provider's actual country
+    // bucket when it is known instead of moving the row to the metadata home.
+    const country = inferredCountry || normalizeCountryCode(matched?.country || "");
     const id = `channel.${hash(`${row.url}|${row.tvgId || ""}|${row.name || ""}`)}`;
     const matchedLogo = matched ? bestLogo(logos.get(matched.id) || []) : "";
     const name = text(row.tvgName || row.name || `Channel ${index + 1}`);
     const group = sourceGroupForPresentation(row.group, name, country);
+    const logo = matchedLogo || row.logo || generatedLogo(id);
 
     return {
       id,
@@ -233,7 +237,8 @@ export function buildMetadataLineup(rawRows, { iptvOrg = null, excludeAdult = tr
       group,
       country,
       number: Number(row.number || index + 1),
-      logo: row.logo || matchedLogo || generatedLogo(id),
+      logo,
+      logoSource: matchedLogo ? "iptv-org" : row.logo ? "source" : "generated",
       kind: "static",
       programmes: [],
       candidates: [{ url: row.url, label: text(row.name || row.tvgName || name) }],
