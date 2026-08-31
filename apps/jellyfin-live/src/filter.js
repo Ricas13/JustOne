@@ -23,6 +23,10 @@ const FREE_GROUPS = new Set([
 // title/episode-style VOD rows from those buckets.
 const LINEAR_MOVIE_OR_SHOW_CHANNEL_RE = /\b(?:axn(?:\s+movies?)?|fox\s+movies?|fx\s+movie\s+channel|fxx?|film4|sky\s+cinema(?:\s+[a-z0-9&+' -]+)?|sony\s+movies?|hallmark(?:\s+movies?\s*(?:&|and)\s*mysteries)?|lifetime\s+movies?\s+network|movies?\s*24|tcm|turner\s+classic\s+movies|amc|hbo(?:\s+[a-z0-9&+' -]+)?|cinemax(?:\s+[a-z0-9&+' -]+)?|starz(?:\s+[a-z0-9&+' -]+)?|paramount\s+network|star\s+movies?|cine(?:star|canal)|v\s+film(?:\s+[a-z0-9&+' -]+)?|yes\s+movies(?:\s+[a-z0-9&+' -]+)?)\b/i;
 
+// Programme-specific feeds are not linear channels. These are common provider
+// artefacts where one show/event is exposed as a temporary channel row.
+const PROGRAMME_FEED_RE = /(?:\bbig\s+brother\b.*\b(?:live\s+feeds?|cam|quadview)\b|\bsaturday\s+night\s+live\b.*\s-\s(?:nbc(?:ny)?|sky\s+one)\b|\bs\d{1,2}e\d{1,2}\b|\bseason\s+\d+\s+episode\s+\d+\b)/i;
+
 const ADULT_RE = /(?:^|[^a-z0-9])(?:18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(?=$|[^a-z0-9])/i;
 const FREE_PROVIDER_RE = /\b(?:pluto\s*tv|samsung\s*tv\s*plus|plex\s*(?:live\s*)?tv|the\s+roku\s+channel|lg\s+channels|xumo(?:\s+play)?|tubi(?:\s+tv)?)\b/i;
 const IPTV_ORG_RE = /\biptv[\s._-]*org\b/i;
@@ -63,6 +67,10 @@ export function isVodStyleChannel(ch) {
   return isVodGroup(ch) && !isLinearMovieOrShowChannel(ch);
 }
 
+export function isProgrammeFeedStyleChannel(ch) {
+  return PROGRAMME_FEED_RE.test(String(ch?.name || ch?.tvgName || ""));
+}
+
 export function isAdultStyleChannel(ch) {
   return ADULT_RE.test(`${ch?.name || ""} ${ch?.group || ""} ${ch?.tvgId || ""}`);
 }
@@ -88,6 +96,7 @@ export function isIptvOrgStyleChannel(ch) {
 export function filterJellyfinRows(rows) {
   return (rows || []).filter((ch) =>
     !isVodStyleChannel(ch)
+    && !isProgrammeFeedStyleChannel(ch)
     && !isAdultStyleChannel(ch)
     && !isFreeStyleChannel(ch)
     && !isIptvOrgStyleChannel(ch),
