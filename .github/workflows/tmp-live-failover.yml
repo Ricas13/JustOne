@@ -1,0 +1,338 @@
+name: Temporary live failover patch
+
+on:
+  push:
+    branches:
+      - fix/live-media-failover-20260831
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[live-failover-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/live-media-failover-20260831
+      - name: Apply live media validation patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('apps/platform/src/resolve.js')
+          text = path.read_text()
+
+          old_constants = '''const PLAYBACK_SOURCE_RECHECK_MS = Math.max(
+            0,
+            Number(process.env.PLAYBACK_SOURCE_RECHECK_MS || 15000),
+          );
+          const suppressedSources = new Map();'''
+          new_constants = '''const PLAYBACK_SOURCE_RECHECK_MS = Math.max(
+            0,
+            Number(process.env.PLAYBACK_SOURCE_RECHECK_MS || 15000),
+          );
+          const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(
+            1000,
+            Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 7000),
+          );
+          const LIVE_SOURCE_RECHECK_MS = Math.max(
+            0,
+            Number(process.env.LIVE_SOURCE_RECHECK_MS || 15000),
+          );
+          const suppressedSources = new Map();'''
+          if old_constants not in text:
+              raise SystemExit('resolve constants anchor not found')
+          text = text.replace(old_constants, new_constants, 1)
+
+          old_live = '''async function resolveLiveEndpoint(endpoint) {
+            const response = await fetch(endpoint.url, {
+              redirect: "manual",
+              signal: AbortSignal.timeout(20000),
+            });
+            const location = response.headers.get("location");
+            const ok = response.status >= 200 && response.status < 400;
+            try {
+              await response.body?.cancel();
+            } catch {
+              /* ignore cleanup errors */
+            }
+            if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
+            return location ? new URL(location, endpoint.url).href : endpoint.url;
+          }
+
+          export async function resolveLive(channelId, { force = false } = {}) {
+            const key = `live:${channelId}`;
+            if (!force) {
+              const cached = cacheGet(key);
+              if (cached) return cached;
+            }
+
+            const endpoints = liveStreamEndpoints(channelId);
+            let lastError = null;
+            for (const endpoint of endpoints) {
+              try {
+                const url = await resolveLiveEndpoint(endpoint);
+                const picked = {
+                  url,
+                  quality: "live",
+                  available: ["live"],
+                  wanted: "live",
+                  matched: true,
+                  provider: endpoint.provider,
+                };
+                cacheSet(key, picked);
+                return picked;
+              } catch (error) {
+                lastError = error;
+              }
+            }
+
+            throw lastError || new Error("no DLHD live provider configured");
+          }'''
+          new_live = '''async function validateLiveMedia(url) {
+            return validatePlaybackMedia(
+              { url, probeUrl: url, requestHeaders: {} },
+              Date.now() + LIVE_SOURCE_PROBE_TIMEOUT_MS,
+              LIVE_SOURCE_PROBE_TIMEOUT_MS,
+              PROBE_UA,
+            );
+          }
+
+          async function resolveLiveEndpoint(endpoint) {
+            const response = await fetch(endpoint.url, {
+              redirect: "manual",
+              signal: AbortSignal.timeout(Math.max(20000, LIVE_SOURCE_PROBE_TIMEOUT_MS)),
+            });
+            const location = response.headers.get("location");
+            const ok = response.status >= 200 && response.status < 400;
+            try {
+              await response.body?.cancel();
+            } catch {
+              /* ignore cleanup errors */
+            }
+            if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
+
+            const url = location ? new URL(location, endpoint.url).href : endpoint.url;
+            if (!(await validateLiveMedia(url))) {
+              throw new Error(`${endpoint.provider} returned no readable live media`);
+            }
+            return url;
+          }
+
+          export async function resolveLive(
+            channelId,
+            {
+              force = false,
+              proxyUrl = config.dlhdProxyUrl,
+              legacyUrl = config.dlhdUrl,
+            } = {},
+          ) {
+            const key = `live:${channelId}`;
+            if (!force) {
+              const cached = cacheGet(key);
+              if (cached) {
+                const recentlyChecked =
+                  cached.liveValidatedAt &&
+                  Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS;
+                if (recentlyChecked) return cached;
+
+                if (await validateLiveMedia(cached.url)) {
+                  cached.liveValidated = true;
+                  cached.liveValidatedAt = Date.now();
+                  return cached;
+                }
+
+                // Do not let a stale/dead one-hour live cache pin this channel to a source
+                // whose playlist still exists but whose media has disappeared.
+                cache.delete(key);
+              }
+            }
+
+            const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
+            let lastError = null;
+            for (const endpoint of endpoints) {
+              try {
+                const url = await resolveLiveEndpoint(endpoint);
+                const picked = {
+                  url,
+                  quality: "live",
+                  available: ["live"],
+                  wanted: "live",
+                  matched: true,
+                  validated: true,
+                  playbackValidated: true,
+                  liveValidated: true,
+                  liveValidatedAt: Date.now(),
+                  provider: endpoint.provider,
+                };
+                cacheSet(key, picked);
+                return picked;
+              } catch (error) {
+                lastError = error;
+              }
+            }
+
+            throw lastError || new Error("no DLHD live provider configured");
+          }'''
+          if old_live not in text:
+              raise SystemExit('resolve live anchor not found')
+          text = text.replace(old_live, new_live, 1)
+
+          old_stats = '''    playbackSourceFailoverAttempts: PLAYBACK_SOURCE_FAILOVER_ATTEMPTS,
+              playbackSourceRecheckMs: PLAYBACK_SOURCE_RECHECK_MS,
+            };'''
+          new_stats = '''    playbackSourceFailoverAttempts: PLAYBACK_SOURCE_FAILOVER_ATTEMPTS,
+              playbackSourceRecheckMs: PLAYBACK_SOURCE_RECHECK_MS,
+              liveSourceProbeTimeoutMs: LIVE_SOURCE_PROBE_TIMEOUT_MS,
+              liveSourceRecheckMs: LIVE_SOURCE_RECHECK_MS,
+            };'''
+          if old_stats not in text:
+              raise SystemExit('cache stats anchor not found')
+          text = text.replace(old_stats, new_stats, 1)
+          path.write_text(text)
+
+          test_path = Path('apps/platform/test/live-provider.test.js')
+          test_path.write_text('''import test from "node:test";
+          import assert from "node:assert/strict";
+          import http from "node:http";
+          import { liveStreamEndpoints, resolveLive } from "../src/resolve.js";
+
+          function listen(server) {
+            return new Promise((resolve, reject) => {
+              server.once("error", reject);
+              server.listen(0, "127.0.0.1", () => {
+                server.off("error", reject);
+                resolve(server.address());
+              });
+            });
+          }
+
+          function close(server) {
+            return new Promise((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()));
+            });
+          }
+
+          test("amddeus DLHD proxy is preferred while legacy resolver remains fallback", () => {
+            assert.deepEqual(
+              liveStreamEndpoints("123.ts", {
+                proxyUrl: "http://dlhd-proxy:3000/",
+                legacyUrl: "http://dlhd:3000/",
+              }),
+              [
+                { provider: "amddeus-dlhd-proxy", url: "http://dlhd-proxy:3000/stream/123.m3u8" },
+                { provider: "legacy-dlhd-web", url: "http://dlhd:3000/api/stream/123.m3u8" },
+              ],
+            );
+          });
+
+          test("legacy DLHD remains usable when the new proxy is not configured", () => {
+            assert.deepEqual(
+              liveStreamEndpoints("44.m3u8", { proxyUrl: "", legacyUrl: "http://dlhd:3000" }),
+              [{ provider: "legacy-dlhd-web", url: "http://dlhd:3000/api/stream/44.m3u8" }],
+            );
+          });
+
+          test("live resolver rejects a manifest with dead media and falls back to legacy", async () => {
+            let primaryMediaProbes = 0;
+            let legacyMediaProbes = 0;
+            const server = http.createServer((req, res) => {
+              if (req.url === "/primary/stream/149.m3u8") {
+                res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+                res.end("#EXTM3U\\n#EXT-X-TARGETDURATION:2\\n#EXTINF:2,\\n/primary/dead.ts\\n");
+                return;
+              }
+              if (req.url === "/primary/dead.ts") {
+                primaryMediaProbes += 1;
+                res.writeHead(503, { "content-type": "text/plain" });
+                res.end("upstream unavailable");
+                return;
+              }
+              if (req.url === "/legacy/api/stream/149.m3u8") {
+                res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+                res.end("#EXTM3U\\n#EXT-X-TARGETDURATION:2\\n#EXTINF:2,\\n/legacy/good.ts\\n");
+                return;
+              }
+              if (req.url === "/legacy/good.ts") {
+                legacyMediaProbes += 1;
+                res.writeHead(206, {
+                  "content-type": "video/mp2t",
+                  "content-range": "bytes 0-0/188",
+                });
+                res.end(Buffer.from([0x47]));
+                return;
+              }
+              res.writeHead(404);
+              res.end();
+            });
+
+            const address = await listen(server);
+            const base = `http://127.0.0.1:${address.port}`;
+            try {
+              const picked = await resolveLive("149", {
+                force: true,
+                proxyUrl: `${base}/primary`,
+                legacyUrl: `${base}/legacy`,
+              });
+              assert.equal(picked.provider, "legacy-dlhd-web");
+              assert.equal(picked.playbackValidated, true);
+              assert.equal(picked.liveValidated, true);
+              assert.ok(primaryMediaProbes >= 1);
+              assert.ok(legacyMediaProbes >= 1);
+            } finally {
+              await close(server);
+            }
+          });
+
+          test("live resolver does not accept an HTTP-200 error payload as a working channel", async () => {
+            const server = http.createServer((req, res) => {
+              if (req.url === "/primary/stream/150.m3u8") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: "channel unavailable" }));
+                return;
+              }
+              if (req.url === "/legacy/api/stream/150.m3u8") {
+                res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+                res.end("#EXTM3U\\n#EXTINF:2,\\n/legacy/150.ts\\n");
+                return;
+              }
+              if (req.url === "/legacy/150.ts") {
+                res.writeHead(206, {
+                  "content-type": "video/mp2t",
+                  "content-range": "bytes 0-0/188",
+                });
+                res.end(Buffer.from([0x47]));
+                return;
+              }
+              res.writeHead(404);
+              res.end();
+            });
+
+            const address = await listen(server);
+            const base = `http://127.0.0.1:${address.port}`;
+            try {
+              const picked = await resolveLive("150", {
+                force: true,
+                proxyUrl: `${base}/primary`,
+                legacyUrl: `${base}/legacy`,
+              });
+              assert.equal(picked.provider, "legacy-dlhd-web");
+              assert.equal(picked.playbackValidated, true);
+            } finally {
+              await close(server);
+            }
+          });
+          ''')
+          PY
+
+          node --check apps/platform/src/resolve.js
+          node --check apps/platform/test/live-provider.test.js
+          rm -f .github/workflows/tmp-live-failover.yml
+          git config user.name "Ricas13"
+          git config user.email "56263921+Ricas13@users.noreply.github.com"
+          git add apps/platform/src/resolve.js apps/platform/test/live-provider.test.js .github/workflows/tmp-live-failover.yml
+          git commit -m "Validate live IPTV media before caching sources [live-failover-applied]"
+          git push origin HEAD:fix/live-media-failover-20260831
