@@ -5,6 +5,7 @@ import {
   mergeCandidates,
   validateCandidate,
   validateCandidateForPlayback,
+  checkMovieAdmission,
   checkMovieAvailability,
   pickSource,
   resolveMovie,
@@ -173,6 +174,139 @@ test("playback failure suppresses the cached candidate and selects the next 4K s
   } finally {
     globalThis.fetch = originalFetch;
     clearSuppressedSources();
+  }
+});
+
+test("playback reports no-candidates when both resolvers return empty source lists", async () => {
+  clearSuppressedSources();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/551122")) {
+      return new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (value.includes("/stream/movie/") && value.includes("551122")) {
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const picked = await resolveMovie("551122", "1080p");
+    assert.equal(picked.url, null);
+    assert.equal(picked.playbackFailure, "no-candidates");
+    assert.deepEqual(picked.available, []);
+    assert.equal(picked.providerErrors.primary, null);
+    assert.equal(picked.providerErrors.secondary, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearSuppressedSources();
+  }
+});
+
+test("playback preserves primary resolver HTTP errors in diagnostics", async () => {
+  clearSuppressedSources();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/551123")) {
+      return new Response(JSON.stringify({ error: "temporary" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (value.includes("/stream/movie/") && value.includes("551123")) {
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const picked = await resolveMovie("551123", "1080p");
+    assert.equal(picked.url, null);
+    assert.equal(picked.playbackFailure, "provider-error");
+    assert.match(picked.providerErrors.primary, /primary resolver returned 500/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearSuppressedSources();
+  }
+});
+
+test("movie admission accepts a primary source only after media bytes are readable", async () => {
+  const originalFetch = globalThis.fetch;
+  let secondaryCalls = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/551124")) {
+      return new Response(
+        JSON.stringify({
+          sources: [{ url: "https://good.example/admission.mp4", quality: "1080p" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (value.includes("/stream/movie/")) {
+      secondaryCalls += 1;
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (value === "https://good.example/admission.mp4") {
+      assert.equal(String(options.method || "GET").toUpperCase(), "GET");
+      assert.equal(options.headers.Range, "bytes=0-0");
+      return new Response("x", {
+        status: 206,
+        headers: { "content-range": "bytes 0-0/10", "content-type": "video/mp4" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const result = await checkMovieAdmission("551124");
+    assert.equal(result.state, "available");
+    assert.equal(result.provider, "primary");
+    assert.equal(secondaryCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("movie admission defers when both resolvers definitively return no sources", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("/v1/movies/551125")) {
+      return new Response(JSON.stringify({ sources: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (value.includes("/stream/movie/") && value.includes("551125")) {
+      return new Response(JSON.stringify({ streams: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${value}`);
+  };
+
+  try {
+    const result = await checkMovieAdmission("551125");
+    assert.equal(result.state, "unavailable");
+    assert.equal(result.reason, "no-direct-sources");
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
