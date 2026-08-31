@@ -3,7 +3,7 @@ import zlib from "node:zlib";
 import express from "express";
 import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
-import { discoverEpgShareUrls } from "./epg-sources.js";
+import { countryGuideReserve, discoverEpgShareUrls } from "./epg-sources.js";
 import { applyEventSchedule } from "./event-schedule.js";
 import { collapseSportsEvents, selectWorkingEventCandidate } from "./event-failover.js";
 import { filterJellyfinRows } from "./filter.js";
@@ -265,19 +265,28 @@ async function refresh(force = false) {
       organizeLineup(scheduled.lineup),
     );
 
+    // Country packs are the primary EPG source for country-grouped television.
+    // Reserve one slot per represented country first, then use the remaining
+    // budget for IPTV-org guide URLs. A failed country-pack discovery simply
+    // hands the unused capacity back to IPTV-org instead of reducing coverage.
     const manualUrls = [...new Set(config.epgSourceUrls)];
-    const iptvUrls = config.autoEpg
-      ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, config.epgMaxSources)
-      : [];
-    const baseSources = [...new Set([...manualUrls, ...iptvUrls])];
-    const fallbackBudget = Math.max(0, config.epgMaxSources - baseSources.length);
-    const fallbackUrls = config.autoEpg && fallbackBudget
-      ? await discoverEpgShareUrls(lineup, fallbackBudget).catch((error) => {
-          log("epg fallback fail", String(error.message || error));
+    const countryReserve = config.autoEpg
+      ? countryGuideReserve(lineup, config.epgMaxSources, manualUrls.length)
+      : 0;
+    const discoveredCountryUrls = config.autoEpg && countryReserve
+      ? await discoverEpgShareUrls(lineup, countryReserve).catch((error) => {
+          log("epg country fail", String(error.message || error));
           return [];
         })
       : [];
-    const epgSources = [...new Set([...baseSources, ...fallbackUrls])];
+    const countryUrls = discoveredCountryUrls.filter((url) => !manualUrls.includes(url));
+    const countryBaseSources = [...new Set([...manualUrls, ...countryUrls])];
+    const iptvBudget = Math.max(0, config.epgMaxSources - countryBaseSources.length);
+    const iptvUrls = config.autoEpg
+      ? guideSourceUrlsForLineup(lineup, iptvOrg.guides, iptvBudget)
+      : [];
+    const epgSources = [...new Set([...countryBaseSources, ...iptvUrls])]
+      .slice(0, Math.max(0, config.epgMaxSources));
     const docs = (await mapLimit(epgSources, EPG_CONCURRENCY, loadXmlGuide)).filter(Boolean);
 
     const matchedChannels = lineup.filter((ch) => ch.iptvOrgId).length;
@@ -297,8 +306,10 @@ async function refresh(force = false) {
       iptvMetadataMissing: iptvOrg.missing || [],
       matchedChannels,
       manualSources: manualUrls.length,
+      countryReserve,
+      countrySources: countryUrls.length,
       iptvSources: iptvUrls.length,
-      fallbackSources: fallbackUrls.length,
+      fallbackSources: countryUrls.length,
       selectedSources: epgSources.length,
       loadedSources: docs.length,
       eventScheduleDate: schedule
@@ -351,7 +362,8 @@ async function refresh(force = false) {
       `iptv-logos=${iptvOrg.logos.length}`,
       `iptv-reused=${(iptvOrg.reused || []).join(",") || "none"}`,
       `iptv-guides=${iptvOrg.guides.length}`,
-      `fallback=${fallbackUrls.length}`,
+      `country-epg=${countryUrls.length}/${countryReserve}`,
+      `iptv-epg=${iptvUrls.length}`,
     );
   } catch (error) {
     cache.error = String(error.message || error);
