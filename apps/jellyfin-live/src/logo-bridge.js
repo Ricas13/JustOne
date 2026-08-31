@@ -105,7 +105,9 @@ export function applyEpgIdentityLogos(lineup, docs = [], iptvOrg = {}) {
     if (!logo) continue;
 
     channel.logo = logo;
-    channel.logoSource = "iptv-identity";
+    // Preserve the historical diagnostics contract even though identity-first
+    // recovery can now succeed before an XMLTV match is available.
+    channel.logoSource = "iptv-epg-identity";
     channel.logoIdentity = metadata.id;
     if (!channel.iptvOrgId) channel.iptvOrgId = metadata.id;
     applied += 1;
