@@ -1,7 +1,6 @@
 import { compareCountryChannels } from "./country-order.js";
 import { config, withKey } from "./config.js";
 
-const HOUR = 60 * 60 * 1000;
 const PRIORITY_COUNTRIES = ["US", "GB", "PT"];
 const SPECIAL_NAMES = new Map([
   ["US", "USA"],
@@ -215,14 +214,7 @@ function artworkUrl(variant, token) {
 function eventProgrammes(channel, sport) {
   const category = sport.label.replace(/^Sports\s*\|\s*/i, "") || "Sports";
   const existing = Array.isArray(channel.programmes) ? channel.programmes : [];
-  const base = existing.length ? existing : [{
-    start: Math.floor(Date.now() / (6 * HOUR)) * 6 * HOUR,
-    end: Math.floor(Date.now() / (6 * HOUR)) * 6 * HOUR + 12 * HOUR,
-    title: eventTitle(channel),
-    subtitle: category,
-    categories: ["Sports", category],
-  }];
-  return base.map((programme, index) => ({
+  return existing.map((programme, index) => ({
     ...programme,
     title: programme.title || eventTitle(channel),
     subtitle: programme.subtitle || category,
