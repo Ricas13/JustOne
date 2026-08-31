@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { config, withKey } from "./config.js";
 
 const WINNER_TTL_MS = Math.max(5000, Number(process.env.JELLYFIN_EVENT_WINNER_TTL_MS || 60000));
-const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.JELLYFIN_EVENT_PROBE_TIMEOUT_MS || 5000));
+const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.JELLYFIN_EVENT_PROBE_TIMEOUT_MS || 8000));
 const winners = new Map();
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
@@ -192,16 +192,15 @@ export function collapseSportsEvents(lineup = []) {
   return out;
 }
 
+/**
+ * Event candidates must be validated through the exact URL the client will
+ * receive. In particular, /play/live/<id>.ts exercises JustOne's FFmpeg HLS
+ * remux while /play/live/<id>.m3u8 is only an intermediate HLS proxy and can
+ * have different availability. Rewriting .ts to .m3u8 therefore produces both
+ * false negatives and false positives.
+ */
 export function probeUrlForCandidate(url) {
-  try {
-    const parsed = new URL(String(url));
-    if (/\/play\/live\/[^/]+\.ts$/i.test(parsed.pathname)) {
-      parsed.pathname = parsed.pathname.replace(/\.ts$/i, ".m3u8");
-    }
-    return parsed.toString();
-  } catch {
-    return String(url || "");
-  }
+  return String(url || "");
 }
 
 async function probeCandidate(candidate, fetchImpl, timeoutMs) {
@@ -212,21 +211,50 @@ async function probeCandidate(candidate, fetchImpl, timeoutMs) {
       redirect: "follow",
       headers: {
         "user-agent": "Mozilla/5.0 JustOne Jellyfin Event Selector",
-        accept: "application/vnd.apple.mpegurl,application/x-mpegURL,video/*,*/*",
+        accept: "video/mp2t,application/vnd.apple.mpegurl,application/x-mpegURL,video/*,*/*",
       },
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return false;
+
     const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
     if (contentType.includes("text/html")) return false;
+
+    // A manifest/status response is not enough. Read the first bytes from the
+    // exact playback transport, then cancel immediately so a health probe does
+    // not keep an FFmpeg live-remux process running.
     const reader = response.body?.getReader?.();
-    if (!reader) return !/\.m3u8(?:$|\?)/i.test(probeUrl);
+    if (!reader) return false;
     const first = await reader.read();
     await reader.cancel().catch(() => {});
     if (!first?.value?.length) return false;
-    const sample = new TextDecoder().decode(first.value).slice(0, 8192);
+
+    const bytes = first.value instanceof Uint8Array
+      ? first.value
+      : new Uint8Array(first.value);
+    const sample = new TextDecoder().decode(bytes).slice(0, 8192);
     if (/<(?:!doctype\s+html|html|body)\b/i.test(sample)) return false;
-    if (/\.m3u8(?:$|\?)/i.test(probeUrl)) return /#EXTM3U/i.test(sample);
+
+    let pathname = "";
+    try {
+      pathname = new URL(probeUrl).pathname;
+    } catch {
+      pathname = String(probeUrl || "");
+    }
+
+    const manifestResponse =
+      contentType.includes("mpegurl")
+      || contentType.includes("m3u8")
+      || /\.m3u8$/i.test(pathname);
+    if (manifestResponse) return /#EXTM3U/i.test(sample);
+
+    const mpegTsResponse =
+      contentType.includes("video/mp2t")
+      || contentType.includes("mp2t")
+      || /\.ts$/i.test(pathname);
+    if (mpegTsResponse) return bytes[0] === 0x47;
+
+    // Non-HLS direct media is acceptable once real non-HTML bytes arrive.
     return true;
   } catch {
     return false;

@@ -126,7 +126,7 @@ test("quality ranking is highest quality to lowest quality", () => {
   assert.ok(qualityRank("Sky Sports") > qualityRank("Event SD Stream"));
 });
 
-test("selector probes highest quality first and returns the exact original working URL", async () => {
+test("selector probes the exact .ts transport and returns the original working URL", async () => {
   clearEventWinnerCache();
   const fourK = rawUrl("401");
   const hd = rawUrl("402");
@@ -140,11 +140,11 @@ test("selector probes highest quality first and returns the exact original worki
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(url);
-    if (url.includes("401.m3u8")) return new Response("bad", { status: 502 });
-    if (url.includes("402.m3u8")) {
-      return new Response("#EXTM3U\n#EXT-X-VERSION:3\n", {
+    if (url.includes("401.ts")) return new Response("bad", { status: 502 });
+    if (url.includes("402.ts")) {
+      return new Response(Uint8Array.from([0x47, 0x40, 0x00, 0x10, 0x00, 0x00]), {
         status: 200,
-        headers: { "content-type": "application/vnd.apple.mpegurl" },
+        headers: { "content-type": "video/mp2t" },
       });
     }
     throw new Error("lower quality source should not be probed after HD succeeds");
@@ -152,9 +152,24 @@ test("selector probes highest quality first and returns the exact original worki
 
   const selected = await selectWorkingEventCandidate(channel, { fetchImpl, timeoutMs: 1000 });
   assert.equal(selected.url, hd, "the exact original .ts playback URL is returned");
-  assert.deepEqual(calls, [probeUrlForCandidate(fourK), probeUrlForCandidate(hd)]);
-  assert.match(calls[0], /\/play\/live\/401\.m3u8\?key=exact-401$/);
-  assert.match(calls[1], /\/play\/live\/402\.m3u8\?key=exact-402$/);
+  assert.deepEqual(calls, [fourK, hd]);
+  assert.equal(probeUrlForCandidate(fourK), fourK);
+  assert.equal(probeUrlForCandidate(hd), hd);
+  assert.match(calls[0], /\/play\/live\/401\.ts\?key=exact-401$/);
+  assert.match(calls[1], /\/play\/live\/402\.ts\?key=exact-402$/);
+});
+
+test("selector rejects a superficially successful non-MPEG-TS response for a .ts candidate", async () => {
+  clearEventWinnerCache();
+  const [channel] = collapseSportsEvents([
+    event("a", "Chelsea vs Brighton - Sky Sports UHD", rawUrl("a")),
+    event("b", "Chelsea vs Brighton - Event SD Stream", rawUrl("b")),
+  ]);
+  const fetchImpl = async () => new Response("#EXTM3U\n", {
+    status: 200,
+    headers: { "content-type": "video/mp2t" },
+  });
+  assert.equal(await selectWorkingEventCandidate(channel, { fetchImpl, timeoutMs: 1000 }), null);
 });
 
 test("selector returns null when no candidate can be validated", async () => {
