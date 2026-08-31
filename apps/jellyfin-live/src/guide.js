@@ -75,6 +75,10 @@ export function canonicalGuideName(value, country = "") {
     .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
     .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
+    // Split genuine channel-number/quality joins such as Sports4, Eurosport1,
+    // ITV1 and 4HD, but keep one-letter numbered brands such as F1 intact.
+    .replace(/([a-z]{2,})(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z]{2,})/g, "$1 $2")
     .replace(/\bnova\s+sports?\b/g, "novasports")
     .replace(/\bcyta\s+vision\b/g, "cytavision")
     .replace(/\s+/g, " ")
@@ -173,11 +177,26 @@ function channelVariants(ch) {
   return [...out].filter(Boolean);
 }
 
+function numberTokens(value) {
+  return [...String(value || "").matchAll(/\b\d{1,4}\b/g)].map((m) => Number(m[0]));
+}
+
+function channelNumbersCompatible(a, b) {
+  const aa = numberTokens(a);
+  const bb = numberTokens(b);
+  if (!aa.length && !bb.length) return true;
+  if (aa.length !== bb.length) return false;
+  return aa.every((value, index) => value === bb[index]);
+}
+
 function similarity(a, entry) {
   const aa = new Set(a.split(" ").filter(Boolean));
   if (!aa.size) return 0;
   let best = 0;
   for (const b of entry.canonical) {
+    // Numbered families are not interchangeable. Cytavision Sports 4 must not
+    // fuzzy-match Sports 1/2/3/5 simply because the broadcaster words overlap.
+    if (!channelNumbersCompatible(a, b)) continue;
     if (a === b) return 100;
     const bb = new Set(b.split(" ").filter(Boolean));
     const intersection = [...aa].filter((x) => bb.has(x)).length;
@@ -226,15 +245,15 @@ export function matchGuideChannel(ch, docs) {
   let best = null;
   for (const doc of orderedDocs) {
     const index = indexDoc(doc);
-    // A known country-specific EPG pack must not be used for another country.
-    // Wrong-country fuzzy matches are worse than an honest empty schedule and
-    // were responsible for visibly incorrect guide data on regional networks.
+    // A known country-specific EPG pack is a hard boundary and must never be
+    // used for another country. Country is resolved before channel name/number.
     if (country && index.country && country !== index.country) continue;
     for (const variant of variants) {
       for (const id of candidateIds(index, variant)) {
         const entry = index.entries.get(id);
         if (!entry) continue;
         const score = similarity(variant, entry);
+        if (!score) continue;
         const programmeCount = (doc.programmes?.get(id) || []).length;
         const isBetter = !best
           || score > best.score
@@ -405,6 +424,10 @@ export function guideCoverage(lineup, docs) {
   };
 }
 
+function isEventChannel(ch) {
+  return ch?.kind === "sport-slot" || ch?.eventFailover === true || ch?.eventStyle === true;
+}
+
 export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours = EPG_HORIZON_HOURS } = {}) {
   const horizonEnd = now + Math.max(1, Number(horizonHours || EPG_HORIZON_HOURS)) * HOUR;
   const lines = [
@@ -416,7 +439,7 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
   // Only final lineup channels are emitted. Upstream guide-only channels never
   // enter the final XMLTV, which keeps M3U and EPG identities in lockstep.
   for (const ch of lineup || []) {
-    const hit = ch.kind === "static" ? matchGuideChannel(ch, docs) : null;
+    const hit = ch.kind === "static" && !isEventChannel(ch) ? matchGuideChannel(ch, docs) : null;
     if (hit) hits.set(ch.id, hit);
     const icon = ch.logo || hit?.meta?.icon || localArtwork(ch, "channel");
     lines.push(`  <channel id="${xml(ch.tvgId)}">`);
@@ -426,15 +449,19 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
   }
 
   for (const ch of lineup || []) {
-    if (ch.kind === "sport-slot") {
+    if (isEventChannel(ch)) {
       const programmes = (ch.programmes || []).filter((p) => {
         const start = Number(p?.start);
         const stop = Number(p?.end);
-        return Number.isFinite(start) && Number.isFinite(stop) && stop > now && start < horizonEnd;
+        // Only the verified DLStreams event entry is emitted. There are no
+        // filler programmes before or after it, so idle event channels remain
+        // completely absent from Jellyfin's current-programme surfaces.
+        return p?.scheduleSource === "dlstreams"
+          && Number.isFinite(start)
+          && Number.isFinite(stop)
+          && stop > now
+          && start < horizonEnd;
       });
-      // Sports event times are source data, not placeholders. If the current
-      // DLStreams schedule did not supply a verified start, leave the EPG empty
-      // for that event rather than inventing a time that Jellyfin will display.
       for (const p of programmes) lines.push(generatedSportsProgramXml(ch, p));
       continue;
     }

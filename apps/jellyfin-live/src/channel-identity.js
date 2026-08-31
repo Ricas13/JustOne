@@ -1,5 +1,5 @@
 const COUNTRY_ALIASES = new Map([
-  ["US", ["usa", "us", "us2", "united states", "united states of america"]],
+  ["US", ["usa", "us", "us2", "us 2", "united states", "united states of america"]],
   ["GB", ["uk", "gb", "united kingdom", "great britain", "england", "scotland", "wales"]],
   ["PT", ["pt", "portugal"]],
   ["GR", ["gr", "greece", "hellas"]],
@@ -87,6 +87,10 @@ function normalizedWords(value) {
     .replace(/\+/g, " plus ")
     .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
+    // Split genuine channel-number/quality joins such as Sports4, Eurosport1,
+    // ITV1 and 4HD, but keep one-letter numbered brands such as F1 intact.
+    .replace(/([a-z]{2,})(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z]{2,})/g, "$1 $2")
     .replace(/\bnova\s+sports?\b/g, "novasports")
     .replace(/\bcyta\s+vision\b/g, "cytavision")
     .replace(/\s+/g, " ")

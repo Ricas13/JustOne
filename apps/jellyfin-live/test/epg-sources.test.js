@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseEpgShareIndex, selectEpgShareUrls } from "../src/epg-sources.js";
+import {
+  countryGuideReserve,
+  parseEpgShareIndex,
+  selectEpgShareUrls,
+} from "../src/epg-sources.js";
 
 test("EPGShare index parser finds XMLTV gzip packs", () => {
   const html = `
@@ -33,4 +37,37 @@ test("fallback selects country packs by lineup weight and maps GB to UK", () => 
   assert.match(urls[2], /PT1\.xml\.gz$/);
   assert.match(urls[3], /US2\.xml\.gz$/);
   assert.equal(urls.some((x) => /ALL_SOURCES/.test(x)), false);
+});
+
+test("one EPG slot is reserved per represented country before generic guides", () => {
+  const lineup = [
+    { kind: "static", country: "US" },
+    { kind: "static", country: "GB" },
+    { kind: "static", country: "PT" },
+    { kind: "static", country: "GR" },
+    { kind: "static", country: "DK" },
+    { kind: "static", country: "CY" },
+    { kind: "sport-slot", country: "CY" },
+  ];
+
+  assert.equal(countryGuideReserve(lineup, 32, 0), 6);
+  assert.equal(countryGuideReserve(lineup, 5, 0), 5, "the global budget remains the hard cap");
+  assert.equal(countryGuideReserve(lineup, 8, 3), 5, "manual sources keep their slots first");
+});
+
+test("Cyprus receives its own country pack when represented in the lineup", () => {
+  const lineup = [
+    { kind: "static", country: "US" },
+    { kind: "static", country: "CY" },
+    { kind: "static", country: "DK" },
+  ];
+  const files = [
+    { file: "epg_ripper_US1.xml.gz", pack: "US1" },
+    { file: "epg_ripper_CY1.xml.gz", pack: "CY1" },
+    { file: "epg_ripper_DK1.xml.gz", pack: "DK1" },
+  ];
+
+  const urls = selectEpgShareUrls(lineup, files, countryGuideReserve(lineup, 32));
+  assert.equal(urls.length, 3);
+  assert.equal(urls.some((url) => /CY1\.xml\.gz$/.test(url)), true);
 });

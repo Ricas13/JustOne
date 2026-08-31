@@ -36,8 +36,27 @@ function hash(value, length = 14) {
   return crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, length);
 }
 
+function countryFromText(value) {
+  const hay = String(value || "").toLowerCase();
+  if (!hay) return "";
+  for (const [name, code] of COUNTRY_CODES) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(^|[^a-z])${escaped}([^a-z]|$)`, "i").test(hay)) {
+      return normalizeCountryCode(code);
+    }
+  }
+  return "";
+}
+
 function countryCode(ch) {
   const title = text(ch?.tvgName || ch?.name);
+
+  // The provider's country/group bucket is the hard metadata boundary. Names
+  // can contain another country's broadcaster or branding, but that must never
+  // move the row out of the country the provider placed it in.
+  const groupedCountry = countryFromText(ch?.group);
+  if (groupedCountry) return groupedCountry;
+
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
 
@@ -48,11 +67,9 @@ function countryCode(ch) {
   if (/^Alkass\b/i.test(title)) return "QA";
   if (/^SSC\s+Sport\b/i.test(title)) return "SA";
 
-  const hay = `${ch?.group || ""} ${ch?.name || ""}`.toLowerCase();
-  for (const [name, code] of COUNTRY_CODES) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`(^|[^a-z])${escaped}([^a-z]|$)`, "i").test(hay)) return code;
-  }
+  const namedCountry = countryFromText(`${ch?.tvgName || ""} ${ch?.name || ""}`);
+  if (namedCountry) return namedCountry;
+
   const suffix = /\.([a-z]{2})(?:\d)?$/i.exec(ch?.tvgId || "")?.[1];
   return normalizeCountryCode(suffix || "");
 }

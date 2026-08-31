@@ -24,6 +24,7 @@ test("country suffix normalization covers Greece Denmark Cyprus and France", () 
   assert.ok(countrySuffixes("FR").includes("france"));
   assert.ok(channelIdentityKeys("Nova Sports Start Greece HD", "GR").includes("novasports start"));
   assert.equal(canonicalGuideName("Cytavision Sports 1 Cyprus HD", "CY"), "cytavision sports 1");
+  assert.equal(canonicalGuideName("Cytavision.Sports.4HD.cy", "CY"), "cytavision sports 4");
 });
 
 test("multinational IPTV-org channels can match a country-specific feed", () => {
@@ -77,6 +78,32 @@ test("regular regional channels get canonical IPTV identities and official logos
   assert.equal(tv2.iptvOrgId, "TV2Sport.dk");
   assert.equal(tv2.logo, "https://logos.example/tv2.png");
   assert.equal(tv2.country, "DK");
+});
+
+test("provider country group is authoritative before channel metadata", () => {
+  const iptvOrg = {
+    channels: [
+      { id: "Sports4.hr", name: "Cytavision Sports 4", alt_names: [], country: "HR", broadcast_area: ["c/HR"] },
+      { id: "Sports4.cy", name: "Cytavision Sports 4", alt_names: [], country: "CY", broadcast_area: ["c/CY"] },
+    ],
+    logos: [
+      { channel: "Sports4.hr", in_use: true, format: "PNG", width: 1000, tags: ["horizontal"], url: "https://logos.example/hr-4.png" },
+      { channel: "Sports4.cy", in_use: true, format: "PNG", width: 1000, tags: ["horizontal"], url: "https://logos.example/cy-4.png" },
+    ],
+  };
+
+  const [row] = buildMetadataLineup([
+    {
+      name: "Cytavision Sports 4",
+      tvgName: "Cytavision Sports 4",
+      group: "Croatia",
+      url: "https://example/country-first",
+    },
+  ], { iptvOrg });
+
+  assert.equal(row.country, "HR");
+  assert.equal(row.iptvOrgId, "Sports4.hr");
+  assert.equal(row.logo, "https://logos.example/hr-4.png");
 });
 
 test("regular sports networks stay normal TV channels and lose redundant country suffixes", () => {
@@ -146,4 +173,69 @@ test("country-specific guide packs never cross-match another country's schedule"
   const xml = buildXmlTv([channel], [fr, gr], { now });
   assert.match(xml, /Greek Feed Programme/);
   assert.doesNotMatch(xml, /French Feed Programme/);
+});
+
+test("numbered channel families can only match the same channel number", () => {
+  const cy = doc(`<?xml version="1.0"?><tv>
+    <channel id="Cytavision.Sports.1HD.cy"><display-name>Cytavision Sports 1HD</display-name></channel>
+    <channel id="Cytavision.Sports.4HD.cy"><display-name>Cytavision Sports 4HD</display-name></channel>
+    <programme start="20260831110000 +0000" stop="20260831120000 +0000" channel="Cytavision.Sports.1HD.cy"><title>Wrong Number</title></programme>
+    <programme start="20260831110000 +0000" stop="20260831120000 +0000" channel="Cytavision.Sports.4HD.cy"><title>Correct Number</title></programme>
+  </tv>`, "https://epgshare01.online/epgshare01/epg_ripper_CY1.xml.gz");
+
+  const channel = {
+    id: "cyta4",
+    kind: "static",
+    tvgId: "justone.cyta4",
+    iptvOrgId: "",
+    sourceTvgIds: [],
+    name: "Cytavision Sports 4",
+    country: "CY",
+    logo: "",
+  };
+
+  assert.equal(matchGuideChannel(channel, [cy])?.id, "Cytavision.Sports.4HD.cy");
+  const xml = buildXmlTv([channel], [cy], { now: Date.UTC(2026, 7, 31, 10, 0) });
+  assert.match(xml, /Correct Number/);
+  assert.doesNotMatch(xml, /Wrong Number/);
+});
+
+test("sports-event XMLTV contains only the verified event and no before-or-after filler", () => {
+  const now = Date.UTC(2026, 7, 31, 10, 0);
+  const event = {
+    id: "event.test",
+    tvgId: "justone.event.test",
+    kind: "sport-slot",
+    eventStyle: true,
+    eventFailover: true,
+    name: "Premier League : Arsenal vs Chelsea",
+    country: "",
+    logo: "https://resolver.example/event.png",
+    programmes: [
+      {
+        start: Date.UTC(2026, 7, 31, 9, 0),
+        end: Date.UTC(2026, 7, 31, 10, 0),
+        title: "Before filler",
+        scheduleSource: "placeholder",
+      },
+      {
+        start: Date.UTC(2026, 7, 31, 11, 0),
+        end: Date.UTC(2026, 7, 31, 13, 30),
+        title: "Premier League : Arsenal vs Chelsea",
+        categories: ["Sports", "Football"],
+        scheduleSource: "dlstreams",
+      },
+      {
+        start: Date.UTC(2026, 7, 31, 13, 30),
+        end: Date.UTC(2026, 7, 31, 14, 30),
+        title: "After filler",
+        scheduleSource: "placeholder",
+      },
+    ],
+  };
+
+  const xml = buildXmlTv([event], [], { now });
+  assert.equal((xml.match(/<programme\b/g) || []).length, 1);
+  assert.match(xml, /Arsenal vs Chelsea/);
+  assert.doesNotMatch(xml, /Before filler|After filler|Schedule unavailable/);
 });

@@ -73,8 +73,8 @@ test("sports event programmes are pruned to the same 24h horizon", () => {
     logo: "https://resolver.vpn4u.cc/jellyfin/artwork/channel/event.match.png",
     url: "https://resolver.vpn4u.cc/jellyfin/event/event.match.ts",
     programmes: [
-      { start: NOW + HOUR, end: NOW + 3 * HOUR, title: "ATP - Singles: Stefan Gorzny vs Raphael Collignon", categories: ["Sports", "Tennis"] },
-      { start: NOW + 28 * HOUR, end: NOW + 30 * HOUR, title: "Far Future Match", categories: ["Sports", "Tennis"] },
+      { start: NOW + HOUR, end: NOW + 3 * HOUR, title: "ATP - Singles: Stefan Gorzny vs Raphael Collignon", categories: ["Sports", "Tennis"], scheduleSource: "dlstreams" },
+      { start: NOW + 28 * HOUR, end: NOW + 30 * HOUR, title: "Far Future Match", categories: ["Sports", "Tennis"], scheduleSource: "dlstreams" },
     ],
   };
   const xml = buildXmlTv([event], [], { now: NOW });
@@ -94,7 +94,7 @@ test("M3U tvg ids and XMLTV channel ids stay in lockstep", () => {
       eventFailover: true,
       logo: "https://resolver.vpn4u.cc/jellyfin/artwork/channel/event.match.png",
       url: "https://resolver.vpn4u.cc/jellyfin/event/event.match.ts",
-      programmes: [{ start: NOW + HOUR, end: NOW + 3 * HOUR, title: "Arsenal vs Chelsea", categories: ["Sports", "Football"] }],
+      programmes: [{ start: NOW + HOUR, end: NOW + 3 * HOUR, title: "Arsenal vs Chelsea", categories: ["Sports", "Football"], scheduleSource: "dlstreams" }],
     },
     {
       id: "channel.sky",
