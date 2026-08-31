@@ -45,3 +45,15 @@ test("strong broadcaster families fill country gaps without changing playback UR
   assert.deepEqual(metadata.map((channel) => channel.country), ["MY", "ZA", "QA", "SA"]);
   assert.deepEqual(metadata.map((channel) => channel.url), raw.map((channel) => channel.url));
 });
+
+test("Diamond League event feeds do not leak into country TV", () => {
+  const input = row(
+    21,
+    "Brussels Diamond League | Brussels, Belgium | 4 - 5 September 2026 - TNT Sport 1",
+    "Belgium",
+  );
+  const [channel] = organizeLineup(buildMetadataLineup([input], { iptvOrg: null }));
+  assert.equal(channel.kind, "sport-slot");
+  assert.equal(channel.group, "Sports | Athletics");
+  assert.equal(channel.url, input.url);
+});
