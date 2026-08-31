@@ -34,6 +34,12 @@ RUN python -c 'from pathlib import Path; p=Path("dlhd_proxy/step_daddy.py"); s=p
 COPY patch_upstream.py /tmp/patch_upstream.py
 RUN python /tmp/patch_upstream.py && rm /tmp/patch_upstream.py
 
+# Individual DLStreams channels can have a broken primary player while another
+# player family is live. Try the documented alternates before giving up and
+# cache the winning family per channel.
+COPY patch_player_fallback.py /tmp/patch_player_fallback.py
+RUN python /tmp/patch_player_fallback.py && rm /tmp/patch_player_fallback.py
+
 # Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
 # now imports Pydantic APIs that are unavailable while Reflex applies its v1
 # compatibility patch, so an unpinned install crashes even on plain import.
