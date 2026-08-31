@@ -3,11 +3,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
-import { movieFolder, episodeFile, downloadName, cleanTitle } from "./naming.js";
-import { sourceHeadersFor } from "./services/sourceHeaders.js";
 
-const TMDB = "https://api.themoviedb.org/3";
-const titleCache = new Map();
 const hlsTargets = new Map();
 const HLS_TOKEN_TTL_MS = Math.max(
   60 * 1000,
@@ -18,39 +14,9 @@ const HLS_MANIFEST_MAX_BYTES = Math.max(
   64 * 1024,
   Number(process.env.HLS_PROXY_MANIFEST_MAX_BYTES || 4 * 1024 * 1024),
 );
-const DIRECT_MEDIA_HANDOFF_ENABLED =
-  String(process.env.DIRECT_MEDIA_HANDOFF || "true") !== "false";
-const DIRECT_MEDIA_HANDOFF_TIMEOUT_MS = Math.max(
-  1000,
-  Number(process.env.DIRECT_MEDIA_HANDOFF_TIMEOUT_MS || 30000),
-);
 
-function log(...a) {
-  process.stdout.write(a.map(String).join(" ") + "\n");
-}
-
-export function internalize(url) {
-  if (!url) return url;
-  let out = String(url);
-  const pairs = [
-    [config.publicUrl + "/cinepro", config.cineproUrl],
-    ["https://resolver.vpn4u.cc/cinepro", config.cineproUrl],
-    [config.publicUrl.replace(/\/$/, "") + "/cinepro", config.cineproUrl],
-    ["http://localhost:3000", config.cineproUrl],
-    ["http://127.0.0.1:3000", config.cineproUrl],
-  ];
-  for (const [from, to] of pairs) {
-    if (out.includes(from)) out = out.split(from).join(to);
-  }
-  return out;
-}
-
-export function playMoviePath(tmdbId, quality) {
-  return `/play/movie/${tmdbId}?quality=${quality}`;
-}
-
-export function playEpisodePath(tmdbId, season, episode, quality) {
-  return `/play/episode/${tmdbId}/${season}/${episode}?quality=${quality}`;
+function log(...args) {
+  process.stdout.write(args.map(String).join(" ") + "\n");
 }
 
 export function playLivePath(channelId) {
@@ -64,11 +30,6 @@ const UA =
 /**
  * Jellyfin is fed MPEG-TS for Live TV compatibility, but the upstream is HLS.
  * Let ffmpeg own HLS sequence tracking, encryption keys and discontinuities.
- *
- * The previous hand-written pump compared rewritten /play/hls/<random-token>
- * URLs. Every manifest refresh generated new random tokens for the same HLS
- * segment, so the pump replayed the whole 20-30 second live window repeatedly.
- * ffmpeg follows EXT-X-MEDIA-SEQUENCE instead and remuxes without transcoding.
  */
 export function restreamMpegTs(req, res, inputUrl) {
   return new Promise((resolve) => {
@@ -162,40 +123,6 @@ export function publicPlayUrl(pathAndQuery) {
   return withKey(`${config.publicUrl}${pathAndQuery}`);
 }
 
-async function tmdbGet(pathname) {
-  if (!config.tmdbKey) return null;
-  const hit = titleCache.get(pathname);
-  if (hit && Date.now() < hit.exp) return hit.data;
-  try {
-    const url = new URL(TMDB + pathname);
-    url.searchParams.set("api_key", config.tmdbKey);
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return null;
-    const data = await r.json();
-    titleCache.set(pathname, { data, exp: Date.now() + 6 * 3600 * 1000 });
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-export async function movieDownloadFilename(tmdbId, ext = "mp4") {
-  const m = await tmdbGet(`/movie/${tmdbId}`);
-  const title = m?.title || `tmdbid-${tmdbId}`;
-  const year = String(m?.release_date || "").slice(0, 4) || "0000";
-  const { file } = movieFolder(title, year, tmdbId);
-  return downloadName(file, ext);
-}
-
-export async function episodeDownloadFilename(tmdbId, season, episode, ext = "mp4") {
-  const s = await tmdbGet(`/tv/${tmdbId}`);
-  const title = s?.name || `tmdbid-${tmdbId}`;
-  const year = String(s?.first_air_date || "").slice(0, 4) || "0000";
-  const epMeta = await tmdbGet(`/tv/${tmdbId}/season/${season}/episode/${episode}`);
-  const file = episodeFile(title, year, season, episode, epMeta?.name, tmdbId);
-  return downloadName(file, ext);
-}
-
 function hopHeaders(req, host, upstreamHeaders = {}, { stripRange = false } = {}) {
   const headers = { ...req.headers, host };
   delete headers.connection;
@@ -216,12 +143,12 @@ function hopHeaders(req, host, upstreamHeaders = {}, { stripRange = false } = {}
 
 export function fixMediaType(out, url) {
   const ct = String(out["content-type"] || out["Content-Type"] || "").toLowerCase();
-  const u = String(url || "").toLowerCase();
-  if (ct.includes("mpegurl") || ct.includes("m3u8") || u.includes(".m3u8")) {
+  const value = String(url || "").toLowerCase();
+  if (ct.includes("mpegurl") || ct.includes("m3u8") || value.includes(".m3u8")) {
     out["content-type"] = "application/vnd.apple.mpegurl";
     return out;
   }
-  if (ct.includes("zstd") || u.includes(".zst") || u.includes("zstd")) {
+  if (ct.includes("zstd") || value.includes(".zst") || value.includes("zstd")) {
     out["content-type"] = "video/mp2t";
   }
   return out;
@@ -261,11 +188,7 @@ function normalizedHlsHeaders(headers = {}) {
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
-/**
- * Stable identity for a specific upstream HLS resource. The same segment must
- * keep the same local URL across manifest refreshes; otherwise a restreamer or
- * player can mistake an old live-window segment for a new one.
- */
+/** Stable identity for the same upstream HLS resource across manifest refreshes. */
 export function hlsTokenForTarget(url, headers = {}, hls = false) {
   return crypto
     .createHash("sha256")
@@ -277,7 +200,6 @@ export function hlsTokenForTarget(url, headers = {}, hls = false) {
 function registerHlsTarget(url, headers = {}, hls = false) {
   pruneHlsTargets();
   const token = hlsTokenForTarget(url, headers, hls);
-  // Refresh the TTL and insertion order for an actively referenced target.
   hlsTargets.delete(token);
   hlsTargets.set(token, {
     url,
@@ -320,9 +242,6 @@ export function hlsProxySuffixForTarget(url, hls = false) {
   } catch {
     /* extensionless/invalid target falls through to MPEG-TS */
   }
-  // DLHD's encrypted /hls/<token> media URLs intentionally hide the original
-  // filename. Their media payload is MPEG-TS, so retain a safe visible suffix
-  // for ffmpeg's HLS extension validation while the token remains unchanged.
   return ".ts";
 }
 
@@ -446,130 +365,6 @@ function proxyHlsManifest(req, res, up, dest, out, effectiveHeaders) {
   });
 }
 
-function privateHostname(hostname) {
-  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
-  if (!host) return true;
-  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host.endsWith(".local")) {
-    return true;
-  }
-  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
-  const match172 = /^172\.(\d+)\./.exec(host);
-  if (match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31) return true;
-  return false;
-}
-
-function externalHandoffUrl(value, providerUrl = config.streamProviderUrl) {
-  try {
-    const url = new URL(String(value));
-    const provider = new URL(providerUrl);
-    const publicOrigin = new URL(config.publicUrl).origin;
-    const cineproOrigin = new URL(config.cineproUrl).origin;
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.origin === provider.origin || url.origin === publicOrigin || url.origin === cineproOrigin) {
-      return null;
-    }
-    if (privateHostname(url.hostname)) return null;
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-export function directHandoffEligible(
-  targetUrl,
-  {
-    filename = null,
-    download = false,
-    upstreamHeaders = {},
-    providerUrl = config.streamProviderUrl,
-    enabled = DIRECT_MEDIA_HANDOFF_ENABLED,
-  } = {},
-) {
-  if (!enabled || !filename || download) return false;
-  if (Object.keys(upstreamHeaders || {}).length) return false;
-
-  try {
-    const target = new URL(String(targetUrl));
-    const provider = new URL(providerUrl);
-    if (target.origin === provider.origin) {
-      return /\/extract\/?$/i.test(target.pathname);
-    }
-    return Boolean(externalHandoffUrl(target.href, providerUrl));
-  } catch {
-    return false;
-  }
-}
-
-export async function resolveDirectHandoffTarget(
-  targetUrl,
-  {
-    filename = null,
-    download = false,
-    upstreamHeaders = {},
-    providerUrl = config.streamProviderUrl,
-    enabled = DIRECT_MEDIA_HANDOFF_ENABLED,
-    timeoutMs = DIRECT_MEDIA_HANDOFF_TIMEOUT_MS,
-  } = {},
-) {
-  if (
-    !directHandoffEligible(targetUrl, {
-      filename,
-      download,
-      upstreamHeaders,
-      providerUrl,
-      enabled,
-    })
-  ) {
-    return null;
-  }
-
-  const direct = externalHandoffUrl(targetUrl, providerUrl);
-  if (direct) return direct;
-
-  let dest;
-  try {
-    dest = new URL(String(targetUrl));
-  } catch {
-    return null;
-  }
-  const lib = dest.protocol === "https:" ? https : http;
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const request = lib.request(
-      dest,
-      {
-        method: "GET",
-        headers: { host: dest.host, "user-agent": UA, accept: "*/*" },
-        timeout: Math.max(1000, Number(timeoutMs || DIRECT_MEDIA_HANDOFF_TIMEOUT_MS)),
-      },
-      (up) => {
-        const status = Number(up.statusCode || 0);
-        const location = up.headers.location;
-        up.resume();
-        if (location && status >= 300 && status < 400) {
-          try {
-            const next = new URL(location, dest).href;
-            finish(externalHandoffUrl(next, providerUrl));
-          } catch {
-            finish(null);
-          }
-          return;
-        }
-        finish(null);
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("direct handoff timeout")));
-    request.on("error", () => finish(null));
-    request.end();
-  });
-}
-
 export function proxyHlsToken(req, res, token) {
   const target = hlsTargetFor(token);
   if (!target) {
@@ -584,40 +379,26 @@ export function proxyHlsToken(req, res, token) {
   });
 }
 
-export async function proxyStream(
+export function proxyStream(
   req,
   res,
   targetUrl,
-  { filename, download = false, hops = 0, upstreamHeaders = {}, hls = false } = {},
+  { filename = null, download = false, hops = 0, upstreamHeaders = {}, hls = false } = {},
 ) {
   let dest;
   try {
-    dest = new URL(internalize(targetUrl));
-  } catch (e) {
+    dest = new URL(String(targetUrl));
+  } catch {
     if (!res.headersSent) res.status(502).json({ error: "bad upstream" });
     return;
   }
-  const rememberedHeaders = sourceHeadersFor(targetUrl);
-  const effectiveHeaders = { ...rememberedHeaders, ...upstreamHeaders };
 
-  if (hops === 0) {
-    const directUrl = await resolveDirectHandoffTarget(targetUrl, {
-      filename,
-      download,
-      upstreamHeaders: effectiveHeaders,
-    });
-    if (directUrl && !res.headersSent) {
-      res.setHeader("X-JustOne-Delivery", "direct");
-      res.setHeader("Cache-Control", "no-store");
-      res.redirect(302, directUrl);
-      return;
-    }
-    if (!res.headersSent) res.setHeader("X-JustOne-Delivery", "proxy");
-  }
+  const effectiveHeaders = { ...(upstreamHeaders || {}) };
+  if (hops === 0 && !res.headersSent) res.setHeader("X-JustOne-Delivery", "proxy");
 
   const lib = dest.protocol === "https:" ? https : http;
   const likelyHls = hls || /\.m3u8(?:$|[?#])/i.test(String(targetUrl));
-  const p = lib.request(
+  const request = lib.request(
     dest,
     {
       method: "GET",
@@ -625,9 +406,9 @@ export async function proxyStream(
       timeout: 120000,
     },
     (up) => {
-      const loc = up.headers.location;
-      if (loc && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
-        const next = new URL(loc, dest).href;
+      const location = up.headers.location;
+      if (location && up.statusCode >= 300 && up.statusCode < 400 && hops < 5) {
+        const next = new URL(location, dest).href;
         up.resume();
         return proxyStream(req, res, next, {
           filename,
@@ -653,12 +434,10 @@ export async function proxyStream(
       up.pipe(res);
     },
   );
-  p.on("error", (e) => {
-    log("play proxy", String(e.message || e));
+  request.on("error", (error) => {
+    log("play proxy", String(error.message || error));
     if (!res.headersSent) res.status(502).json({ error: "stream failed" });
     else res.destroy();
   });
-  p.end();
+  request.end();
 }
-
-export { cleanTitle };
