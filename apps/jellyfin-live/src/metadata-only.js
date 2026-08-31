@@ -6,11 +6,20 @@ const COUNTRY_CODES = new Map([
   ["usa", "US"], ["us", "US"], ["united states", "US"], ["portugal", "PT"], ["spain", "ES"],
   ["france", "FR"], ["germany", "DE"], ["italy", "IT"], ["canada", "CA"], ["ireland", "IE"],
   ["netherlands", "NL"], ["australia", "AU"], ["brazil", "BR"], ["poland", "PL"], ["romania", "RO"],
-  ["greece", "GR"], ["turkey", "TR"], ["sweden", "SE"], ["norway", "NO"], ["denmark", "DK"],
+  ["greece", "GR"], ["turkey", "TR"], ["türkiye", "TR"], ["sweden", "SE"], ["norway", "NO"], ["denmark", "DK"],
   ["finland", "FI"], ["austria", "AT"], ["switzerland", "CH"], ["belgium", "BE"], ["czechia", "CZ"],
-  ["slovakia", "SK"], ["serbia", "RS"], ["croatia", "HR"], ["slovenia", "SI"], ["ukraine", "UA"],
-  ["russia", "RU"], ["israel", "IL"], ["india", "IN"], ["pakistan", "PK"], ["malaysia", "MY"],
-  ["japan", "JP"], ["korea", "KR"], ["china", "CN"], ["mexico", "MX"], ["argentina", "AR"],
+  ["czech republic", "CZ"], ["slovakia", "SK"], ["serbia", "RS"], ["croatia", "HR"], ["slovenia", "SI"],
+  ["ukraine", "UA"], ["russia", "RU"], ["israel", "IL"], ["india", "IN"], ["pakistan", "PK"],
+  ["malaysia", "MY"], ["japan", "JP"], ["korea", "KR"], ["china", "CN"], ["mexico", "MX"],
+  ["argentina", "AR"], ["uae", "AE"], ["united arab emirates", "AE"], ["qatar", "QA"], ["bulgaria", "BG"],
+  ["cyprus", "CY"], ["hungary", "HU"], ["new zealand", "NZ"], ["nz", "NZ"], ["south africa", "ZA"],
+  ["chile", "CL"], ["uruguay", "UY"], ["colombia", "CO"], ["ecuador", "EC"], ["bolivia", "BO"],
+  ["peru", "PE"], ["paraguay", "PY"], ["venezuela", "VE"], ["costa rica", "CR"], ["puerto rico", "PR"],
+  ["lithuania", "LT"], ["latvia", "LV"], ["estonia", "EE"], ["iceland", "IS"], ["bosnia", "BA"],
+  ["montenegro", "ME"], ["albania", "AL"], ["georgia", "GE"], ["armenia", "AM"], ["azerbaijan", "AZ"],
+  ["morocco", "MA"], ["algeria", "DZ"], ["tunisia", "TN"], ["egypt", "EG"], ["saudi arabia", "SA"],
+  ["saudi", "SA"], ["jordan", "JO"], ["iraq", "IQ"], ["iran", "IR"], ["thailand", "TH"],
+  ["singapore", "SG"], ["philippines", "PH"], ["indonesia", "ID"], ["vietnam", "VN"], ["bangladesh", "BD"],
 ]);
 
 function text(value) {
@@ -32,6 +41,13 @@ function countryCode(ch) {
   const title = text(ch?.tvgName || ch?.name);
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
+
+  // Strong broadcaster families that frequently arrive without a country
+  // suffix in the raw provider feed.
+  if (/^Astro\b/i.test(title)) return "MY";
+  if (/^SuperSport\b/i.test(title)) return "ZA";
+  if (/^Alkass\b/i.test(title)) return "QA";
+  if (/^SSC\s+Sport\b/i.test(title)) return "SA";
 
   const hay = `${ch?.group || ""} ${ch?.name || ""}`.toLowerCase();
   for (const [name, code] of COUNTRY_CODES) {
@@ -121,6 +137,25 @@ function generatedLogo(id) {
   return withKey(`${config.publicUrl}/jellyfin/artwork/channel/${encodeURIComponent(id)}.png`);
 }
 
+function sourceGroupForPresentation(groupValue, name, country) {
+  const group = text(groupValue || "Live") || "Live";
+
+  // Real output audit: Diamond League event rows can arrive inside a country
+  // TV group because the upstream source name ends in its broadcaster. Mark the
+  // event discipline here so the organizer places it with sports events.
+  if (/\bdiamond\s+league\b/i.test(String(name || ""))) return "Athletics";
+
+  const sourceSays247 = /^(?:24\s*\/\s*7|24x7)(?:\s+channels?)?$/i.test(group);
+  const channelItselfSays247 = /(?:24\s*\/\s*7|24x7)/i.test(String(name || ""));
+
+  // The provider's 24/7 bucket currently contains many ordinary linear
+  // networks (Discovery, Fox News, TSN, Cosmote Sport, etc.). Only preserve a
+  // dedicated 24/7 section when the channel itself is explicitly a 24/7 feed.
+  // Ordinary linear channels go back through normal country organisation.
+  if (sourceSays247 && !channelItselfSays247) return country || "Live";
+  return group;
+}
+
 /**
  * Give every final Jellyfin row its own XMLTV identity while retaining the
  * original/shared guide id in sourceTvgIds for guide matching.
@@ -187,6 +222,7 @@ export function buildMetadataLineup(rawRows, { iptvOrg = null, excludeAdult = tr
     const id = `channel.${hash(`${row.url}|${row.tvgId || ""}|${row.name || ""}`)}`;
     const matchedLogo = matched ? bestLogo(logos.get(matched.id) || []) : "";
     const name = text(row.tvgName || row.name || `Channel ${index + 1}`);
+    const group = sourceGroupForPresentation(row.group, name, country);
 
     return {
       id,
@@ -194,7 +230,7 @@ export function buildMetadataLineup(rawRows, { iptvOrg = null, excludeAdult = tr
       sourceTvgIds: row.tvgId ? [row.tvgId] : [],
       iptvOrgId: matched?.id || "",
       name,
-      group: text(row.group || "Live") || "Live",
+      group,
       country,
       number: Number(row.number || index + 1),
       logo: row.logo || matchedLogo || generatedLogo(id),

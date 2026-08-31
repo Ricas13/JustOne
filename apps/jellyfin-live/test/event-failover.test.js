@@ -11,14 +11,15 @@ import {
 
 const rawUrl = (id) => `https://resolver.vpn4u.cc/play/live/${id}.ts?key=exact-${id}`;
 
-function event(id, name, url, number = 1000) {
+function event(id, name, url, number = 1000, group = "Sports | Football") {
   return {
     id,
     tvgId: `justone.${id}`,
+    sourceTvgIds: [`dlhd-${id}`],
     kind: "sport-slot",
     eventStyle: true,
     name,
-    group: "Sports | Football",
+    group,
     number,
     url,
     candidates: [{ url, label: name }],
@@ -51,6 +52,40 @@ test("duplicate sports event rows collapse to one selector while retaining every
   assert.equal(out.find((row) => row.id === "bbc").url, bbc, "ordinary channels remain direct");
 });
 
+test("all broadcaster variants of the same fixture collapse even when broadcaster names are unfamiliar", () => {
+  const names = [
+    "England - Premier League : Chelsea vs Brighton & Hove Albion",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - Astro Grandstand",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - Canal+ Extra 1 Poland",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - Cytavision Sports 3 Cyprus",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - Hub Premier 4",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - Nova Sports Premier League Greece",
+    "England - Premier League : Chelsea vs Brighton & Hove Albion - USA Network",
+  ];
+  const out = collapseSportsEvents(names.map((name, index) => event(`real-${index}`, name, rawUrl(`real-${index}`), 1000 + index)));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].name, "England - Premier League : Chelsea vs Brighton & Hove Albion");
+  assert.equal(out[0].sourceCount, names.length);
+  assert.deepEqual(new Set(out[0].candidates.map((row) => row.url)).size, names.length);
+});
+
+test("non-head-to-head race variants collapse only when the final tail is a broadcaster", () => {
+  const names = [
+    "MotoGP : Aragon Race",
+    "MotoGP : Aragon Race - Arena Adrenalin",
+    "MotoGP : Aragon Race - Canal+",
+    "MotoGP : Aragon Race - Cosmote Sport 5 Greece",
+    "MotoGP : Aragon Race - Sky Sport MotoGP",
+    "MotoGP : Aragon Race - Sport TV4",
+  ];
+  const out = collapseSportsEvents(names.map((name, index) => event(`moto-${index}`, name, rawUrl(`moto-${index}`), 2000 + index, "Sports | Motorsport")));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].name, "MotoGP : Aragon Race");
+  assert.equal(out[0].sourceCount, names.length);
+
+  assert.equal(eventDisplayTitle("Formula 1 - British Grand Prix"), "Formula 1 - British Grand Prix");
+});
+
 test("single-source sports events retain their original playback URL", () => {
   const url = rawUrl("single");
   const [out] = collapseSportsEvents([
@@ -77,6 +112,10 @@ test("event title removes only the final source suffix", () => {
   assert.equal(
     eventDisplayTitle("ATP - Singles: Aleksandar Vukic vs Rei Sakamoto - Tennis Stream"),
     "ATP - Singles: Aleksandar Vukic vs Rei Sakamoto",
+  );
+  assert.equal(
+    eventDisplayTitle("Brazil - Brasileirão : Mirassol vs Palmeiras - Premiere"),
+    "Brazil - Brasileirão : Mirassol vs Palmeiras",
   );
 });
 
