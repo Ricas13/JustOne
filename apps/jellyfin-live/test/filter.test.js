@@ -5,6 +5,7 @@ import {
   isAdultStyleChannel,
   isFreeStyleChannel,
   isIptvOrgStyleChannel,
+  isLinearMovieOrShowChannel,
   isVodStyleChannel,
 } from "../src/filter.js";
 
@@ -14,12 +15,31 @@ test("VOD-style groups are removed", () => {
     { name: "Episode S1E1", group: "TV Shows" },
     { name: "Box Set", group: "Provider / Series" },
     { name: "On Demand", group: "VOD" },
+    { name: "Random Film Loop", group: "24/7 Movies" },
     { name: "BBC One UK", group: "UK" },
   ];
   assert.deepEqual(filterJellyfinRows(rows).map((x) => x.name), ["BBC One UK"]);
 });
 
-test("linear movie channels are retained", () => {
+test("real linear movie and entertainment channels survive even inside VOD-labelled groups", () => {
+  const rows = [
+    { name: "Fox Movies", group: "Movies" },
+    { name: "AXN Movies Portugal", group: "Movies" },
+    { name: "AXN", group: "TV Shows" },
+    { name: "Film4", group: "Films" },
+    { name: "Sky Cinema Premiere", group: "VOD" },
+    { name: "Lifetime Movies Network", group: "24/7 Movies" },
+    { name: "Yes Movies Action Israel", group: "Movies" },
+  ];
+
+  for (const ch of rows) {
+    assert.equal(isLinearMovieOrShowChannel(ch), true, ch.name);
+    assert.equal(isVodStyleChannel(ch), false, ch.name);
+  }
+  assert.deepEqual(filterJellyfinRows(rows).map((x) => x.name), rows.map((x) => x.name));
+});
+
+test("linear movie channels outside VOD groups remain retained", () => {
   for (const ch of [
     { name: "AXN Movies Portugal", group: "Portugal" },
     { name: "Lifetime Movies Network", group: "24/7" },
