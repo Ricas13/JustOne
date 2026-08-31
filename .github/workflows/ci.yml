@@ -38,3 +38,6 @@ jobs:
 
       - name: Syntax-check Stremio addon entrypoint
         run: node --check apps/stremio-addon/src/index.js
+
+      - name: Validate Docker Compose config
+        run: docker compose config --quiet
