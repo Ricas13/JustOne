@@ -1,6 +1,7 @@
 import { config, publicizeStreamUrl } from "./config.js";
 import { rememberSourceHeaders } from "./services/sourceHeaders.js";
 import { fetchMovieStreams, fetchEpisodeStreams } from "./services/webStreamrClient.js";
+import { validatePlaybackMedia } from "./services/mediaProbe.js";
 
 const cache = new Map();
 const TTL_MS = Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000);
@@ -255,16 +256,20 @@ export async function validateCandidate(candidate, deadline = Date.now() + confi
   return probeRequest(candidate, "GET", deadline);
 }
 
-// Playback cannot trust a HEAD success: hosts such as Google Drive can answer
-// metadata requests while refusing the actual file because a download quota or
-// signed URL has expired. A one-byte ranged GET proves that media bytes are
-// currently obtainable without carrying the media stream through JustOne.
+// Playback cannot trust a HEAD success or a generic HTTP 2xx. The media-aware
+// probe rejects HTML/JSON error payloads and, for HLS, follows the manifest far
+// enough to obtain bytes from an actual segment.
 export async function validateCandidateForPlayback(
   candidate,
   deadline = Date.now() + PLAYBACK_SOURCE_PROBE_TIMEOUT_MS,
 ) {
   if (!candidate?.probeUrl) return false;
-  return probeRequest(candidate, "GET", deadline, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS);
+  return validatePlaybackMedia(
+    candidate,
+    deadline,
+    PLAYBACK_SOURCE_PROBE_TIMEOUT_MS,
+    PROBE_UA,
+  );
 }
 
 async function chooseCandidate(candidates, quality, deadline, validator) {
@@ -621,7 +626,7 @@ function resolveEpisodeOnce(
     quality,
     background,
     force,
-    primaryCall: () => cineproEpisode(tmdbId, season, episode),
+    primaryCall: () => cineproEpisode(tmdbId),
     secondaryCall: () => fetchEpisodeStreams(tmdbId, season, episode, { background }),
   });
 }
