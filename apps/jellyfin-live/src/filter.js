@@ -18,6 +18,33 @@ const FREE_GROUPS = new Set([
   "free iptv",
 ]);
 
+// A provider can put genuine linear networks inside a generic "Movies" or
+// "TV Shows" bucket. Preserve established broadcast networks while removing
+// title/episode-style VOD rows from those buckets.
+const LINEAR_MOVIE_OR_SHOW_CHANNEL_RE = /\b(?:
+  axn(?:\s+movies?)?|
+  fox\s+movies?|
+  fx\s+movie\s+channel|
+  fxx?|
+  film4|
+  sky\s+cinema(?:\s+[a-z0-9&+' -]+)?|
+  sony\s+movies?|
+  hallmark(?:\s+movies?\s*(?:&|and)\s*mysteries)?|
+  lifetime\s+movies?\s+network|
+  movies?\s*24|
+  tcm|
+  turner\s+classic\s+movies|
+  amc|
+  hbo(?:\s+[a-z0-9&+' -]+)?|
+  cinemax(?:\s+[a-z0-9&+' -]+)?|
+  starz(?:\s+[a-z0-9&+' -]+)?|
+  paramount\s+network|
+  star\s+movies?|
+  cine(?:star|canal)|
+  v\s+film(?:\s+[a-z0-9&+' -]+)?|
+  yes\s+movies(?:\s+[a-z0-9&+' -]+)?
+)\b/ix;
+
 const ADULT_RE = /(?:^|[^a-z0-9])(?:18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(?=$|[^a-z0-9])/i;
 const FREE_PROVIDER_RE = /\b(?:pluto\s*tv|samsung\s*tv\s*plus|plex\s*(?:live\s*)?tv|the\s+roku\s+channel|lg\s+channels|xumo(?:\s+play)?|tubi(?:\s+tv)?)\b/i;
 const IPTV_ORG_RE = /\biptv[\s._-]*org\b/i;
@@ -37,8 +64,25 @@ function groupParts(ch) {
     .filter(Boolean);
 }
 
+function isVodGroup(ch) {
+  if (groupParts(ch).some((part) => VOD_GROUPS.has(part))) return true;
+
+  // Also catch common combined labels such as "24/7 Movies" without treating
+  // unrelated sports labels such as "World Series" as VOD.
+  const whole = String(ch?.group || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(?:24\s*\/\s*7\s*)?(?:movies?|films?|tv\s*shows?|series|vod)$/.test(whole);
+}
+
+export function isLinearMovieOrShowChannel(ch) {
+  return LINEAR_MOVIE_OR_SHOW_CHANNEL_RE.test(String(ch?.name || ch?.tvgName || ""));
+}
+
 export function isVodStyleChannel(ch) {
-  return groupParts(ch).some((part) => VOD_GROUPS.has(part));
+  return isVodGroup(ch) && !isLinearMovieOrShowChannel(ch);
 }
 
 export function isAdultStyleChannel(ch) {
