@@ -6,7 +6,9 @@ const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.JELLYFIN_EVENT_PROBE_
 const winners = new Map();
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
-const SOURCE_TAIL_RE = /\b(?:sky\s+sports|tnt\s+sports|bt\s+sport|espn|sport\s*tv|dazn|eurosport|be?in\s+sports?|fox\s+sports?|fs\s*[12]|nbc\s+sports?|cbs\s+sports?|canal\+?\s*sport|supersport|tsn|sportsnet|nfl\s+network|nba\s+tv|mlb\s+network|nhl\s+network|golf\s+channel|premier\s+sports?|viaplay\s+sports?|optus\s+sport|stan\s+sport|arena\s+sport|ziggo\s+sport|movistar\s+deportes|v\s+sport|backup|event|stream|feed|ppv|main\s+event)\b/i;
+const HEAD_TO_HEAD_RE = /\s(?:vs\.?|v\.?|@)\s/i;
+const SOURCE_TAIL_RE = /\b(?:sky|tnt|bt\s+sport|espn|sport\s*tv|sports?|dazn|eurosport|be?in|fox|fs\s*[12]|nbc|cbs|canal\+?|supersport|tsn|sportsnet|network|premier(?:e)?|viaplay|optus|stan|arena|astro|ziggo|movistar|cosmote|cytavision|diema|digi|eleven|nova|prima|polsat|telemundo|univision|paramount\+?|apple\s+tv|oneplay|magenta|kanal|ruutu\+?|m4|futv|hub\s+premier|match!?|ligue\s*1\+|goal\s+rush|belarus\s*5|tv\s*\d|usa\s+network|servus\s*tv|event|stream|feed|ppv|backup|main\s+event)\b/i;
+const EVENT_CORE_RE = /\b(?:race|warm\s*up|qualifying|practice|sprint|round|stage|session|heat|final|semi-?final|quarter-?final|grand\s+prix|gran\s+premio|simulcast|multiview|world\s+championships?)\b/i;
 
 function text(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -16,13 +18,32 @@ function hash(value, length = 16) {
   return crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, length);
 }
 
+function trailingSourceDelimiter(name) {
+  const delimiter = name.lastIndexOf(" - ");
+  if (delimiter < 0) return -1;
+
+  const eventPart = name.slice(0, delimiter).trim();
+  const tail = name.slice(delimiter + 3).trim();
+  if (!tail) return -1;
+
+  // For head-to-head fixtures the event identity is unambiguous. Any final
+  // suffix after the fixture is a source label, even when the broadcaster is
+  // not in our catalogue (Astro, Premiere, local networks, etc.).
+  if (HEAD_TO_HEAD_RE.test(eventPart)) return delimiter;
+
+  // Non-head-to-head sports need a conservative tail check so event names such
+  // as "Formula 1 - British Grand Prix" are not accidentally shortened.
+  if (SOURCE_TAIL_RE.test(tail)) return delimiter;
+  if (eventPart.includes(":") && EVENT_CORE_RE.test(eventPart) && /\b(?:tv|sport|sports|network|channel|stream|feed)\b/i.test(tail)) {
+    return delimiter;
+  }
+  return -1;
+}
+
 export function eventDisplayTitle(value) {
   const name = text(value);
-  const parts = name.split(/\s+(?:—|–|-)\s+/);
-  if (parts.length < 2) return name;
-  const tail = parts[parts.length - 1];
-  if (!SOURCE_TAIL_RE.test(tail)) return name;
-  return parts.slice(0, -1).join(" - ").trim();
+  const delimiter = trailingSourceDelimiter(name);
+  return delimiter >= 0 ? name.slice(0, delimiter).trim() : name;
 }
 
 function eventIdentity(value) {
