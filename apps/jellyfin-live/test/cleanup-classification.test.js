@@ -23,15 +23,15 @@ test("provider 24/7 bucket does not trap ordinary linear channels", () => {
   ];
 
   const out = organizeLineup(buildMetadataLineup(raw, { iptvOrg: null }));
-  const groups = Object.fromEntries(out.map((channel) => [channel.name, channel.group]));
+  const byTvgId = Object.fromEntries(out.map((channel) => [channel.tvgId, channel]));
 
-  assert.equal(groups["Fox News"], "TV | USA");
-  assert.equal(groups["Discovery Channel"], "TV | USA");
-  assert.equal(groups.TSN1, "TV | Canada");
-  assert.equal(groups["Abu Dhabi Sports 1 UAE"], "TV | United Arab Emirates");
-  assert.equal(groups["BNT 1 Bulgaria"], "TV | Bulgaria");
-  assert.equal(groups["Sky Sport 1 NZ"], "TV | New Zealand");
-  assert.equal(groups["Classic Cartoons 24/7 UK"], "24/7 | UK");
+  assert.equal(byTvgId["dlhd-1"].group, "TV | USA");
+  assert.equal(byTvgId["dlhd-2"].group, "TV | USA");
+  assert.equal(byTvgId["dlhd-3"].group, "TV | Canada");
+  assert.equal(byTvgId["dlhd-4"].group, "TV | United Arab Emirates");
+  assert.equal(byTvgId["dlhd-5"].group, "TV | Bulgaria");
+  assert.equal(byTvgId["dlhd-6"].group, "TV | New Zealand");
+  assert.equal(byTvgId["dlhd-7"].group, "24/7 | UK");
 });
 
 test("strong broadcaster families fill country gaps without changing playback URLs", () => {
