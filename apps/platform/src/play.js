@@ -288,11 +288,54 @@ function registerHlsTarget(url, headers = {}, hls = false) {
   return token;
 }
 
+const HLS_PROXY_SUFFIXES = new Set([
+  "m3u8",
+  "ts",
+  "m4s",
+  "m4a",
+  "mp4",
+  "aac",
+  "mp3",
+  "vtt",
+  "webvtt",
+  "mpegts",
+  "mpg",
+  "mpeg",
+  "m2ts",
+  "mts",
+  "cmfv",
+  "cmfa",
+  "fmp4",
+  "bin",
+  "key",
+]);
+
+export function hlsProxySuffixForTarget(url, hls = false) {
+  if (hls) return ".m3u8";
+  try {
+    const pathname = new URL(String(url)).pathname;
+    const match = /\.([a-z0-9]{1,8})$/i.exec(pathname);
+    const ext = String(match?.[1] || "").toLowerCase();
+    if (HLS_PROXY_SUFFIXES.has(ext)) return `.${ext}`;
+  } catch {
+    /* extensionless/invalid target falls through to MPEG-TS */
+  }
+  // DLHD's encrypted /hls/<token> media URLs intentionally hide the original
+  // filename. Their media payload is MPEG-TS, so retain a safe visible suffix
+  // for ffmpeg's HLS extension validation while the token remains unchanged.
+  return ".ts";
+}
+
+export function hlsTokenFromProxyPath(value) {
+  return String(value || "").replace(/\.[a-z0-9]{1,8}$/i, "");
+}
+
 export function hlsTargetFor(token) {
-  const target = hlsTargets.get(String(token || ""));
+  const key = hlsTokenFromProxyPath(token);
+  const target = hlsTargets.get(key);
   if (!target) return null;
   if (target.exp <= Date.now()) {
-    hlsTargets.delete(String(token));
+    hlsTargets.delete(key);
     return null;
   }
   return target;
@@ -300,7 +343,8 @@ export function hlsTargetFor(token) {
 
 function hlsProxyUrl(url, headers, hls = false) {
   const token = registerHlsTarget(url, headers, hls);
-  return withKey(`${config.publicUrl}/play/hls/${encodeURIComponent(token)}`);
+  const suffix = hlsProxySuffixForTarget(url, hls);
+  return withKey(`${config.publicUrl}/play/hls/${encodeURIComponent(token)}${suffix}`);
 }
 
 function resolveHlsUrl(value, baseUrl) {
