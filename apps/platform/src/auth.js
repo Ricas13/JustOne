@@ -43,8 +43,7 @@ export function clearAuthCookie(res) {
 export function isPublicPath(pathname) {
   return (
     pathname.startsWith("/play/") ||
-    pathname.startsWith("/resolve/") ||
-    pathname.startsWith("/cinepro") ||
+    pathname.startsWith("/resolve/live/") ||
     pathname.startsWith("/stremio") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
@@ -57,8 +56,7 @@ export function isPublicPath(pathname) {
 export function isStreamPath(pathname) {
   return (
     pathname.startsWith("/play/") ||
-    pathname.startsWith("/resolve/") ||
-    pathname.startsWith("/cinepro") ||
+    pathname.startsWith("/resolve/live/") ||
     pathname.startsWith("/stremio") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
