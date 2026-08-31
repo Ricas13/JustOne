@@ -122,7 +122,7 @@ test("event title removes only the final source suffix", () => {
 
 test("event diagnostic source labels are always safe HTTP header values", () => {
   const value = eventHeaderValue("São Paulo — Vitória\r\n⚽ Feed");
-  assert.equal(value, "Sao Paulo - Vitoria ?? Feed");
+  assert.equal(value, "Sao Paulo - Vitoria ? Feed");
   assert.match(value, /^[\x20-\x7E]*$/);
   assert.doesNotThrow(() => new Headers({ "x-justone-event-source": value }));
 });
