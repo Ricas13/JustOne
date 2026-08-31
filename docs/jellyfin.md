@@ -1,39 +1,20 @@
-# Jellyfin setup
+# Jellyfin Live TV setup
 
-## Movies & TV (`.strm`)
+JustOne exposes a normalized M3U lineup and XMLTV guide specifically for Jellyfin.
 
-1. Ensure JustOne has written files under:
-   - `data/library/movies/`
-   - `data/library/tv/`
-2. In Jellyfin **Dashboard → Libraries**:
-   - Add **Movies** → folder mounted to `.../movies`
-   - Add **Shows** → folder mounted to `.../tv`
-3. Use standard Jellyfin naming so metadata matches:
-   - `Movie Name (2020)/Movie Name (2020).strm`
-   - `Show Name/Season 01/Show Name - S01E01.strm`
-4. Prefer **TMDB** as the metadata provider.
+1. In Jellyfin, open **Dashboard → Live TV → Tuner Devices**.
+2. Add an **M3U Tuner** using:
 
-### Playback notes
-
-- `.strm` files contain a single URL (JustOne proxy recommended).
-- If playback fails, re-resolve the title in JustOne (refresh job) rather than editing the file by hand.
-- Some clients need “allows remote media” / similar options enabled.
-
-## Live TV (M3U)
-
-1. **Dashboard → Live TV → Tuners**
-2. Add **M3U Tuner** with URL:
    ```text
-   http://JUSTONE_HOST:8080/live/playlist.m3u8
+   https://YOUR_JUSTONE_HOST/jellyfin/playlist.m3u8?key=YOUR_PLAYLIST_KEY
    ```
-3. Optional EPG: wire an XMLTV source if you add one later.
 
-## Docker volume tip
+3. Under **TV Guide Data Providers**, add an **XMLTV** source using:
 
-Mount the same host path into both JustOne and Jellyfin so scans see new `.strm` files immediately:
+   ```text
+   https://YOUR_JUSTONE_HOST/jellyfin/guide.xml?key=YOUR_PLAYLIST_KEY
+   ```
 
-```yaml
-# jellyfin snippet
-volumes:
-  - /path/to/JustOne/data/library:/media/justone:ro
-```
+4. Run Jellyfin's guide refresh after changing lineup or guide settings.
+
+The Jellyfin organizer removes adult and non-live groups, normalizes channel identity, preserves sports/event failover, and enriches the lineup with guide/artwork metadata. Raw compatibility feeds remain available under `/live/`, but the `/jellyfin/` endpoints are the recommended Jellyfin configuration.

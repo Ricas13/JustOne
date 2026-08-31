@@ -1,19 +1,32 @@
 # Architecture
 
-JustOne is an **admin resolver**, not a video proxy.
+JustOne is a **Live TV resolver and Jellyfin organizer**.
 
+```text
+DLStreams / DLHD
+       │
+       ├── channel discovery / schedule
+       │
+       ▼
+JustOne platform
+       │
+       ├── validate preferred DLHD HLS down to readable media
+       ├── fall back to legacy DLHD when needed
+       ├── remux HLS to MPEG-TS for Jellyfin compatibility
+       └── publish raw compatibility M3U feeds
+       │
+       ▼
+Jellyfin Live organizer
+       │
+       ├── filter adult/non-live entries
+       ├── normalize channel identity and ordering
+       ├── collapse sports/event sources with failover
+       └── enrich channel metadata, artwork and XMLTV
+       │
+       ▼
+Jellyfin M3U tuner + XMLTV guide
 ```
-Jellyfin / Stremio / IPTVEditor
-        │
-        │  .strm or M3U URL
-        ▼
-JustOne resolver  --JSON/HTTP-->  CinePro (VOD) or live backend
-        │
-        │  302 Location: https://cdn/...
-        ▼
-Player talks to the CDN. No video bytes on JustOne.
-```
 
-STRM names follow TRaSH / Jellyfin (`[tmdbid-…]` / `[tvdbid-…]`) in four trees: movies-1080p, movies-4k, tv-1080p, tv-4k.
+The primary live backend is `dlhd-proxy`; the existing `dlhd` service remains a playback fallback. A provider is not accepted merely because its manifest returns HTTP success: JustOne follows HLS far enough to prove that media bytes are readable.
 
-Live M3U is IPTVEditor-shaped (`url-tvg`, `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, `group-title`). Channel list is refreshed on an interval and when `/live/refresh` or `?refresh=1` is used.
+Generated Live TV/runtime files live under `RESOLVER_FILES` (by default `/mnt/resolver-files`), with the raw platform playlists under `PATH_LIVE`.

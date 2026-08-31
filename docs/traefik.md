@@ -9,9 +9,9 @@ Install at **`/opt/JustOne`** (not `/opt/JustOne/JustOne`).
 
 ```bash
 cd /opt/JustOne
-git pull
-docker compose up -d --build
+git pull --ff-only
+docker compose up -d --build --remove-orphans
 sudo cp /opt/JustOne/traefik/justone.yml /opt/traefik/dynamic/justone.yml
 ```
 
-Public DNS for `resolver.vpn4u.cc` must be **this** machine, not the old CinePro host (`85.17.179.27`).
+Public DNS for `resolver.vpn4u.cc` must point to the machine running the JustOne Live TV stack.

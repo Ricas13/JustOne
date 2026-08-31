@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
-import { validateCandidateForPlayback } from "../src/resolve.js";
+import { validatePlaybackMedia } from "../src/services/mediaProbe.js";
+
+const PROBE_UA = "JustOne Live TV test";
+
+function validateLiveCandidate(candidate) {
+  return validatePlaybackMedia(candidate, Date.now() + 7000, 7000, PROBE_UA);
+}
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -19,16 +25,16 @@ function close(server) {
   });
 }
 
-test("playback validation rejects HTTP 200 JSON error payloads", async () => {
+test("live media validation rejects HTTP 200 JSON error payloads", async () => {
   const server = http.createServer((req, res) => {
     assert.equal(req.headers.range, "bytes=0-0");
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "file unavailable" }));
+    res.end(JSON.stringify({ error: "channel unavailable" }));
   });
   const address = await listen(server);
   try {
-    const ok = await validateCandidateForPlayback({
-      probeUrl: `http://127.0.0.1:${address.port}/video.mp4`,
+    const ok = await validateLiveCandidate({
+      probeUrl: `http://127.0.0.1:${address.port}/video.ts`,
       requestHeaders: {},
     });
     assert.equal(ok, false);
@@ -37,7 +43,7 @@ test("playback validation rejects HTTP 200 JSON error payloads", async () => {
   }
 });
 
-test("playback validation rejects an HLS manifest whose media segment is dead", async () => {
+test("live media validation rejects an HLS manifest whose media segment is dead", async () => {
   const requests = [];
   const server = http.createServer((req, res) => {
     requests.push({ path: req.url, range: req.headers.range || "" });
@@ -55,7 +61,7 @@ test("playback validation rejects an HLS manifest whose media segment is dead", 
   });
   const address = await listen(server);
   try {
-    const ok = await validateCandidateForPlayback({
+    const ok = await validateLiveCandidate({
       probeUrl: `http://127.0.0.1:${address.port}/master.m3u8`,
       requestHeaders: {},
     });
@@ -67,7 +73,7 @@ test("playback validation rejects an HLS manifest whose media segment is dead", 
   }
 });
 
-test("playback validation accepts HLS only after a media segment returns bytes", async () => {
+test("live media validation accepts HLS only after a media segment returns bytes", async () => {
   const requests = [];
   const server = http.createServer((req, res) => {
     requests.push({ path: req.url, range: req.headers.range || "" });
@@ -94,7 +100,7 @@ test("playback validation accepts HLS only after a media segment returns bytes",
   });
   const address = await listen(server);
   try {
-    const ok = await validateCandidateForPlayback({
+    const ok = await validateLiveCandidate({
       probeUrl: `http://127.0.0.1:${address.port}/master.m3u8`,
       requestHeaders: {},
     });

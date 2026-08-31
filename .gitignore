@@ -12,18 +12,9 @@ build/
 .env.local
 *.pem
 
-# Local source resolver checkouts (managed independently by the updater)
-providers/
-
-# Data / libraries
-data/library/**/*.strm
-data/library/**/*.nfo
+# Runtime data
 data/cache/
 data/logs/
-!data/library/.gitkeep
-!data/library/movies/.gitkeep
-!data/library/tv/.gitkeep
-!data/library/live/.gitkeep
 
 # OS / IDE
 .DS_Store
