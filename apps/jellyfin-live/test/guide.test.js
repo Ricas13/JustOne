@@ -83,7 +83,7 @@ test("coverage counts only channels with real programmes and reports countries",
   assert.equal(stats.byCountry.UK, undefined);
 });
 
-test("unmatched static channels get an honest EPG fallback with artwork", () => {
+test("unmatched static channels get an honest current placeholder with artwork", () => {
   const lineup = [{
     id: "unknown",
     kind: "static",
@@ -94,9 +94,9 @@ test("unmatched static channels get an honest EPG fallback with artwork", () => 
   }];
   const xml = buildXmlTv(lineup, [ukDoc], { now: GUIDE_NOW });
   assert.match(xml, /<channel id="justone\.unknown">/);
-  assert.match(xml, /<programme[^>]+channel="justone\.unknown"/);
-  assert.match(xml, /<title>Unknown Channel<\/title>/);
-  assert.match(xml, /<sub-title>Live TV<\/sub-title>/);
+  assert.match(xml, /<programme start="20260830103000 \+0000"[^>]+channel="justone\.unknown"/);
+  assert.match(xml, /<title>Schedule unavailable<\/title>/);
+  assert.match(xml, /<sub-title>Unknown Channel<\/sub-title>/);
   assert.match(xml, /Detailed programme schedule is currently unavailable/);
   assert.match(xml, /<icon src="https:\/\/example\/channel\.png" \/>/);
   assert.match(xml, /<image type="backdrop"[^>]*>https:\/\/example\/channel\.png<\/image>/);
@@ -138,4 +138,19 @@ test("sports XMLTV decodes nested entities and keeps event title searchable", ()
   assert.doesNotMatch(xml, /&amp;amp;/);
   assert.match(xml, /<category>Sports<\/category>/);
   assert.match(xml, /<keyword>Saint Kitts &amp; Nevis<\/keyword>/);
+});
+
+test("sports without a verified schedule do not get a fabricated programme time", () => {
+  const lineup = [{
+    id: "sport.football.unknown",
+    kind: "sport-slot",
+    tvgId: "justone.sport.football.unknown",
+    name: "Unknown Final",
+    logo: "https://example/channel.png",
+    programmes: [],
+  }];
+  const xml = buildXmlTv(lineup, [], { now: GUIDE_NOW });
+  assert.match(xml, /<channel id="justone\.sport\.football\.unknown">/);
+  assert.doesNotMatch(xml, /<programme[^>]+channel="justone\.sport\.football\.unknown"/);
+  assert.doesNotMatch(xml, /Schedule unavailable/);
 });

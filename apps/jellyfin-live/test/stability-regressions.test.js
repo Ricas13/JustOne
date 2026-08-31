@@ -28,7 +28,7 @@ test("linear sports networks stay in country TV even when provider group is a sp
   assert.equal(out.find((x) => x.id === "sky-f1")?.kind, "static");
 });
 
-test("sports events with a linear network source suffix still become event cards", () => {
+test("sports events with a linear network source suffix still become event cards without fake timing", () => {
   const url = "https://resolver.example/play/live/501.ts?key=secret&token=x%2Fy";
   const [event] = organizeLineup([
     {
@@ -43,6 +43,7 @@ test("sports events with a linear network source suffix still become event cards
 
   assert.equal(event.group, "Sports | Football");
   assert.equal(event.kind, "sport-slot");
-  assert.equal(event.programmes[0].title, "Chelsea vs Luton Town");
+  assert.equal(event.name, "Chelsea vs Luton Town - Sky Sports Football");
+  assert.deepEqual(event.programmes, []);
   assert.equal(event.url, url);
 });
