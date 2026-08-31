@@ -10,3 +10,6 @@ services:
         UPSTREAM_REF: d2c691c52976d85218d22c6addc0fcc6dd9a5593
     environment:
       REFLEX_API_URL: http://dlhd-proxy:3000
+      # DLHD changes frontend domains periodically. Keep this overridable from
+      # .env so the resolver can follow the live site without another image patch.
+      DLHD_BASE_URL: ${DLHD_BASE_URL:-https://dlstreams.st}
