@@ -28,9 +28,11 @@ const channel = {
   logo: "https://example.test/canal4.png",
 };
 
-test("idle programme detector recognizes common off-air guide filler", () => {
+test("idle programme detector recognizes common off-air and useless guide filler", () => {
   assert.equal(isIdleExternalProgramme(programme("CANAL+ Sport - přestávka ve vysílání")), true);
   assert.equal(isIdleExternalProgramme(programme("No Data")), true);
+  assert.equal(isIdleExternalProgramme(programme("No Schedule")), true);
+  assert.equal(isIdleExternalProgramme(programme("Schedule unavailable")), true);
   assert.equal(isIdleExternalProgramme(programme("Off Air")), true);
   assert.equal(isIdleExternalProgramme(programme("Premier League: Arsenal vs Chelsea")), false);
 });

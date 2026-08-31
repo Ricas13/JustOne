@@ -4,7 +4,6 @@ import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
 const HOUR = 60 * 60 * 1000;
-const QUARTER_HOUR = 15 * 60 * 1000;
 export const EPG_HORIZON_HOURS = 24;
 const EPG_HORIZON_MS = EPG_HORIZON_HOURS * HOUR;
 
@@ -316,7 +315,8 @@ export function isIdleExternalProgramme(full) {
     /\bbroadcast\s+break\b/,
     /\btransmission\s+break\b/,
     /\bnot\s+broadcasting\b/,
-    /\bno\s+(?:data|information|programme\s+information|program\s+information)\b/,
+    /\bno\s+(?:data|information|schedule|programme\s+information|program\s+information)\b/,
+    /\bschedule\s+unavailable\b/,
     /\b(?:programme|programming)\s+unavailable\b/,
   ].some((pattern) => pattern.test(title));
 }
@@ -359,23 +359,6 @@ function generatedSportsProgramXml(ch, p) {
     p.icon ? `    <image type="backdrop" size="3" orient="L">${xml(p.icon)}</image>` : "",
     "  </programme>",
   ].filter(Boolean).join("\n");
-}
-
-function fallbackLiveProgramXml(ch, now = Date.now()) {
-  const start = Math.floor(now / QUARTER_HOUR) * QUARTER_HOUR;
-  const end = start + 6 * HOUR;
-  const channelName = decodeEntities(ch.name) || "Live TV";
-  const image = ch.logo || localArtwork(ch, "program");
-  return [
-    `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xml(ch.tvgId)}">`,
-    "    <title>Schedule unavailable</title>",
-    `    <sub-title>${xml(channelName)}</sub-title>`,
-    `    <desc>${xml(channelName)} is live. Detailed programme schedule is currently unavailable.</desc>`,
-    "    <category>Live TV</category>",
-    `    <icon src="${xml(image)}" />`,
-    `    <image type="backdrop" size="3" orient="L">${xml(image)}</image>`,
-    "  </programme>",
-  ].join("\n");
 }
 
 function adaptExternalProgram(full, ch, hit) {
@@ -496,20 +479,10 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
     const scheduledExternal = (hit?.doc?.programmes?.get(hit.id) || [])
       .filter((p) => programmeInWindow(p, now, horizonEnd));
     const external = scheduledExternal.filter((p) => !isIdleExternalProgramme(p));
-    if (external.length) {
-      for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
-    } else if (scheduledExternal.length) {
-      // The upstream guide explicitly says this channel is idle/off-air. Leave
-      // the XMLTV gap empty rather than turning that filler into a Jellyfin
-      // Home-screen item or replacing it with our own schedule placeholder.
-      continue;
-    } else {
-      // Keep unmatched linear channels usable without pretending that the
-      // placeholder time is a real programme start. The title explicitly says
-      // the schedule is unavailable and the block begins at the current
-      // quarter-hour instead of a fixed 6-hour boundary such as 07:00 BST.
-      lines.push(fallbackLiveProgramXml(ch, now));
-    }
+    // Missing, idle or otherwise useless guide data is intentionally left as
+    // an empty XMLTV gap. Keep the channel entry for identity/logo matching,
+    // but never fabricate a programme just to fill the timeline.
+    for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
   }
 
   lines.push("</tv>");
