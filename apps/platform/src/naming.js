@@ -1,3 +1,31 @@
+export const MAX_NAME_BYTES = 240;
+
+function utf8Bytes(value) {
+  return Buffer.byteLength(String(value || ""), "utf8");
+}
+
+function truncateUtf8(value, maxBytes) {
+  const text = String(value || "");
+  if (maxBytes <= 0) return "";
+  if (utf8Bytes(text) <= maxBytes) return text;
+
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const size = utf8Bytes(ch);
+    if (used + size > maxBytes) break;
+    out += ch;
+    used += size;
+  }
+  return out.replace(/[. ]+$/g, "");
+}
+
+function fitComponent(prefix, suffix = "") {
+  const tail = String(suffix || "");
+  const budget = Math.max(0, MAX_NAME_BYTES - utf8Bytes(tail));
+  return `${truncateUtf8(prefix, budget)}${tail}`;
+}
+
 export function cleanTitle(name) {
   return String(name || "")
     .replace(/:/g, " -")
@@ -26,27 +54,46 @@ function pad(n, w = 2) {
 export function movieFolder(title, year, tmdbId) {
   const clean = cleanTitleWithoutYear(title, year);
   const id = `[tmdbid-${tmdbId}]`;
-  const folder = `${clean} (${year}) ${id}`;
+  const folder = fitComponent(clean, ` (${year}) ${id}`);
   // Keep the STRM useful even if it is viewed/copied outside its parent folder.
   // Do not invent release/source/codec tags: a resolver-backed file does not know
   // those until playback time.
-  return { folder, file: `${clean} (${year}) ${id}.strm` };
+  return { folder, file: fitComponent(clean, ` (${year}) ${id}.strm`) };
 }
 
 export function seriesFolder(title, year, { tvdbId, tmdbId } = {}) {
-  const base = `${cleanTitleWithoutYear(title, year)} (${year})`;
-  if (tvdbId) return `${base} [tvdbid-${tvdbId}]`;
-  if (tmdbId) return `${base} [tmdbid-${tmdbId}]`;
-  return base;
+  const clean = cleanTitleWithoutYear(title, year);
+  const id = tvdbId ? `[tvdbid-${tvdbId}]` : tmdbId ? `[tmdbid-${tmdbId}]` : "";
+  const suffix = ` (${year})${id ? ` ${id}` : ""}`;
+  return fitComponent(clean, suffix);
 }
 
 export function episodeFile(seriesTitle, year, season, episode, episodeTitle, tmdbId = null) {
   const show = cleanTitleWithoutYear(seriesTitle, year);
   const code = `S${pad(season)}E${pad(episode)}`;
   const cleanedEpisode = cleanTitle(episodeTitle).slice(0, 90).trim();
-  const ep = cleanedEpisode ? ` - ${cleanedEpisode}` : "";
   const id = tmdbId ? ` [tmdbid-${tmdbId}]` : "";
-  return `${show} (${year}) - ${code}${ep}${id}.strm`;
+  const fixedAfterShow = ` (${year}) - ${code}`;
+  const tail = `${id}.strm`;
+
+  // Preserve the season/episode code and identity suffix even for pathological
+  // metadata. Linux filesystems normally cap a single name component at 255
+  // bytes, so leave some headroom and trim on UTF-8 byte boundaries.
+  const showBudget = Math.max(
+    0,
+    MAX_NAME_BYTES - utf8Bytes(fixedAfterShow) - utf8Bytes(tail),
+  );
+  const safeShow = truncateUtf8(show, showBudget);
+  const base = `${safeShow}${fixedAfterShow}`;
+  const remaining = Math.max(0, MAX_NAME_BYTES - utf8Bytes(base) - utf8Bytes(tail));
+
+  let ep = "";
+  if (cleanedEpisode && remaining > utf8Bytes(" - ")) {
+    const safeEpisode = truncateUtf8(cleanedEpisode, remaining - utf8Bytes(" - "));
+    if (safeEpisode) ep = ` - ${safeEpisode}`;
+  }
+
+  return `${base}${ep}${tail}`;
 }
 
 export function downloadName(strmFile, ext = "mp4") {
