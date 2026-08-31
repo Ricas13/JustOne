@@ -43,3 +43,11 @@ jobs:
         run: |
           touch .env
           docker compose config --quiet
+
+      - name: Build DLHD backend image
+        run: docker compose build dlhd-proxy
+
+      - name: Import DLHD backend without Reflex frontend init
+        run: |
+          docker run --rm --entrypoint python justone-amddeus-dlhd-proxy:local -c \
+            "from dlhd_proxy.backend import fastapi_app; paths={r.path for r in fastapi_app.routes}; assert '/stream/{channel_id}.m3u8' in paths; assert '/key/{url}/{host}' in paths; assert '/content/{path}' in paths"
