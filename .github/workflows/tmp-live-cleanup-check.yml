@@ -1,0 +1,40 @@
+name: Temporary live-only cleanup check
+on:
+  push:
+    branches:
+      - cleanup/live-tv-only-20260831
+permissions:
+  contents: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install and test platform
+        run: |
+          npm install --prefix apps/platform --no-audit --no-fund
+          npm test --prefix apps/platform
+      - name: Syntax-check Stremio
+        run: node --check apps/stremio-addon/src/index.js
+      - name: Validate compose
+        run: |
+          touch .env
+          docker compose config --quiet
+      - name: Assert VOD stack is gone
+        run: |
+          if grep -RniE 'cinepro|webstreamr|\.strm|resolve/movie|resolve/episode|play/movie|play/episode|TMDB_API_KEY|AUTO_UPDATE_' \
+            --exclude-dir=.git --exclude='tmp-live-cleanup-check.yml' .; then
+            echo 'VOD/STRM residue found'
+            exit 1
+          fi
+      - name: Remove temporary workflow
+        if: success()
+        run: |
+          git config user.name 'Ricas13'
+          git config user.email '56263921+Ricas13@users.noreply.github.com'
+          git rm .github/workflows/tmp-live-cleanup-check.yml
+          git commit -m 'Remove temporary live-only cleanup workflow'
+          git push
