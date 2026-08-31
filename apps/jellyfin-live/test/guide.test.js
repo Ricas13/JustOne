@@ -131,6 +131,7 @@ test("sports XMLTV decodes nested entities and keeps event title searchable", ()
       subtitle: "Cricket",
       categories: ["Sports", "Cricket"],
       icon: "https://example/program.png",
+      scheduleSource: "dlstreams",
     }],
   }];
   const xml = buildXmlTv(lineup, [], { now: GUIDE_NOW });
