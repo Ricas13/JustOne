@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { advanceCatalogCursor, healthFailureDecision } from "../src/catalog.js";
+import {
+  advanceCatalogCursor,
+  catalogAdmissionDecision,
+  healthFailureDecision,
+} from "../src/catalog.js";
 
 test("catalog cursor walks pages, then years, then starts a new cycle", () => {
   assert.deepEqual(
@@ -15,6 +19,13 @@ test("catalog cursor walks pages, then years, then starts a new cycle", () => {
     advanceCatalogCursor({ year: 2020, page: 1, cycle: 2 }, 1, 2020, 2026),
     { year: 2026, page: 1, cycle: 3 },
   );
+});
+
+test("movie catalog admission requires a validated available source", () => {
+  assert.equal(catalogAdmissionDecision({ state: "available" }), "admit");
+  assert.equal(catalogAdmissionDecision({ state: "unavailable" }), "defer");
+  assert.equal(catalogAdmissionDecision({ state: "indeterminate" }), "defer");
+  assert.equal(catalogAdmissionDecision(null), "defer");
 });
 
 test("health failures require separated misses and an age grace period before quarantine", () => {
