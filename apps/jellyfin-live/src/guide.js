@@ -3,6 +3,7 @@ import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
 const HOUR = 60 * 60 * 1000;
+const QUARTER_HOUR = 15 * 60 * 1000;
 export const EPG_HORIZON_HOURS = 24;
 const EPG_HORIZON_MS = EPG_HORIZON_HOURS * HOUR;
 
@@ -310,16 +311,15 @@ function generatedSportsProgramXml(ch, p) {
 }
 
 function fallbackLiveProgramXml(ch, now = Date.now()) {
-  const blockMs = 6 * HOUR;
-  const start = Math.floor(now / blockMs) * blockMs;
-  const end = start + blockMs;
-  const title = decodeEntities(ch.name) || "Live TV";
+  const start = Math.floor(now / QUARTER_HOUR) * QUARTER_HOUR;
+  const end = start + 6 * HOUR;
+  const channelName = decodeEntities(ch.name) || "Live TV";
   const image = ch.logo || localArtwork(ch, "program");
   return [
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xml(ch.tvgId)}">`,
-    `    <title>${xml(title)}</title>`,
-    "    <sub-title>Live TV</sub-title>",
-    "    <desc>Live channel. Detailed programme schedule is currently unavailable.</desc>",
+    "    <title>Schedule unavailable</title>",
+    `    <sub-title>${xml(channelName)}</sub-title>`,
+    `    <desc>${xml(channelName)} is live. Detailed programme schedule is currently unavailable.</desc>`,
     "    <category>Live TV</category>",
     `    <icon src="${xml(image)}" />`,
     `    <image type="backdrop" size="3" orient="L">${xml(image)}</image>`,
@@ -426,11 +426,10 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
         const stop = Number(p?.end);
         return Number.isFinite(start) && Number.isFinite(stop) && stop > now && start < horizonEnd;
       });
-      if (programmes.length) {
-        for (const p of programmes) lines.push(generatedSportsProgramXml(ch, p));
-      } else {
-        lines.push(fallbackLiveProgramXml(ch, now));
-      }
+      // Sports event times are source data, not placeholders. If the current
+      // DLStreams schedule did not supply a verified start, leave the EPG empty
+      // for that event rather than inventing a time that Jellyfin will display.
+      for (const p of programmes) lines.push(generatedSportsProgramXml(ch, p));
       continue;
     }
 
@@ -440,9 +439,10 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
     if (external.length) {
       for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
     } else {
-      // Jellyfin renders an empty guide badly. Give unmatched/out-of-window
-      // channels an explicitly-labelled current block without inventing a
-      // detailed schedule.
+      // Keep unmatched linear channels usable without pretending that the
+      // placeholder time is a real programme start. The title explicitly says
+      // the schedule is unavailable and the block begins at the current
+      // quarter-hour instead of a fixed 6-hour boundary such as 07:00 BST.
       lines.push(fallbackLiveProgramXml(ch, now));
     }
   }
