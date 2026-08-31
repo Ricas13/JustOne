@@ -139,6 +139,12 @@ function generatedLogo(id) {
 
 function sourceGroupForPresentation(groupValue, name, country) {
   const group = text(groupValue || "Live") || "Live";
+
+  // Real output audit: Diamond League event rows can arrive inside a country
+  // TV group because the upstream source name ends in its broadcaster. Mark the
+  // event discipline here so the organizer places it with sports events.
+  if (/\bdiamond\s+league\b/i.test(String(name || ""))) return "Athletics";
+
   const sourceSays247 = /^(?:24\s*\/\s*7|24x7)(?:\s+channels?)?$/i.test(group);
   const channelItselfSays247 = /(?:24\s*\/\s*7|24x7)/i.test(String(name || ""));
 
