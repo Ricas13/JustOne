@@ -27,7 +27,7 @@ test("sports stay first and TV is ordered USA UK Portugal then other countries",
   assert.deepEqual(out.map((x) => x.number), [100, 1000, 2000, 3000, 4000]);
 });
 
-test("sports event groups get generated logos and programme artwork", () => {
+test("sports event groups get generated logos without inventing a programme time", () => {
   const [event] = organizeLineup([
     {
       id: "football-01",
@@ -45,10 +45,7 @@ test("sports event groups get generated logos and programme artwork", () => {
   assert.equal(event.group, "Sports | Football");
   assert.match(event.logo, /\/jellyfin\/artwork\/channel\/football-01\.png/);
   assert.equal(event.logoSource, "generated-sports-event");
-  assert.equal(event.programmes.length, 1);
-  assert.equal(event.programmes[0].title, "Chelsea vs Luton Town");
-  assert.match(event.programmes[0].icon, /\/jellyfin\/artwork\/program\/football-01\.event\.0\.png/);
-  assert.deepEqual(event.programmes[0].categories.slice(0, 2), ["Sports", "Football"]);
+  assert.deepEqual(event.programmes, []);
   assert.equal(event.url, "https://resolver.example/play/live/501.ts?key=secret&token=x%2Fy");
 });
 
