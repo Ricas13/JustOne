@@ -20,6 +20,13 @@ RUN git clone --filter=blob:none "${UPSTREAM_REPO}" /tmp/dlhd-proxy \
     && cp -a . /app/ \
     && rm -rf /app/.git /tmp/dlhd-proxy
 
+# The pinned upstream release hard-codes daddylivestream.com. DLHD moves its
+# public frontend periodically; JustOne already discovers its catalogue from
+# dlstreams.st. Keep the upstream resolver implementation, but make that single
+# origin configurable so a future domain move is an env change, not another
+# application rebuild.
+RUN python -c 'from pathlib import Path; p=Path("dlhd_proxy/step_daddy.py"); s=p.read_text(); s=s.replace("import json\n", "import json\nimport os\n", 1); old="self._base_url = \"https://daddylivestream.com\""; new="self._base_url = os.getenv(\"DLHD_BASE_URL\", \"https://dlstreams.st\").rstrip(\"/\")"; assert old in s, "upstream base-url anchor changed"; p.write_text(s.replace(old, new, 1))'
+
 # Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
 # now imports Pydantic APIs that are unavailable while Reflex applies its v1
 # compatibility patch, so an unpinned install crashes even on plain import.
@@ -28,6 +35,7 @@ RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==
 
 ENV PORT=3000 \
     REFLEX_API_URL=http://dlhd-proxy:3000 \
+    DLHD_BASE_URL=https://dlstreams.st \
     PROXY_CONTENT=TRUE \
     SOCKS5="" \
     TZ=UTC \
