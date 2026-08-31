@@ -35,6 +35,23 @@ function countryCounts(lineup) {
   return counts;
 }
 
+/**
+ * Reserve one source slot per represented TV country before generic IPTV-org
+ * guide URLs are considered. This keeps the source allocator aligned with the
+ * metadata matcher: country first, then channel identity inside that country.
+ *
+ * Manual sources always keep their slots. If there are more represented
+ * countries than remaining slots, selectEpgShareUrls() still applies the
+ * deployment priorities and channel-count ordering.
+ */
+export function countryGuideReserve(lineup, maxSources = 12, manualSources = 0) {
+  const limit = Math.max(0, Number(maxSources) || 0);
+  const manual = Math.max(0, Number(manualSources) || 0);
+  const available = Math.max(0, limit - manual);
+  if (!available) return 0;
+  return Math.min(available, countryCounts(lineup).size);
+}
+
 function countryOrder(counts) {
   return [...counts.entries()].sort((a, b) => {
     const ap = PRIORITY_COUNTRIES.indexOf(a[0]);
