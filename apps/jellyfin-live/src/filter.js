@@ -21,29 +21,7 @@ const FREE_GROUPS = new Set([
 // A provider can put genuine linear networks inside a generic "Movies" or
 // "TV Shows" bucket. Preserve established broadcast networks while removing
 // title/episode-style VOD rows from those buckets.
-const LINEAR_MOVIE_OR_SHOW_CHANNEL_RE = /\b(?:
-  axn(?:\s+movies?)?|
-  fox\s+movies?|
-  fx\s+movie\s+channel|
-  fxx?|
-  film4|
-  sky\s+cinema(?:\s+[a-z0-9&+' -]+)?|
-  sony\s+movies?|
-  hallmark(?:\s+movies?\s*(?:&|and)\s*mysteries)?|
-  lifetime\s+movies?\s+network|
-  movies?\s*24|
-  tcm|
-  turner\s+classic\s+movies|
-  amc|
-  hbo(?:\s+[a-z0-9&+' -]+)?|
-  cinemax(?:\s+[a-z0-9&+' -]+)?|
-  starz(?:\s+[a-z0-9&+' -]+)?|
-  paramount\s+network|
-  star\s+movies?|
-  cine(?:star|canal)|
-  v\s+film(?:\s+[a-z0-9&+' -]+)?|
-  yes\s+movies(?:\s+[a-z0-9&+' -]+)?
-)\b/ix;
+const LINEAR_MOVIE_OR_SHOW_CHANNEL_RE = /\b(?:axn(?:\s+movies?)?|fox\s+movies?|fx\s+movie\s+channel|fxx?|film4|sky\s+cinema(?:\s+[a-z0-9&+' -]+)?|sony\s+movies?|hallmark(?:\s+movies?\s*(?:&|and)\s*mysteries)?|lifetime\s+movies?\s+network|movies?\s*24|tcm|turner\s+classic\s+movies|amc|hbo(?:\s+[a-z0-9&+' -]+)?|cinemax(?:\s+[a-z0-9&+' -]+)?|starz(?:\s+[a-z0-9&+' -]+)?|paramount\s+network|star\s+movies?|cine(?:star|canal)|v\s+film(?:\s+[a-z0-9&+' -]+)?|yes\s+movies(?:\s+[a-z0-9&+' -]+)?)\b/i;
 
 const ADULT_RE = /(?:^|[^a-z0-9])(?:18\+|adult|xxx|porn|playboy|brazzers|redlight|babestation)(?=$|[^a-z0-9])/i;
 const FREE_PROVIDER_RE = /\b(?:pluto\s*tv|samsung\s*tv\s*plus|plex\s*(?:live\s*)?tv|the\s+roku\s+channel|lg\s+channels|xumo(?:\s+play)?|tubi(?:\s+tv)?)\b/i;
