@@ -295,6 +295,32 @@ export function programmeInWindow(full, now, horizonEnd = now + EPG_HORIZON_MS) 
   return effectiveStop > now && start < horizonEnd;
 }
 
+function externalProgrammeTitle(full) {
+  const value = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(String(full || ""))?.[1] || "";
+  return decodeEntities(value.replace(/<[^>]+>/g, " "));
+}
+
+export function isIdleExternalProgramme(full) {
+  const title = externalProgrammeTitle(full)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!title) return false;
+  return [
+    /\bprestavka\s+(?:ve|vo)\s+vysilani\b/,
+    /\boff\s+air\b/,
+    /\bbroadcast\s+break\b/,
+    /\btransmission\s+break\b/,
+    /\bnot\s+broadcasting\b/,
+    /\bno\s+(?:data|information|programme\s+information|program\s+information)\b/,
+    /\b(?:programme|programming)\s+unavailable\b/,
+  ].some((pattern) => pattern.test(title));
+}
+
 function localArtwork(ch, variant = "program") {
   return withKey(`${config.publicUrl}/jellyfin/artwork/${variant}/${encodeURIComponent(ch.id)}.png`);
 }
@@ -397,7 +423,7 @@ export function guideCoverage(lineup, docs) {
     if (hit) {
       matchedChannels += 1;
       bucket.matchedChannels += 1;
-      if ((hit.doc.programmes?.get(hit.id) || []).length) {
+      if ((hit.doc.programmes?.get(hit.id) || []).some((p) => !isIdleExternalProgramme(p))) {
         channelsWithPrograms += 1;
         bucket.channelsWithPrograms += 1;
       }
@@ -467,10 +493,16 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
     }
 
     const hit = hits.get(ch.id);
-    const external = (hit?.doc?.programmes?.get(hit.id) || [])
+    const scheduledExternal = (hit?.doc?.programmes?.get(hit.id) || [])
       .filter((p) => programmeInWindow(p, now, horizonEnd));
+    const external = scheduledExternal.filter((p) => !isIdleExternalProgramme(p));
     if (external.length) {
       for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
+    } else if (scheduledExternal.length) {
+      // The upstream guide explicitly says this channel is idle/off-air. Leave
+      // the XMLTV gap empty rather than turning that filler into a Jellyfin
+      // Home-screen item or replacing it with our own schedule placeholder.
+      continue;
     } else {
       // Keep unmatched linear channels usable without pretending that the
       // placeholder time is a real programme start. The title explicitly says
