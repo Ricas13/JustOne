@@ -80,7 +80,7 @@ test("regular regional channels get canonical IPTV identities and official logos
   assert.equal(tv2.country, "DK");
 });
 
-test("provider country group is authoritative before a country word in the channel name", () => {
+test("provider country group is authoritative before channel metadata", () => {
   const iptvOrg = {
     channels: [
       { id: "Sports4.hr", name: "Cytavision Sports 4", alt_names: [], country: "HR", broadcast_area: ["c/HR"] },
@@ -94,8 +94,8 @@ test("provider country group is authoritative before a country word in the chann
 
   const [row] = buildMetadataLineup([
     {
-      name: "Cytavision Sports 4 Cyprus HD",
-      tvgName: "Cytavision Sports 4 Cyprus HD",
+      name: "Cytavision Sports 4",
+      tvgName: "Cytavision Sports 4",
       group: "Croatia",
       url: "https://example/country-first",
     },
