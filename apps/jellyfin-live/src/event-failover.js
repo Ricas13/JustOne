@@ -8,7 +8,7 @@ const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" })
 
 const HEAD_TO_HEAD_RE = /\s(?:vs\.?|v\.?|@)\s/i;
 const SOURCE_TAIL_RE = /\b(?:sky|tnt|bt\s+sport|espn|sport\s*tv|sports?|dazn|eurosport|be?in|fox|fs\s*[12]|nbc|cbs|canal\+?|supersport|tsn|sportsnet|network|premier(?:e)?|viaplay|optus|stan|arena|astro|ziggo|movistar|cosmote|cytavision|diema|digi|eleven|nova|prima|polsat|telemundo|univision|paramount\+?|apple\s+tv|oneplay|magenta|kanal|ruutu\+?|m4|futv|hub\s+premier|match!?|ligue\s*1\+|goal\s+rush|belarus\s*5|tv\s*\d|usa\s+network|servus\s*tv|event|stream|feed|ppv|backup|main\s+event)\b/i;
-const EVENT_CORE_RE = /\b(?:race|warm\s*up|qualifying|practice|sprint|round|stage|session|heat|final|semi-?final|quarter-?final|grand\s+prix|gran\s+premio|simulcast|multiview|world\s+championships?)\b/i;
+const EVENT_CORE_RE = /\b(?:formula\s*1|f1|motogp|moto\s*[23]|race|warm\s*up|qualifying|practice|sprint|round|stage|session|heat|final|semi-?final|quarter-?final|grand\s+prix|gran\s+premio|simulcast|multiview|world\s+championships?)\b/i;
 
 function text(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -26,14 +26,18 @@ function trailingSourceDelimiter(name) {
   const tail = name.slice(delimiter + 3).trim();
   if (!tail) return -1;
 
-  // For head-to-head fixtures the event identity is unambiguous. Any final
-  // suffix after the fixture is a source label, even when the broadcaster is
-  // not in our catalogue (Astro, Premiere, local networks, etc.).
-  if (HEAD_TO_HEAD_RE.test(eventPart)) return delimiter;
+  // For head-to-head fixtures, only a delimiter that occurs after the actual
+  // matchup can be a source suffix. This avoids treating the competition
+  // separator in "England - Premier League : Team A vs Team B" as a source.
+  const matchup = HEAD_TO_HEAD_RE.exec(name);
+  if (matchup && delimiter > matchup.index) return delimiter;
+
+  const colon = name.lastIndexOf(":");
+  if (colon >= 0 && delimiter < colon) return -1;
 
   // Non-head-to-head sports need a conservative tail check so event names such
   // as "Formula 1 - British Grand Prix" are not accidentally shortened.
-  if (SOURCE_TAIL_RE.test(tail)) return delimiter;
+  if (SOURCE_TAIL_RE.test(tail) && (colon >= 0 || EVENT_CORE_RE.test(eventPart))) return delimiter;
   if (eventPart.includes(":") && EVENT_CORE_RE.test(eventPart) && /\b(?:tv|sport|sports|network|channel|stream|feed)\b/i.test(tail)) {
     return delimiter;
   }
