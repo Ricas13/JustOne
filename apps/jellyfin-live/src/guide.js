@@ -75,11 +75,10 @@ export function canonicalGuideName(value, country = "") {
     .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
     .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
-    // XMLTV ids and display names frequently use forms such as Sports4HD or
-    // Eurosport1HD. Split numeric boundaries before removing presentation
-    // quality so channel number 4 remains a first-class identity token.
-    .replace(/([a-z])(\d)/g, "$1 $2")
-    .replace(/(\d)([a-z])/g, "$1 $2")
+    // Split genuine channel-number/quality joins such as Sports4, Eurosport1,
+    // ITV1 and 4HD, but keep one-letter numbered brands such as F1 intact.
+    .replace(/([a-z]{2,})(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z]{2,})/g, "$1 $2")
     .replace(/\bnova\s+sports?\b/g, "novasports")
     .replace(/\bcyta\s+vision\b/g, "cytavision")
     .replace(/\s+/g, " ")
