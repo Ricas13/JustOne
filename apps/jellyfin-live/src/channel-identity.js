@@ -1,5 +1,5 @@
 const COUNTRY_ALIASES = new Map([
-  ["US", ["usa", "us", "united states", "united states of america"]],
+  ["US", ["usa", "us", "us2", "united states", "united states of america"]],
   ["GB", ["uk", "gb", "united kingdom", "great britain", "england", "scotland", "wales"]],
   ["PT", ["pt", "portugal"]],
   ["GR", ["gr", "greece", "hellas"]],
@@ -115,15 +115,19 @@ function addKey(out, value) {
 
 export function channelIdentityKeys(value, country = "") {
   const out = new Set();
-  const exact = stripCountrySuffix(normalizedWords(value), country);
+  const raw = normalizedWords(value);
+
+  // Keep an exact variant first. This preserves meaningful variants while still
+  // allowing the common provider form "Channel Greece HD" to normalize by
+  // stripping presentation quality before the trailing country marker.
+  const exact = stripCountrySuffix(raw, country);
   addKey(out, exact);
 
-  // Provider quality suffixes are often presentation noise. Keep the exact key
-  // first so real channel variants such as a dedicated 4K service can still win.
-  const withoutQuality = exact
+  const rawWithoutQuality = raw
     .replace(/\b(?:uhd|fhd|hd|sd|2160p|1080p|720p|576p|480p)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  const withoutQuality = stripCountrySuffix(rawWithoutQuality, country);
   addKey(out, withoutQuality);
 
   for (const key of [...out]) {
