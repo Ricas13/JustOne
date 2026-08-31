@@ -23,6 +23,14 @@ const PLAYBACK_SOURCE_RECHECK_MS = Math.max(
   0,
   Number(process.env.PLAYBACK_SOURCE_RECHECK_MS || 15000),
 );
+const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 7000),
+);
+const LIVE_SOURCE_RECHECK_MS = Math.max(
+  0,
+  Number(process.env.LIVE_SOURCE_RECHECK_MS || 15000),
+);
 const suppressedSources = new Map();
 
 function cacheGet(key) {
@@ -668,10 +676,19 @@ export function liveStreamEndpoints(
   return endpoints;
 }
 
+async function validateLiveMedia(url) {
+  return validatePlaybackMedia(
+    { url, probeUrl: url, requestHeaders: {} },
+    Date.now() + LIVE_SOURCE_PROBE_TIMEOUT_MS,
+    LIVE_SOURCE_PROBE_TIMEOUT_MS,
+    PROBE_UA,
+  );
+}
+
 async function resolveLiveEndpoint(endpoint) {
   const response = await fetch(endpoint.url, {
     redirect: "manual",
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(Math.max(20000, LIVE_SOURCE_PROBE_TIMEOUT_MS)),
   });
   const location = response.headers.get("location");
   const ok = response.status >= 200 && response.status < 400;
@@ -681,17 +698,44 @@ async function resolveLiveEndpoint(endpoint) {
     /* ignore cleanup errors */
   }
   if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
-  return location ? new URL(location, endpoint.url).href : endpoint.url;
+
+  const url = location ? new URL(location, endpoint.url).href : endpoint.url;
+  if (!(await validateLiveMedia(url))) {
+    throw new Error(`${endpoint.provider} returned no readable live media`);
+  }
+  return url;
 }
 
-export async function resolveLive(channelId, { force = false } = {}) {
+export async function resolveLive(
+  channelId,
+  {
+    force = false,
+    proxyUrl = config.dlhdProxyUrl,
+    legacyUrl = config.dlhdUrl,
+  } = {},
+) {
   const key = `live:${channelId}`;
   if (!force) {
     const cached = cacheGet(key);
-    if (cached) return cached;
+    if (cached) {
+      const recentlyChecked =
+        cached.liveValidatedAt &&
+        Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS;
+      if (recentlyChecked) return cached;
+
+      if (await validateLiveMedia(cached.url)) {
+        cached.liveValidated = true;
+        cached.liveValidatedAt = Date.now();
+        return cached;
+      }
+
+      // Do not let a stale/dead one-hour live cache pin this channel to a source
+      // whose playlist still exists but whose media has disappeared.
+      cache.delete(key);
+    }
   }
 
-  const endpoints = liveStreamEndpoints(channelId);
+  const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
   let lastError = null;
   for (const endpoint of endpoints) {
     try {
@@ -702,6 +746,10 @@ export async function resolveLive(channelId, { force = false } = {}) {
         available: ["live"],
         wanted: "live",
         matched: true,
+        validated: true,
+        playbackValidated: true,
+        liveValidated: true,
+        liveValidatedAt: Date.now(),
         provider: endpoint.provider,
       };
       cacheSet(key, picked);
@@ -723,5 +771,7 @@ export function cacheStats() {
     playbackSourceFailureCooldownMs: PLAYBACK_SOURCE_FAILURE_COOLDOWN_MS,
     playbackSourceFailoverAttempts: PLAYBACK_SOURCE_FAILOVER_ATTEMPTS,
     playbackSourceRecheckMs: PLAYBACK_SOURCE_RECHECK_MS,
+    liveSourceProbeTimeoutMs: LIVE_SOURCE_PROBE_TIMEOUT_MS,
+    liveSourceRecheckMs: LIVE_SOURCE_RECHECK_MS,
   };
 }
