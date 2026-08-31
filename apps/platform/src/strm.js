@@ -36,7 +36,10 @@ async function unlinkIfExists(filePath) {
     await fs.unlink(filePath);
     return true;
   } catch (e) {
-    if (e?.code === "ENOENT") return false;
+    // Legacy filename formats were not length-bounded. On filesystems with a
+    // 255-byte component limit such a historical path cannot exist at all, so
+    // ENAMETOOLONG is equivalent to ENOENT for cleanup purposes.
+    if (e?.code === "ENOENT" || e?.code === "ENAMETOOLONG") return false;
     throw e;
   }
 }
