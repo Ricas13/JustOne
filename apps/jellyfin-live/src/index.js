@@ -4,13 +4,19 @@ import express from "express";
 import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
 import { discoverEpgShareUrls } from "./epg-sources.js";
+import { applyEventSchedule } from "./event-schedule.js";
 import { collapseSportsEvents, selectWorkingEventCandidate } from "./event-failover.js";
 import { filterJellyfinRows } from "./filter.js";
 import { buildXmlTv, guideCoverage, matchGuideChannel } from "./guide.js";
 import { organizeLineup } from "./lineup.js";
 import { applyEpgIdentityLogos } from "./logo-bridge.js";
 import { buildMetadataLineup, buildMetadataM3u } from "./metadata-only.js";
-import { guideSourceUrlsForLineup, parseM3u, parseXmlTv } from "./organizer.js";
+import {
+  guideSourceUrlsForLineup,
+  parseM3u,
+  parseScheduleMetadata,
+  parseXmlTv,
+} from "./organizer.js";
 
 const app = express();
 const EPG_CONCURRENCY = Math.max(
@@ -185,19 +191,26 @@ async function refresh(force = false) {
     // resolves streams. Duplicate-event probing happens only when that one
     // selector URL is opened, and the selector redirects to the untouched raw
     // /play/live/... URL that wins.
-    const [playlistBody, iptvOrg] = await Promise.all([
+    const [playlistBody, iptvOrg, scheduleHtml] = await Promise.all([
       getText(rawPlaylistUrl(true)),
       loadIptvOrg(),
+      getText(config.dlstreamsHome, 30000).catch((error) => {
+        log("event schedule fail", String(error.message || error));
+        return "";
+      }),
     ]);
     const raw = parseM3u(playlistBody);
     const filtered = filterJellyfinRows(raw);
+    const schedule = scheduleHtml ? parseScheduleMetadata(scheduleHtml) : null;
+    const scheduled = applyEventSchedule(
+      buildMetadataLineup(filtered, {
+        iptvOrg,
+        excludeAdult: config.excludeAdult,
+      }),
+      schedule,
+    );
     const lineup = collapseSportsEvents(
-      organizeLineup(
-        buildMetadataLineup(filtered, {
-          iptvOrg,
-          excludeAdult: config.excludeAdult,
-        }),
-      ),
+      organizeLineup(scheduled.lineup),
     );
 
     const manualUrls = [...new Set(config.epgSourceUrls)];
@@ -233,6 +246,12 @@ async function refresh(force = false) {
       fallbackSources: fallbackUrls.length,
       selectedSources: epgSources.length,
       loadedSources: docs.length,
+      eventScheduleDate: schedule
+        ? `${schedule.year}-${String(schedule.month).padStart(2, "0")}-${String(schedule.day).padStart(2, "0")}`
+        : null,
+      eventScheduleRows: scheduled.eventRows,
+      eventScheduleMatched: scheduled.matched,
+      eventScheduleUnmatched: scheduled.unmatched,
       ...coverage,
       iptvIdentityLogosApplied: identityLogos.applied,
       iptvIdentityLogoCandidates: identityLogos.candidates,
@@ -267,6 +286,7 @@ async function refresh(force = false) {
       `jellyfin=${lineup.length}`,
       "playback=raw-grok-urls",
       `failover-events=${epgStats.failoverEvents}`,
+      `event-times=${scheduled.matched}/${scheduled.eventRows}`,
       `epg=${docs.length}/${epgSources.length}`,
       `matched=${coverage.channelsWithPrograms}/${coverage.staticChannels}`,
       `coverage=${coverage.coveragePercent}%`,
