@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hlsTokenForTarget, rewriteHlsManifest } from "../src/play.js";
+import {
+  hlsProxySuffixForTarget,
+  hlsTokenForTarget,
+  hlsTokenFromProxyPath,
+  rewriteHlsManifest,
+} from "../src/play.js";
 
 test("HLS manifest rewrites relative variants, segments, keys and maps through the proxy", () => {
   const manifest = [
@@ -70,4 +75,19 @@ test("two refreshes rewrite the same segment to the same local token", () => {
   );
 
   assert.equal(rewrite(), rewrite());
+});
+
+test("HLS proxy URLs retain ffmpeg-safe visible extensions without changing token identity", () => {
+  assert.equal(hlsProxySuffixForTarget("https://cdn.example/live/master", true), ".m3u8");
+  assert.equal(hlsProxySuffixForTarget("https://cdn.example/live/seg-1.ts?sig=x", false), ".ts");
+  assert.equal(hlsProxySuffixForTarget("https://cdn.example/live/init.m4s", false), ".m4s");
+  assert.equal(
+    hlsProxySuffixForTarget("http://dlhd-proxy:3000/hls/encrypted-token", false),
+    ".ts",
+    "DLHD hides segment filenames behind an encrypted extensionless route",
+  );
+
+  const token = hlsTokenForTarget("http://dlhd-proxy:3000/hls/encrypted-token", {}, false);
+  assert.equal(hlsTokenFromProxyPath(`${token}.ts`), token);
+  assert.equal(hlsTokenFromProxyPath(`${token}.m3u8`), token);
 });
