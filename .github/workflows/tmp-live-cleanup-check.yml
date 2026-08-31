@@ -13,10 +13,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install and test platform
+      - name: Install platform
+        run: npm install --prefix apps/platform --no-audit --no-fund
+      - name: Test platform
+        id: platform-tests
         run: |
-          npm install --prefix apps/platform --no-audit --no-fund
-          npm test --prefix apps/platform
+          set +e
+          npm test --prefix apps/platform > test-output.txt 2>&1
+          code=$?
+          cat test-output.txt
+          exit $code
+      - name: Upload test failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-test-output
+          path: test-output.txt
       - name: Syntax-check Stremio
         run: node --check apps/stremio-addon/src/index.js
       - name: Validate compose
