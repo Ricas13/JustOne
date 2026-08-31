@@ -87,6 +87,11 @@ function normalizedWords(value) {
     .replace(/\+/g, " plus ")
     .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
+    // Provider/guide ids often glue channel numbers and quality together, e.g.
+    // CytavisionSports4HD or Eurosport1HD. Split letter/number boundaries so
+    // "Sports 4" can only resolve to the same numbered channel.
+    .replace(/([a-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z])/g, "$1 $2")
     .replace(/\bnova\s+sports?\b/g, "novasports")
     .replace(/\bcyta\s+vision\b/g, "cytavision")
     .replace(/\s+/g, " ")
