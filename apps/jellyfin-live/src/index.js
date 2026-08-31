@@ -12,6 +12,11 @@ import { organizeLineup } from "./lineup.js";
 import { applyEpgIdentityLogos } from "./logo-bridge.js";
 import { buildMetadataLineup, buildMetadataM3u } from "./metadata-only.js";
 import {
+  iptvOrgFetchComplete,
+  iptvOrgSnapshotReady,
+  mergeIptvOrgSnapshot,
+} from "./iptv-org-cache.js";
+import {
   guideSourceUrlsForLineup,
   parseM3u,
   parseScheduleMetadata,
@@ -23,6 +28,11 @@ const EPG_CONCURRENCY = Math.max(
   1,
   Math.min(4, Number(process.env.JELLYFIN_EPG_CONCURRENCY || 2)),
 );
+const IPTV_ORG_CACHE_MS = 12 * 60 * 60 * 1000;
+const IPTV_ORG_RETRY_MS = Math.max(
+  60 * 1000,
+  Number(process.env.JELLYFIN_IPTV_ORG_RETRY_MS || 5 * 60 * 1000),
+);
 
 let cache = {
   at: 0,
@@ -33,7 +43,15 @@ let cache = {
   epgStats: {},
   error: null,
 };
-let iptvCache = { at: 0, channels: [], logos: [], guides: [] };
+let iptvCache = {
+  at: 0,
+  retryAt: 0,
+  channels: [],
+  logos: [],
+  guides: [],
+  reused: [],
+  missing: [],
+};
 let xmlCache = new Map();
 
 function log(...values) {
@@ -86,16 +104,29 @@ async function getJson(url, timeout = 30000) {
 async function safeJson(label, url) {
   try {
     const value = await getJson(url, 45000);
-    return Array.isArray(value) ? value : [];
+    if (!Array.isArray(value) || !value.length) {
+      throw new Error("empty or invalid JSON array");
+    }
+    return value;
   } catch (error) {
     log("iptv-org fail", label, String(error.message || error));
-    return [];
+    return null;
   }
 }
 
-async function loadIptvOrg() {
-  if (!config.autoEpg) return { channels: [], logos: [], guides: [] };
-  if (iptvCache.channels.length && Date.now() - iptvCache.at < 12 * 60 * 60 * 1000) {
+async function loadIptvOrg(force = false) {
+  if (!config.autoEpg) {
+    return { channels: [], logos: [], guides: [], reused: [], missing: [] };
+  }
+
+  const now = Date.now();
+  if (!force && iptvCache.retryAt && now < iptvCache.retryAt) return iptvCache;
+  if (
+    !force
+    && !iptvCache.retryAt
+    && iptvOrgSnapshotReady(iptvCache)
+    && now - iptvCache.at < IPTV_ORG_CACHE_MS
+  ) {
     return iptvCache;
   }
 
@@ -104,8 +135,29 @@ async function loadIptvOrg() {
     safeJson("logos", "https://iptv-org.github.io/api/logos.json"),
     safeJson("guides", "https://iptv-org.github.io/api/guides.json"),
   ]);
-  iptvCache = { at: Date.now(), channels, logos, guides };
-  log("iptv-org", `channels=${channels.length}`, `logos=${logos.length}`, `guides=${guides.length}`);
+
+  const fetched = { channels, logos, guides };
+  const merged = mergeIptvOrgSnapshot(iptvCache, fetched);
+  const completeFetch = iptvOrgFetchComplete(fetched);
+  const ready = iptvOrgSnapshotReady(merged.next);
+
+  iptvCache = {
+    at: completeFetch ? now : (iptvCache.at || (ready ? now : 0)),
+    retryAt: completeFetch ? 0 : now + IPTV_ORG_RETRY_MS,
+    ...merged.next,
+    reused: merged.reused,
+    missing: merged.missing,
+  };
+
+  log(
+    "iptv-org",
+    `channels=${iptvCache.channels.length}`,
+    `logos=${iptvCache.logos.length}`,
+    `guides=${iptvCache.guides.length}`,
+    `reused=${iptvCache.reused.join(",") || "none"}`,
+    `missing=${iptvCache.missing.join(",") || "none"}`,
+    completeFetch ? "state=fresh" : `state=degraded retry=${Math.round(IPTV_ORG_RETRY_MS / 1000)}s`,
+  );
   return iptvCache;
 }
 
@@ -193,7 +245,7 @@ async function refresh(force = false) {
     // /play/live/... URL that wins.
     const [playlistBody, iptvOrg, scheduleHtml] = await Promise.all([
       getText(rawPlaylistUrl(true)),
-      loadIptvOrg(),
+      loadIptvOrg(force),
       getText(config.dlstreamsHome, 30000).catch((error) => {
         log("event schedule fail", String(error.message || error));
         return "";
@@ -239,7 +291,10 @@ async function refresh(force = false) {
       coverage.existingLogosKept + coverage.guideLogosApplied + identityLogos.applied;
     const epgStats = {
       iptvChannels: iptvOrg.channels.length,
+      iptvLogos: iptvOrg.logos.length,
       iptvGuideRows: iptvOrg.guides.length,
+      iptvMetadataReused: iptvOrg.reused || [],
+      iptvMetadataMissing: iptvOrg.missing || [],
       matchedChannels,
       manualSources: manualUrls.length,
       iptvSources: iptvUrls.length,
@@ -293,6 +348,8 @@ async function refresh(force = false) {
       `priority=${priorityCoverage}`,
       `logos=${realLogosTotal}/${coverage.staticChannels}`,
       `identity-logos=${identityLogos.applied}`,
+      `iptv-logos=${iptvOrg.logos.length}`,
+      `iptv-reused=${(iptvOrg.reused || []).join(",") || "none"}`,
       `iptv-guides=${iptvOrg.guides.length}`,
       `fallback=${fallbackUrls.length}`,
     );
@@ -418,7 +475,7 @@ app.get("/jellyfin/health", (_req, res) => {
 });
 
 const refreshMs = Math.max(1, config.refreshMin) * 60 * 1000;
-setInterval(() => refresh(true).catch(() => {}), refreshMs).unref?.();
+setInterval(() => refresh(false).catch(() => {}), refreshMs).unref?.();
 
 app.listen(config.port, "0.0.0.0", () => {
   log(`JustOne Jellyfin metadata on :${config.port}`);
