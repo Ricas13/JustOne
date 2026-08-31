@@ -49,5 +49,7 @@ jobs:
 
       - name: Import DLHD backend without Reflex frontend init
         run: |
-          docker run --rm --entrypoint python justone-amddeus-dlhd-proxy:local -c \
-            "from dlhd_proxy.backend import fastapi_app; paths={r.path for r in fastapi_app.routes}; assert '/stream/{channel_id}.m3u8' in paths; assert '/key/{url}/{host}' in paths; assert '/content/{path}' in paths"
+          docker run --rm --entrypoint python \
+            -e DLHD_BASE_URL=https://example.invalid \
+            justone-amddeus-dlhd-proxy:local -c \
+            "from dlhd_proxy.backend import fastapi_app, step_daddy; paths={r.path for r in fastapi_app.routes}; assert '/stream/{channel_id}.m3u8' in paths; assert '/key/{url}/{host}' in paths; assert '/content/{path}' in paths; assert step_daddy._base_url == 'https://example.invalid'"
