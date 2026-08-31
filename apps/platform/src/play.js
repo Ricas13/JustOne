@@ -110,7 +110,7 @@ export function restreamMpegTs(req, res, inputUrl) {
     const finish = () => {
       if (settled) return;
       settled = true;
-      req.off("close", stop);
+      req.off("aborted", stop);
       res.off("close", stop);
       resolve();
     };
@@ -119,7 +119,7 @@ export function restreamMpegTs(req, res, inputUrl) {
       if (!child.killed) child.kill("SIGKILL");
     };
 
-    req.once("close", stop);
+    req.once("aborted", stop);
     res.once("close", stop);
 
     child.stderr.on("data", (chunk) => {
