@@ -267,18 +267,26 @@ export async function validateCandidateForPlayback(
   return probeRequest(candidate, "GET", deadline, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS);
 }
 
-async function chooseWorkingCandidate(candidates, quality, deadline) {
+async function chooseCandidate(candidates, quality, deadline, validator) {
   const eligible = (candidates || []).filter(
     (candidate) => allowQualityFallback(quality) || qualityRank(candidate.quality, quality) === 3,
   );
 
   for (let offset = 0; offset < eligible.length && remainingMs(deadline); offset += PROBE_BATCH_SIZE) {
     const batch = eligible.slice(offset, offset + PROBE_BATCH_SIZE);
-    const results = await Promise.all(batch.map((candidate) => validateCandidate(candidate, deadline)));
+    const results = await Promise.all(batch.map((candidate) => validator(candidate, deadline)));
     const firstWorking = results.findIndex(Boolean);
     if (firstWorking >= 0) return batch[firstWorking];
   }
   return null;
+}
+
+async function chooseWorkingCandidate(candidates, quality, deadline) {
+  return chooseCandidate(candidates, quality, deadline, validateCandidate);
+}
+
+async function choosePlaybackCandidate(candidates, quality, deadline) {
+  return chooseCandidate(candidates, quality, deadline, validateCandidateForPlayback);
 }
 
 function runProviderCall(call) {
@@ -307,27 +315,24 @@ function runSecondaryCall(call, background) {
   return background ? Promise.resolve().then(call) : runProviderCall(call);
 }
 
-async function cineproMovie(tmdbId) {
-  const r = await fetch(`${config.cineproUrl}/v1/movies/${tmdbId}`, {
-    signal: AbortSignal.timeout(90000),
-  });
-  return r.json();
-}
-
-async function cineproEpisode(tmdbId, season, episode) {
-  const r = await fetch(
-    `${config.cineproUrl}/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`,
-    { signal: AbortSignal.timeout(90000) },
-  );
-  return r.json();
-}
-
-async function healthCineproRequest(pathname) {
+async function cineproRequest(pathname, timeoutMs = 90000) {
   const response = await fetch(`${config.cineproUrl}${pathname}`, {
-    signal: AbortSignal.timeout(config.sourceProviderTimeoutMs),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`primary resolver returned ${response.status}`);
   return response.json();
+}
+
+function cineproMovie(tmdbId) {
+  return cineproRequest(`/v1/movies/${tmdbId}`);
+}
+
+function cineproEpisode(tmdbId, season, episode) {
+  return cineproRequest(`/v1/tv/${tmdbId}/seasons/${season}/episodes/${episode}`);
+}
+
+function healthCineproRequest(pathname) {
+  return cineproRequest(pathname, config.sourceProviderTimeoutMs);
 }
 
 function healthCineproMovie(tmdbId) {
@@ -428,6 +433,14 @@ async function resolveForPlayback(resolveCall) {
   }
 
   if (!picked) return picked;
+  const providerFailed = Boolean(picked.providerErrors?.primary || picked.providerErrors?.secondary);
+  const playbackFailure = failedCandidates
+    ? "sources-failed-byte-probe"
+    : providerFailed
+      ? "provider-error"
+      : picked.available?.length
+        ? "no-working-source"
+        : "no-candidates";
   return {
     ...picked,
     url: null,
@@ -439,7 +452,7 @@ async function resolveForPlayback(resolveCall) {
     validated: false,
     playbackValidated: false,
     failoverAttempts: failedCandidates,
-    playbackFailure: failedCandidates ? "sources-failed-byte-probe" : null,
+    playbackFailure,
   };
 }
 
@@ -482,11 +495,11 @@ async function inspectVodAvailability({
     return { state: "available", reason: "source-advertised", candidates: candidates.length };
   }
 
-  const deadline = Date.now() + config.sourceResolveTimeoutMs;
-  const working = await chooseWorkingCandidate(candidates, "1080p", deadline);
+  const deadline = Date.now() + Math.max(config.sourceResolveTimeoutMs, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS);
+  const working = await choosePlaybackCandidate(candidates, "1080p", deadline);
   return working
-    ? { state: "available", reason: "source-validated", candidates: candidates.length }
-    : { state: "unavailable", reason: "sources-failed-validation", candidates: candidates.length };
+    ? { state: "available", reason: "source-byte-validated", candidates: candidates.length }
+    : { state: "unavailable", reason: "sources-failed-byte-validation", candidates: candidates.length };
 }
 
 export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
@@ -496,6 +509,67 @@ export function checkMovieAvailability(tmdbId, { strict = false } = {}) {
     primaryCall: () => healthCineproMovie(tmdbId),
     secondaryCall: () => fetchMovieStreams(tmdbId, { background: true }),
   });
+}
+
+export async function checkMovieAdmission(tmdbId) {
+  const primaryResult = await Promise.allSettled([
+    runProviderCall(() => healthCineproMovie(tmdbId)),
+  ]).then(([result]) => result);
+  const primaryData = primaryResult.status === "fulfilled" ? primaryResult.value : null;
+  const primaryCandidates = mergeCandidates(extractSources(primaryData), [], "1080p");
+  if (primaryCandidates.length) {
+    const working = await choosePlaybackCandidate(
+      primaryCandidates,
+      "1080p",
+      Date.now() + Math.max(config.sourceResolveTimeoutMs, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS),
+    );
+    if (working) {
+      return {
+        state: "available",
+        reason: "primary-source-byte-validated",
+        candidates: primaryCandidates.length,
+        provider: "primary",
+      };
+    }
+  }
+
+  const secondaryResult = await Promise.allSettled([
+    runSecondaryCall(() => fetchMovieStreams(tmdbId, { background: true }), true),
+  ]).then(([result]) => result);
+  const secondarySources = secondaryResult.status === "fulfilled" ? secondaryResult.value : [];
+  const candidates = mergeCandidates(extractSources(primaryData), secondarySources, "1080p");
+  if (candidates.length) {
+    const working = await choosePlaybackCandidate(
+      candidates,
+      "1080p",
+      Date.now() + Math.max(config.sourceResolveTimeoutMs, PLAYBACK_SOURCE_PROBE_TIMEOUT_MS),
+    );
+    if (working) {
+      return {
+        state: "available",
+        reason: "source-byte-validated",
+        candidates: candidates.length,
+        provider: working.resolver,
+      };
+    }
+  }
+
+  const providerErrors = {
+    primary:
+      primaryResult.status === "rejected"
+        ? String(primaryResult.reason?.message || primaryResult.reason)
+        : null,
+    secondary:
+      secondaryResult.status === "rejected"
+        ? String(secondaryResult.reason?.message || secondaryResult.reason)
+        : null,
+  };
+  if (providerErrors.primary || providerErrors.secondary) {
+    return { state: "indeterminate", reason: "provider-error", providerErrors };
+  }
+  return candidates.length
+    ? { state: "unavailable", reason: "sources-failed-byte-validation", candidates: candidates.length }
+    : { state: "unavailable", reason: "no-direct-sources", candidates: 0 };
 }
 
 export function checkEpisodeAvailability(tmdbId, season, episode, { strict = false } = {}) {
