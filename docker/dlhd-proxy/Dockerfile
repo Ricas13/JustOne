@@ -9,9 +9,9 @@ RUN apt-get update -y \
 
 WORKDIR /app
 
-# We only need amddeus' FastAPI DLHD backend.  The upstream Dockerfile also
+# We only need amddeus' FastAPI DLHD backend. The upstream Dockerfile also
 # compiles a Reflex frontend (reflex init/export), starts Caddy and Redis, none
-# of which sits in JustOne's playback path.  Cloning the pinned source and
+# of which sits in JustOne's playback path. Cloning the pinned source and
 # running fastapi_app directly avoids that fragile frontend build step while
 # retaining the upstream stream/auth/key/content implementation unchanged.
 RUN git clone --filter=blob:none "${UPSTREAM_REPO}" /tmp/dlhd-proxy \
@@ -20,7 +20,11 @@ RUN git clone --filter=blob:none "${UPSTREAM_REPO}" /tmp/dlhd-proxy \
     && cp -a . /app/ \
     && rm -rf /app/.git /tmp/dlhd-proxy
 
-RUN pip install --no-cache-dir -r requirements.txt "uvicorn==0.35.0"
+# Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
+# now imports Pydantic APIs that are unavailable while Reflex applies its v1
+# compatibility patch, so an unpinned install crashes even on plain import.
+# Keep the dependency generation that Reflex 0.8.7 was released against.
+RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==0.35.0"
 
 ENV PORT=3000 \
     REFLEX_API_URL=http://dlhd-proxy:3000 \
