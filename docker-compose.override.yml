@@ -1,0 +1,12 @@
+services:
+  # Override the upstream remote Dockerfile. JustOne only consumes the FastAPI
+  # stream/key/content backend, so do not compile the unrelated Reflex web UI.
+  dlhd-proxy:
+    build:
+      context: ./docker/dlhd-proxy
+      dockerfile: Dockerfile
+      args:
+        UPSTREAM_REPO: https://github.com/amddeus/dlhd-proxy.git
+        UPSTREAM_REF: d2c691c52976d85218d22c6addc0fcc6dd9a5593
+    environment:
+      REFLEX_API_URL: http://dlhd-proxy:3000
