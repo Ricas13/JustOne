@@ -79,10 +79,25 @@ app.use(express.static(publicDir, { index: false }));
 
 function redirectTo(res, picked, format, playPath) {
   if (!picked?.url) {
+    const providerErrors = picked?.providerErrors || null;
+    const reason =
+      picked?.playbackFailure ||
+      (providerErrors?.primary || providerErrors?.secondary
+        ? "provider-error"
+        : picked?.available?.length
+          ? "no-working-source"
+          : "no-candidates");
     return res.status(404).json({
       error: "no source",
+      reason,
       wanted: picked?.wanted,
       available: picked?.available || [],
+      matched: Boolean(picked?.matched),
+      validated: Boolean(picked?.validated),
+      playbackValidated: Boolean(picked?.playbackValidated),
+      failoverAttempts: Number(picked?.failoverAttempts || 0),
+      providerErrors,
+      diagnostics: Array.isArray(picked?.diagnostics) ? picked.diagnostics : [],
     });
   }
   const opaque = publicPlayUrl(playPath);
@@ -97,9 +112,13 @@ function redirectTo(res, picked, format, playPath) {
       wanted: picked.wanted,
       matched: picked.matched,
       validated: Boolean(picked.validated),
+      playbackValidated: Boolean(picked.playbackValidated),
+      failoverAttempts: Number(picked.failoverAttempts || 0),
       resolver: picked.resolver || null,
       provider: picked.provider || null,
       available: picked.available,
+      providerErrors: picked.providerErrors || null,
+      diagnostics: Array.isArray(picked.diagnostics) ? picked.diagnostics : [],
     });
   }
   res.setHeader("Cache-Control", "no-store");
