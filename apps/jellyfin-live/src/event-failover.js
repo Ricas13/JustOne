@@ -14,6 +14,15 @@ function text(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+export function eventHeaderValue(value) {
+  return text(value)
+    .replace(/[\u2013\u2014]/g, "-")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "?")
+    .slice(0, 512);
+}
+
 function hash(value, length = 16) {
   return crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, length);
 }
@@ -96,13 +105,14 @@ function candidateRows(channel) {
   return rows
     .filter((candidate) => /^https?:\/\//i.test(String(candidate?.url || "")))
     .map((candidate) => {
-      const label = text(candidate.label || channel?.name || candidate.url);
+      const rawLabel = text(candidate.label || channel?.name || candidate.url);
+      const label = eventHeaderValue(rawLabel);
       return {
         url: String(candidate.url),
         label,
-        quality: qualityLabel(`${label} ${channel?.name || ""}`),
-        qualityRank: qualityRank(`${label} ${channel?.name || ""}`),
-        sourceRank: sourceRank(label),
+        quality: qualityLabel(`${rawLabel} ${channel?.name || ""}`),
+        qualityRank: qualityRank(`${rawLabel} ${channel?.name || ""}`),
+        sourceRank: sourceRank(rawLabel),
       };
     });
 }
