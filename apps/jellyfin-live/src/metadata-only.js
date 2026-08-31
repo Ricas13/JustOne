@@ -121,14 +121,51 @@ function generatedLogo(id) {
   return withKey(`${config.publicUrl}/jellyfin/artwork/channel/${encodeURIComponent(id)}.png`);
 }
 
-function uniqueTvgIds(rows) {
+/**
+ * Give every final Jellyfin row its own XMLTV identity while retaining the
+ * original/shared guide id in sourceTvgIds for guide matching.
+ *
+ * Some provider playlists repeat the exact same tvg-id and playback URL many
+ * times. A URL-only suffix is therefore not unique. The occurrence number is
+ * included in the stable fingerprint so even byte-identical repeated rows get
+ * distinct ids without touching their playback URL.
+ */
+export function ensureUniqueTvgIds(rows = []) {
   const used = new Set();
+  const nextOccurrence = new Map();
+
   for (const row of rows) {
-    let id = row.tvgId || `justone.${row.id}`;
-    if (used.has(id)) id = `${id}.justone.${hash(row.url, 6)}`;
-    row.tvgId = id;
-    used.add(id);
+    const base = text(row?.tvgId) || `justone.${row?.id || hash(row?.url || "channel")}`;
+    if (!used.has(base)) {
+      row.tvgId = base;
+      used.add(base);
+      nextOccurrence.set(base, 2);
+      continue;
+    }
+
+    const sourceIds = new Set(Array.isArray(row.sourceTvgIds) ? row.sourceTvgIds : []);
+    sourceIds.add(base);
+    row.sourceTvgIds = [...sourceIds];
+
+    let occurrence = nextOccurrence.get(base) || 2;
+    let candidate = "";
+    do {
+      const fingerprint = [
+        row?.id || "",
+        row?.url || "",
+        row?.name || "",
+        row?.group || "",
+        occurrence,
+      ].join("|");
+      candidate = `${base}.justone.${hash(fingerprint, 8)}`;
+      occurrence += 1;
+    } while (used.has(candidate));
+
+    nextOccurrence.set(base, occurrence);
+    row.tvgId = candidate;
+    used.add(candidate);
   }
+
   return rows;
 }
 
@@ -168,7 +205,7 @@ export function buildMetadataLineup(rawRows, { iptvOrg = null, excludeAdult = tr
     };
   });
 
-  return uniqueTvgIds(out);
+  return ensureUniqueTvgIds(out);
 }
 
 export function buildMetadataM3u(lineup) {
