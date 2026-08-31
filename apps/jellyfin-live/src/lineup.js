@@ -24,26 +24,28 @@ const COUNTRY_SUFFIXES = new Map([
   ["BR", ["Brazil", "BR"]],
 ]);
 
+// Keep the compact, familiar sports ordering from the cleaner afternoon M3U.
+// Newer sport classes are inserted after the closest traditional category.
 const SPORT_GROUPS = [
   { key: "football", label: "Sports | Football", re: /\b(?:football|soccer|socca|premier league|champions league|europa league|conference league|uefa|fifa|la liga|bundesliga|serie a|ligue 1|mls|league one|league two|efl championship|premiership|primera divisi[oó]n|brasileir[aã]o|eredivisie|primeira liga|liga portugal|libertadores|sudamericana|fa cup|carabao)\b/i },
-  { key: "motorsport", label: "Sports | Motorsport", re: /\b(?:formula ?1|f1|motogp|moto ?gp|nascar|indycar|motorsport|superbike|racing|grand prix|gran premio)\b/i },
-  { key: "combat", label: "Sports | Boxing & MMA", re: /\b(?:boxing|mma|ufc|bellator|combat|fight|wwe|aew|wrestling)\b/i },
   { key: "tennis", label: "Sports | Tennis", re: /\b(?:tennis|atp|wta|wimbledon|roland garros|australian open|us open)\b/i },
   { key: "basketball", label: "Sports | Basketball", re: /\b(?:basketball|nba|wnba|euroleague|fiba)\b/i },
+  { key: "motorsport", label: "Sports | Motorsport", re: /\b(?:formula ?1|f1|motogp|moto ?gp|nascar|indycar|motorsport|superbike|racing|grand prix|gran premio)\b/i },
+  { key: "combat", label: "Sports | Boxing & MMA", re: /\b(?:boxing|mma|ufc|bellator|combat|fight|wwe|aew|wrestling)\b/i },
   { key: "american-football", label: "Sports | American Football", re: /\b(?:american football|nfl|college football|ncaa football|cfl)\b/i },
   { key: "australian-football", label: "Sports | Australian Football", re: /\b(?:afl|australian football|aussie rules)\b/i },
   { key: "baseball", label: "Sports | Baseball & Softball", re: /\b(?:baseball|softball|mlb)\b/i },
   { key: "hockey", label: "Sports | Ice Hockey", re: /\b(?:ice hockey|nhl|hockey)\b/i },
   { key: "golf", label: "Sports | Golf", re: /\b(?:golf|pga|lpga|ryder cup|solheim)\b/i },
-  { key: "rugby", label: "Sports | Rugby", re: /\b(?:rugby|six nations)\b/i },
   { key: "cricket", label: "Sports | Cricket", re: /\b(?:cricket|ipl|t20|test match)\b/i },
+  { key: "rugby", label: "Sports | Rugby", re: /\b(?:rugby|six nations)\b/i },
   { key: "volleyball", label: "Sports | Volleyball", re: /\b(?:volleyball|beach volleyball)\b/i },
   { key: "handball", label: "Sports | Handball", re: /\bhandball\b/i },
   { key: "darts", label: "Sports | Darts", re: /\b(?:darts|pdc)\b/i },
   { key: "padel", label: "Sports | Padel", re: /\b(?:padel|fip gold|fip platinum|premier padel)\b/i },
   { key: "cycling", label: "Sports | Cycling", re: /\b(?:cycling|uci|cross-country|gravel|tour de france|giro d['’]italia|vuelta|stage \d+)\b/i },
   { key: "water", label: "Sports | Water Sports", re: /\b(?:surf|world surf league|wsl tour|canoe|kayak|rowing|sailing|swimming|diving|water polo)\b/i },
-  { key: "athletics", label: "Sports | Athletics", re: /\b(?:athletics|track and field|marathon)\b/i },
+  { key: "athletics", label: "Sports | Athletics", re: /\b(?:athletics|track and field|marathon|diamond league)\b/i },
 ];
 
 const SPORT_FALLBACK = { key: "other", label: "Sports | Other" };
@@ -254,23 +256,34 @@ export function organizeLineup(lineup) {
   }
 
   const ordered = [];
-  SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport, sportIndex) => {
+  let nextSportNumber = 100;
+  SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport) => {
     const rows = sports
       .filter((entry) => entry.sport.key === sport.key)
       .map((entry) => styleSportsEvent(entry.channel, sport))
       .sort(compareSportChannels);
-    rows.forEach((channel, index) => {
-      ordered.push({ ...channel, group: sport.label, number: (sportIndex + 1) * 1000 + index + 1 });
+    rows.forEach((channel) => {
+      ordered.push({ ...channel, group: sport.label, number: nextSportNumber++ });
     });
   });
 
+  // Match the compact scheme from the cleaner playlist: sports occupy the low
+  // hundreds, then USA=1000, UK=2000, Portugal=3000 and remaining countries
+  // continue in 1000-channel blocks. If sports ever exceed the first block,
+  // move TV to the next block rather than allowing channel-number collisions.
+  const lastSportNumber = nextSportNumber - 1;
+  const countryBase = Math.max(1000, (Math.floor(lastSportNumber / 1000) + 1) * 1000);
   const countries = sortCountries(new Set(television.map((channel) => channel.country)));
   countries.forEach((country, countryIndex) => {
     const rows = television
       .filter((channel) => channel.country === country)
       .sort((a, b) => compareCountryChannels(country, a, b));
     rows.forEach((channel, index) => {
-      ordered.push({ ...channel, group: `TV | ${countryLabel(country)}`, number: 20000 + countryIndex * 1000 + index + 1 });
+      ordered.push({
+        ...channel,
+        group: `TV | ${countryLabel(country)}`,
+        number: countryBase + countryIndex * 1000 + index,
+      });
     });
   });
 
