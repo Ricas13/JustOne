@@ -54,6 +54,63 @@ jobs:
             justone-amddeus-dlhd-proxy:local -c \
             "from dlhd_proxy.backend import fastapi_app, step_daddy; from dlhd_proxy.step_daddy import _decode_direct_hls_target, _extract_direct_hls_source, _rewrite_direct_hls_playlist; import base64, re; paths={r.path for r in fastapi_app.routes}; assert '/stream/{channel_id}.m3u8' in paths; assert '/key/{url}/{host}' in paths; assert '/content/{path}' in paths; assert '/hls/{path}' in paths; assert step_daddy._base_url == 'https://example.invalid'; url='https://cdn.example/live/main.m3u8?token=x'; referer='https://player.example/embed/857'; encoded=base64.b64encode(url.encode()).decode(); assert _extract_direct_hls_source('source:window.atob(\"'+encoded+'\")') == url; out=_rewrite_direct_hls_playlist('#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\\nvariant/index.m3u8\\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\\n#EXTINF:6,\\nseg-1.ts\\n', url, referer); assert out.startswith('#EXTM3U'); assert out.count('/hls/') == 3; assert '/content/' not in out; tokens=re.findall(r'/hls/([A-Za-z0-9_-]+)', out); assert len(tokens) == 3; targets=[_decode_direct_hls_target(token) for token in tokens]; assert all(ref == referer for _, ref in targets); assert targets[0][0] == 'https://cdn.example/live/variant/index.m3u8'; assert targets[1][0] == 'https://cdn.example/live/key.bin'; assert targets[2][0] == 'https://cdn.example/live/seg-1.ts'"
 
+      - name: Test DLHD player failover reaches media
+        run: |
+          docker run --rm --entrypoint python \
+            -e DLHD_BASE_URL=https://example.invalid \
+            justone-amddeus-dlhd-proxy:local - <<'PY'
+          import asyncio
+          import base64
+          import types
+          from dlhd_proxy.step_daddy import StepDaddy
+
+          class Response:
+              def __init__(self, status=200, text="", content=None):
+                  self.status_code = status
+                  self.text = text
+                  self.content = content if content is not None else text.encode()
+
+          def source(url):
+              encoded = base64.b64encode(url.encode()).decode()
+              return f'<script>const p={{source:window.atob("{encoded}")}}</script>'
+
+          bad_root = "https://cdn.example/bad/master.m3u8"
+          good_root = "https://cdn.example/good/master.m3u8"
+          calls = []
+
+          async def fake_get(self, url, **kwargs):
+              calls.append((url, kwargs.get("headers", {})))
+              table = {
+                  "https://example.invalid/stream/stream-356.php": Response(text='<iframe src="https://player.example/bad" width="100%"></iframe>'),
+                  "https://example.invalid/watch/stream-356.php": Response(text='<iframe src="https://player.example/good" width="100%"></iframe>'),
+                  "https://player.example/bad": Response(text=source(bad_root)),
+                  "https://player.example/good": Response(text=source(good_root)),
+                  bad_root: Response(text="#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild.m3u8\n"),
+                  "https://cdn.example/bad/child.m3u8": Response(text="#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n"),
+                  "https://cdn.example/bad/seg.ts": Response(status=502, text="dead"),
+                  good_root: Response(text="#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild.m3u8\n"),
+                  "https://cdn.example/good/child.m3u8": Response(text="#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n"),
+                  "https://cdn.example/good/seg.ts": Response(status=206, content=b"\x47" + b"\x00" * 4095),
+              }
+              if url not in table:
+                  raise AssertionError(f"unexpected request: {url}")
+              return table[url]
+
+          async def main():
+              resolver = StepDaddy()
+              resolver._get = types.MethodType(fake_get, resolver)
+              resolver._player_folder_cache = {"356": "stream"}
+              out = await resolver.stream("356")
+              assert resolver._player_folder_cache["356"] == "watch"
+              assert "https://cdn.example/bad/seg.ts" in [url for url, _ in calls]
+              assert "https://cdn.example/good/seg.ts" in [url for url, _ in calls]
+              assert out.startswith("#EXTM3U")
+              assert "/hls/" in out and ".m3u8" in out
+              await resolver.aclose()
+
+          asyncio.run(main())
+          PY
+
       - name: Test DLHD subtitle HLS suffixes
         run: |
           docker run --rm --entrypoint python \
