@@ -83,7 +83,7 @@ test("coverage counts only channels with real programmes and reports countries",
   assert.equal(stats.byCountry.UK, undefined);
 });
 
-test("unmatched static channels get an honest current placeholder with artwork", () => {
+test("unmatched static channels stay in XMLTV without fabricated programme entries", () => {
   const lineup = [{
     id: "unknown",
     kind: "static",
@@ -94,15 +94,11 @@ test("unmatched static channels get an honest current placeholder with artwork",
   }];
   const xml = buildXmlTv(lineup, [ukDoc], { now: GUIDE_NOW });
   assert.match(xml, /<channel id="justone\.unknown">/);
-  assert.match(xml, /<programme start="20260830103000 \+0000"[^>]+channel="justone\.unknown"/);
-  assert.match(xml, /<title>Schedule unavailable<\/title>/);
-  assert.match(xml, /<sub-title>Unknown Channel<\/sub-title>/);
-  assert.match(xml, /Detailed programme schedule is currently unavailable/);
-  assert.match(xml, /<icon src="https:\/\/example\/channel\.png" \/>/);
-  assert.match(xml, /<image type="backdrop"[^>]*>https:\/\/example\/channel\.png<\/image>/);
+  assert.doesNotMatch(xml, /<programme[^>]+channel="justone\.unknown"/);
+  assert.doesNotMatch(xml, /Schedule unavailable|Detailed programme schedule is currently unavailable/i);
 });
 
-test("real external programmes still win over the fallback", () => {
+test("real external programmes remain intact without filler", () => {
   const lineup = [{
     id: "itv",
     kind: "static",
@@ -113,7 +109,7 @@ test("real external programmes still win over the fallback", () => {
   }];
   const xml = buildXmlTv(lineup, [ukDoc], { now: GUIDE_NOW });
   assert.match(xml, /Good Morning Britain/);
-  assert.doesNotMatch(xml, /Detailed programme schedule is currently unavailable/);
+  assert.doesNotMatch(xml, /Schedule unavailable|Detailed programme schedule is currently unavailable/i);
   assert.match(xml, /<programme[^>]+channel="justone\.itv"/);
 });
 
@@ -139,6 +135,8 @@ test("sports XMLTV decodes nested entities and keeps event title searchable", ()
   assert.doesNotMatch(xml, /&amp;amp;/);
   assert.match(xml, /<category>Sports<\/category>/);
   assert.match(xml, /<keyword>Saint Kitts &amp; Nevis<\/keyword>/);
+  assert.equal((xml.match(/<programme\b/g) || []).length, 1);
+  assert.doesNotMatch(xml, /Schedule unavailable/);
 });
 
 test("sports without a verified schedule do not get a fabricated programme time", () => {
