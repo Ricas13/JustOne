@@ -4,6 +4,7 @@ import {
   clearEventWinnerCache,
   collapseSportsEvents,
   eventDisplayTitle,
+  eventHeaderValue,
   probeUrlForCandidate,
   qualityRank,
   selectWorkingEventCandidate,
@@ -117,6 +118,13 @@ test("event title removes only the final source suffix", () => {
     eventDisplayTitle("Brazil - Brasileirão : Mirassol vs Palmeiras - Premiere"),
     "Brazil - Brasileirão : Mirassol vs Palmeiras",
   );
+});
+
+test("event diagnostic source labels are always safe HTTP header values", () => {
+  const value = eventHeaderValue("São Paulo — Vitória\r\n⚽ Feed");
+  assert.equal(value, "Sao Paulo - Vitoria ?? Feed");
+  assert.match(value, /^[\x20-\x7E]*$/);
+  assert.doesNotThrow(() => new Headers({ "x-justone-event-source": value }));
 });
 
 test("quality ranking is highest quality to lowest quality", () => {
