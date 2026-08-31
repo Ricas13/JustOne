@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { rewriteHlsManifest } from "../src/play.js";
+import { hlsTokenForTarget, rewriteHlsManifest } from "../src/play.js";
 
 test("HLS manifest rewrites relative variants, segments, keys and maps through the proxy", () => {
   const manifest = [
@@ -43,4 +43,31 @@ test("HLS manifest leaves non-http key schemes untouched", () => {
     throw new Error("mapper should not be called");
   });
   assert.equal(output, manifest);
+});
+
+test("same HLS resource keeps the same proxy identity across manifest refreshes", () => {
+  const url = "https://cdn.example/live/segment-184.ts?sig=abc";
+  const a = hlsTokenForTarget(url, { Referer: "https://player.example/", Origin: "https://player.example" });
+  const b = hlsTokenForTarget(url, { origin: "https://player.example", referer: "https://player.example/" });
+
+  assert.equal(a, b, "header object order/casing must not create a new segment identity");
+  assert.notEqual(a, hlsTokenForTarget("https://cdn.example/live/segment-185.ts?sig=abc", {
+    referer: "https://player.example/",
+    origin: "https://player.example",
+  }));
+  assert.notEqual(a, hlsTokenForTarget(url, {
+    referer: "https://other-player.example/",
+    origin: "https://player.example",
+  }));
+});
+
+test("two refreshes rewrite the same segment to the same local token", () => {
+  const manifest = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:184\n#EXTINF:6,\nsegment-184.ts\n";
+  const rewrite = () => rewriteHlsManifest(
+    manifest,
+    "https://cdn.example/live/index.m3u8",
+    (url, hls) => `https://resolver.example/play/hls/${hlsTokenForTarget(url, {}, hls)}`,
+  );
+
+  assert.equal(rewrite(), rewrite());
 });

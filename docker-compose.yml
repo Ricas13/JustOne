@@ -41,6 +41,37 @@ services:
     networks:
       - justone
 
+  # Primary DLHD resolver/proxy. Pinned to a known upstream commit so a future
+  # upstream change cannot silently alter production playback. It stays private;
+  # Jellyfin still talks only to JustOne /play/live/... endpoints.
+  dlhd-proxy:
+    build:
+      context: "https://github.com/amddeus/dlhd-proxy.git#d2c691c52976d85218d22c6addc0fcc6dd9a5593"
+      args:
+        PORT: "3000"
+        API_URL: http://dlhd-proxy:3000
+        PROXY_CONTENT: "TRUE"
+        SOCKS5: ""
+    image: justone-amddeus-dlhd-proxy:local
+    container_name: justone-dlhd-proxy
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      REFLEX_API_URL: http://dlhd-proxy:3000
+      PROXY_CONTENT: "TRUE"
+      SOCKS5: ""
+      TZ: Europe/London
+      GUIDE_UPDATE: "03:00"
+      DLHD_PROXY_KEY_FILE: /app/data/token.key
+    volumes:
+      - dlhd_proxy_data:/app/data
+    labels:
+      - "traefik.enable=false"
+    networks:
+      - justone
+
+  # Existing resolver is deliberately retained as a fallback while the new
+  # proxy proves itself in production.
   dlhd:
     build:
       context: ./docker/dlhd
@@ -73,6 +104,7 @@ services:
       SOURCE_PROVIDER_TIMEOUT_MS: ${SOURCE_PROVIDER_TIMEOUT_MS:-5000}
       SOURCE_RESOLVE_TIMEOUT_MS: ${SOURCE_RESOLVE_TIMEOUT_MS:-15000}
       SOURCE_PROBE_TIMEOUT_MS: ${SOURCE_PROBE_TIMEOUT_MS:-2500}
+      DLHD_PROXY_URL: http://dlhd-proxy:3000
       DLHD_URL: http://dlhd:3000
       DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
@@ -158,6 +190,7 @@ services:
       - "127.0.0.1:18080:8080"
     depends_on:
       - cinepro
+      - dlhd-proxy
       - dlhd
     networks:
       - justone
@@ -230,6 +263,7 @@ services:
 
 volumes:
   webstreamr_mbg_cache:
+  dlhd_proxy_data:
   provider_update_state:
 
 networks:

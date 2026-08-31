@@ -24,7 +24,7 @@ test("sports stay first and TV is ordered USA UK Portugal then other countries",
     "TV | Portugal",
     "TV | France",
   ]);
-  assert.deepEqual(out.map((x) => x.number), [1001, 20001, 21001, 22001, 23001]);
+  assert.deepEqual(out.map((x) => x.number), [100, 1000, 2000, 3000, 4000]);
 });
 
 test("sports event groups get generated logos and programme artwork", () => {

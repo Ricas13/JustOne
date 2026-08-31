@@ -574,21 +574,65 @@ export function resolveEpisodeForPlayback(tmdbId, season, episode, quality = "10
   return resolveEpisode(tmdbId, season, episode, quality, { playbackCheck: true });
 }
 
+export function liveStreamEndpoints(
+  channelId,
+  { proxyUrl = config.dlhdProxyUrl, legacyUrl = config.dlhdUrl } = {},
+) {
+  const id = encodeURIComponent(String(channelId || "").replace(/\.(?:m3u8|ts)$/i, ""));
+  const endpoints = [];
+  if (proxyUrl) {
+    endpoints.push({ provider: "amddeus-dlhd-proxy", url: `${String(proxyUrl).replace(/\/$/, "")}/stream/${id}.m3u8` });
+  }
+  if (legacyUrl) {
+    endpoints.push({ provider: "legacy-dlhd-web", url: `${String(legacyUrl).replace(/\/$/, "")}/api/stream/${id}.m3u8` });
+  }
+  return endpoints;
+}
+
+async function resolveLiveEndpoint(endpoint) {
+  const response = await fetch(endpoint.url, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(20000),
+  });
+  const location = response.headers.get("location");
+  const ok = response.status >= 200 && response.status < 400;
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* ignore cleanup errors */
+  }
+  if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
+  return location ? new URL(location, endpoint.url).href : endpoint.url;
+}
+
 export async function resolveLive(channelId, { force = false } = {}) {
   const key = `live:${channelId}`;
   if (!force) {
     const cached = cacheGet(key);
     if (cached) return cached;
   }
-  const r = await fetch(`${config.dlhdUrl}/api/stream/${channelId}.m3u8`, {
-    redirect: "manual",
-    signal: AbortSignal.timeout(20000),
-  });
-  const loc = r.headers.get("location");
-  const url = loc && /^https?:/i.test(loc) ? loc : `${config.dlhdUrl}/api/stream/${channelId}.m3u8`;
-  const picked = { url, quality: "live", available: ["live"], wanted: "live", matched: true };
-  cacheSet(key, picked);
-  return picked;
+
+  const endpoints = liveStreamEndpoints(channelId);
+  let lastError = null;
+  for (const endpoint of endpoints) {
+    try {
+      const url = await resolveLiveEndpoint(endpoint);
+      const picked = {
+        url,
+        quality: "live",
+        available: ["live"],
+        wanted: "live",
+        matched: true,
+        provider: endpoint.provider,
+      };
+      cacheSet(key, picked);
+      return picked;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("no DLHD live provider configured");
 }
 
 export function cacheStats() {
