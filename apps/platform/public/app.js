@@ -370,8 +370,8 @@ async function settings() {
         ${settingRow("RESOLVE_TTL_MS", "3600000", "Maximum in-memory live source cache lifetime.")}
         ${settingRow("LIVE_SOURCE_PROBE_TIMEOUT_MS", "7000", "Maximum media-aware validation time for a live provider candidate.")}
         ${settingRow("LIVE_SOURCE_RECHECK_MS", "15000", "How soon a cached live source must prove readable media again.")}
-        ${settingRow("LIVE_BUFFER_SECONDS", "5", "RAM-only startup cushion before MPEG-TS is released to Jellyfin. Set 0 to disable.")}
-        ${settingRow("LIVE_BUFFER_MAX_BYTES", "67108864", "Maximum RAM used by the startup cushion per stream before early release.")}
+        ${settingRow("LIVE_BUFFER_SECONDS", "2", "Continuous RAM-only MPEG-TS delay kept behind upstream during the whole stream. Set 0 to disable.")}
+        ${settingRow("LIVE_BUFFER_MAX_BYTES", "67108864", "Maximum RAM used by the rolling buffer per stream before early release.")}
         ${settingRow("ADMIN_PASSWORD", "secret", "Protects this admin dashboard. Value is never shown here.")}
         ${settingRow("PLAYLIST_KEY", "secret", "Protects stream, guide and artwork URLs. Value is never shown here.")}
       </tbody></table></div>
