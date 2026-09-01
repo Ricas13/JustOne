@@ -4,25 +4,35 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <title>JustOne Admin</title>
+  <title>JustOne Live TV Admin</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Outfit:wght@400;500&display=swap" />
   <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/live-presence.css" />
 </head>
 <body>
   <aside>
     <p class="brand">JustOne</p>
-    <p class="sub">Live TV Admin</p>
+    <p class="sub">Live TV only</p>
     <nav>
       <a data-route href="#/">Overview</a>
       <a data-route href="#/live">Live TV</a>
       <a data-route href="#/health">Health</a>
       <a data-route href="#/settings">Settings</a>
     </nav>
+    <div id="stream-presence" class="stream-presence" title="Current client MPEG-TS sessions. Internal event health probes are excluded.">
+      <span class="stream-presence-dot" aria-hidden="true"></span>
+      <div class="stream-presence-copy">
+        <span>Active streams</span>
+        <strong id="active-stream-count">—</strong>
+        <small id="active-stream-detail">Checking…</small>
+      </div>
+    </div>
     <form class="sidebar-bottom" method="post" action="/logout">
       <button type="submit" class="secondary">Log out</button>
     </form>
   </aside>
   <main id="app" aria-live="polite"></main>
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/live-presence.js"></script>
 </body>
 </html>

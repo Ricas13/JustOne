@@ -1,0 +1,63 @@
+.stream-presence {
+  position:absolute;
+  left:16px;
+  right:16px;
+  bottom:78px;
+  min-height:58px;
+  display:grid;
+  grid-template-columns:auto 1fr;
+  align-items:center;
+  gap:10px;
+  padding:10px 11px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--surface-2);
+}
+
+.stream-presence-dot {
+  width:9px;
+  height:9px;
+  border-radius:999px;
+  background:var(--muted);
+  box-shadow:0 0 0 4px rgba(157,157,150,.08);
+}
+
+.stream-presence.live .stream-presence-dot {
+  background:var(--ok);
+  box-shadow:0 0 0 4px rgba(143,213,166,.09);
+}
+
+.stream-presence-copy {
+  min-width:0;
+  display:grid;
+  grid-template-columns:1fr auto;
+  align-items:baseline;
+  column-gap:8px;
+}
+
+.stream-presence-copy span {
+  color:var(--muted);
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+
+.stream-presence-copy strong {
+  font-size:18px;
+  letter-spacing:-.03em;
+}
+
+.stream-presence-copy small {
+  grid-column:1 / -1;
+  color:var(--muted);
+  font-size:10px;
+  margin-top:2px;
+}
+
+#active-stream-metric strong[data-active-stream-count] {
+  font-variant-numeric:tabular-nums;
+}
+
+@media (max-width:800px) {
+  .stream-presence { display:none; }
+}

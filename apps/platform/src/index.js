@@ -30,6 +30,7 @@ import {
   clearAuthCookie,
 } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
+import { activeStreamStats, beginLiveStream } from "./liveStreams.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -191,6 +192,7 @@ app.get("/health", async (_req, res) => {
     publicUrl: config.publicUrl,
     cache: cacheStats(),
     live: liveStatus(),
+    streams: activeStreamStats(),
     checks,
   });
 });
@@ -222,7 +224,17 @@ app.get("/play/live/:channelId", async (req, res) => {
         return res.status(200).end();
       }
       const hls = `http://127.0.0.1:${config.port}/play/live/${id}.m3u8`;
-      return restreamMpegTs(req, res, hls);
+      const stream = beginLiveStream({
+        channelId: id,
+        provider: picked.provider,
+        userAgent: req.headers["user-agent"],
+      });
+      try {
+        await restreamMpegTs(req, res, hls);
+      } finally {
+        stream.end();
+      }
+      return;
     }
     proxyStream(req, res, picked.url, { filename: null, download: false });
   } catch (error) {
@@ -253,6 +265,7 @@ app.get("/live/channels", async (_req, res) => {
 });
 
 app.get("/live/status", (_req, res) => res.json(liveStatus()));
+app.get("/live/streams", (_req, res) => res.json(activeStreamStats()));
 app.get("/live/playlist.m3u8", (req, res) => sendPlaylist(req, res, req.query.kind || "all"));
 app.get("/live/247.m3u8", (req, res) => sendPlaylist(req, res, "247"));
 app.get("/live/sports.m3u8", (req, res) => sendPlaylist(req, res, "sports"));
