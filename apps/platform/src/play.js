@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
+import { liveBufferSettings, StartupMediaBuffer } from "./liveBuffer.js";
 
 const hlsTargets = new Map();
 const HLS_TOKEN_TTL_MS = Math.max(
@@ -30,6 +31,12 @@ const UA =
 /**
  * Jellyfin is fed MPEG-TS for Live TV compatibility, but the upstream is HLS.
  * Let ffmpeg own HLS sequence tracking, encryption keys and discontinuities.
+ *
+ * By default we retain the first five seconds of remuxed MPEG-TS in RAM before
+ * handing it to Jellyfin. The buffered bytes are then flushed and the stream
+ * continues normally. This gives the downstream player a small head start for
+ * transient HLS/CDN stalls without writing media to disk. Set
+ * LIVE_BUFFER_SECONDS=0 to restore immediate delivery.
  */
 export function restreamMpegTs(req, res, inputUrl) {
   return new Promise((resolve) => {
@@ -64,20 +71,97 @@ export function restreamMpegTs(req, res, inputUrl) {
     ];
 
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const bufferSettings = liveBufferSettings();
+    const startupBuffer = new StartupMediaBuffer(bufferSettings.maxBytes);
     let started = false;
     let settled = false;
     let stderr = "";
+    let releaseTimer = null;
+    let buffering = bufferSettings.delayMs > 0;
+
+    const clearReleaseTimer = () => {
+      if (!releaseTimer) return;
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
+    };
+
+    const setLiveHeaders = () => {
+      res.setHeader("Content-Type", "video/mp2t");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux");
+      res.setHeader("X-JustOne-Live-Buffer-Seconds", String(bufferSettings.seconds));
+      res.setHeader("X-JustOne-Live-Buffer-Mode", bufferSettings.seconds ? "startup-ram" : "off");
+    };
 
     const finish = () => {
       if (settled) return;
       settled = true;
+      clearReleaseTimer();
+      startupBuffer.clear();
       req.off("aborted", stop);
       res.off("close", stop);
       resolve();
     };
 
     const stop = () => {
+      clearReleaseTimer();
       if (!child.killed) child.kill("SIGKILL");
+    };
+
+    const connectOutput = (initialChunk) => {
+      if (started || res.destroyed || res.writableEnded) return;
+      started = true;
+      setLiveHeaders();
+
+      const attach = () => {
+        if (res.destroyed || res.writableEnded) {
+          stop();
+          return;
+        }
+        child.stdout.pipe(res, { end: false });
+        child.stdout.resume();
+      };
+
+      if (initialChunk?.length) {
+        const writable = res.write(initialChunk);
+        if (!writable) {
+          res.once("drain", attach);
+          return;
+        }
+      }
+      attach();
+    };
+
+    const releaseBufferedOutput = (reason = "timer") => {
+      if (!buffering || started) return;
+      buffering = false;
+      clearReleaseTimer();
+      child.stdout.pause();
+      child.stdout.off("data", onBufferedData);
+      const initial = startupBuffer.release();
+      if (reason === "limit") {
+        log(
+          "live buffer",
+          `released-early bytes=${initial.length}`,
+          `limit=${bufferSettings.maxBytes}`,
+        );
+      }
+      connectOutput(initial);
+    };
+
+    const onBufferedData = (chunk) => {
+      if (res.destroyed || res.writableEnded) return;
+      const result = startupBuffer.push(chunk);
+      if (!releaseTimer) {
+        releaseTimer = setTimeout(
+          () => releaseBufferedOutput("timer"),
+          bufferSettings.delayMs,
+        );
+        releaseTimer.unref?.();
+      }
+      if (result.full) releaseBufferedOutput("limit");
     };
 
     req.once("aborted", stop);
@@ -87,17 +171,14 @@ export function restreamMpegTs(req, res, inputUrl) {
       stderr = (stderr + chunk.toString("utf8")).slice(-8192);
     });
 
-    child.stdout.once("data", (chunk) => {
-      if (res.destroyed || res.writableEnded) return;
-      started = true;
-      res.setHeader("Content-Type", "video/mp2t");
-      res.setHeader("Cache-Control", "no-store");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux");
-      res.write(chunk);
-      child.stdout.pipe(res, { end: false });
-    });
+    if (buffering) {
+      child.stdout.on("data", onBufferedData);
+    } else {
+      child.stdout.once("data", (chunk) => {
+        if (res.destroyed || res.writableEnded) return;
+        connectOutput(chunk);
+      });
+    }
 
     child.on("error", (error) => {
       log("live ffmpeg", String(error?.message || error));
