@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
-import { liveBufferSettings, StartupMediaBuffer } from "./liveBuffer.js";
+import { liveBufferSettings, RollingTsMediaBuffer } from "./liveBuffer.js";
 
 const hlsTargets = new Map();
 const HLS_TOKEN_TTL_MS = Math.max(
@@ -32,11 +32,12 @@ const UA =
  * Jellyfin is fed MPEG-TS for Live TV compatibility, but the upstream is HLS.
  * Let ffmpeg own HLS sequence tracking, encryption keys and discontinuities.
  *
- * By default we retain the first five seconds of remuxed MPEG-TS in RAM before
- * handing it to Jellyfin. The buffered bytes are then flushed and the stream
- * continues normally. This gives the downstream player a small head start for
- * transient HLS/CDN stalls without writing media to disk. Set
- * LIVE_BUFFER_SECONDS=0 to restore immediate delivery.
+ * When LIVE_BUFFER_SECONDS is non-zero, ffmpeg output is kept continuously
+ * behind the upstream in a bounded RAM-only delay line. MPEG-TS PCR timestamps
+ * pace the delayed output, so brief HLS/CDN fetch stalls can consume the queued
+ * media while late packets catch up. Streams without usable PCR timestamps
+ * safely fall back to a wall-clock delay. Set LIVE_BUFFER_SECONDS=0 to restore
+ * the previous immediate-delivery path.
  */
 export function restreamMpegTs(req, res, inputUrl) {
   return new Promise((resolve) => {
@@ -72,48 +73,54 @@ export function restreamMpegTs(req, res, inputUrl) {
 
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
     const bufferSettings = liveBufferSettings();
-    const startupBuffer = new StartupMediaBuffer(bufferSettings.maxBytes);
+    const buffering = bufferSettings.delayMs > 0;
+    let rollingBuffer = null;
     let started = false;
     let settled = false;
     let stderr = "";
-    let releaseTimer = null;
-    let buffering = bufferSettings.delayMs > 0;
-
-    const clearReleaseTimer = () => {
-      if (!releaseTimer) return;
-      clearTimeout(releaseTimer);
-      releaseTimer = null;
-    };
 
     const setLiveHeaders = () => {
+      const mode = buffering ? `rolling-${rollingBuffer?.mode || "pcr"}-ram` : "off";
       res.setHeader("Content-Type", "video/mp2t");
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
       res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux");
       res.setHeader("X-JustOne-Live-Buffer-Seconds", String(bufferSettings.seconds));
-      res.setHeader("X-JustOne-Live-Buffer-Mode", bufferSettings.seconds ? "startup-ram" : "off");
+      res.setHeader("X-JustOne-Live-Buffer-Mode", mode);
+      res.setHeader("X-JustOne-Live-Buffer-Max-Bytes", String(bufferSettings.maxBytes));
+    };
+
+    const ensureStarted = () => {
+      if (started || res.destroyed || res.writableEnded) return false;
+      started = true;
+      setLiveHeaders();
+      return true;
+    };
+
+    const onDrain = () => {
+      rollingBuffer?.drain();
+      if (!child.killed && !res.destroyed && !res.writableEnded) child.stdout.resume();
     };
 
     const finish = () => {
       if (settled) return;
       settled = true;
-      clearReleaseTimer();
-      startupBuffer.clear();
+      rollingBuffer?.clear();
       req.off("aborted", stop);
       res.off("close", stop);
+      res.off("drain", onDrain);
       resolve();
     };
 
     const stop = () => {
-      clearReleaseTimer();
+      rollingBuffer?.clear();
       if (!child.killed) child.kill("SIGKILL");
     };
 
-    const connectOutput = (initialChunk) => {
+    const connectDirectOutput = (initialChunk) => {
       if (started || res.destroyed || res.writableEnded) return;
-      started = true;
-      setLiveHeaders();
+      ensureStarted();
 
       const attach = () => {
         if (res.destroyed || res.writableEnded) {
@@ -134,49 +141,45 @@ export function restreamMpegTs(req, res, inputUrl) {
       attach();
     };
 
-    const releaseBufferedOutput = (reason = "timer") => {
-      if (!buffering || started) return;
-      buffering = false;
-      clearReleaseTimer();
-      child.stdout.pause();
-      child.stdout.off("data", onBufferedData);
-      const initial = startupBuffer.release();
-      if (reason === "limit") {
-        log(
-          "live buffer",
-          `released-early bytes=${initial.length}`,
-          `limit=${bufferSettings.maxBytes}`,
-        );
-      }
-      connectOutput(initial);
-    };
-
-    const onBufferedData = (chunk) => {
-      if (res.destroyed || res.writableEnded) return;
-      const result = startupBuffer.push(chunk);
-      if (!releaseTimer) {
-        releaseTimer = setTimeout(
-          () => releaseBufferedOutput("timer"),
-          bufferSettings.delayMs,
-        );
-        releaseTimer.unref?.();
-      }
-      if (result.full) releaseBufferedOutput("limit");
-    };
-
     req.once("aborted", stop);
     res.once("close", stop);
+    res.on("drain", onDrain);
 
     child.stderr.on("data", (chunk) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-8192);
     });
 
     if (buffering) {
-      child.stdout.on("data", onBufferedData);
+      rollingBuffer = new RollingTsMediaBuffer({
+        delayMs: bufferSettings.delayMs,
+        maxBytes: bufferSettings.maxBytes,
+        write(data) {
+          if (res.destroyed || res.writableEnded) return false;
+          ensureStarted();
+          const writable = res.write(data);
+          if (!writable) child.stdout.pause();
+          return writable;
+        },
+        onModeChange(mode) {
+          if (mode === "wall") log("live buffer", "PCR unavailable; using wall-clock rolling delay");
+        },
+        onOverflow(bytes) {
+          log(
+            "live buffer",
+            `released-early bytes=${bytes}`,
+            `limit=${bufferSettings.maxBytes}`,
+          );
+        },
+      });
+
+      child.stdout.on("data", (chunk) => {
+        if (res.destroyed || res.writableEnded) return;
+        rollingBuffer.push(chunk);
+      });
     } else {
       child.stdout.once("data", (chunk) => {
         if (res.destroyed || res.writableEnded) return;
-        connectOutput(chunk);
+        connectDirectOutput(chunk);
       });
     }
 
