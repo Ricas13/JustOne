@@ -34,10 +34,6 @@ import { activeStreamStats, beginLiveStream } from "./liveStreams.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
-const STREMIO_UPSTREAM = (process.env.STREMIO_UPSTREAM || "http://stremio-addon:7000").replace(
-  /\/$/,
-  "",
-);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -88,39 +84,6 @@ function redirectTo(res, picked, format, playPath) {
   }
   res.setHeader("Cache-Control", "no-store");
   return res.redirect(302, opaque);
-}
-
-function proxyTo(base) {
-  return (req, res) => {
-    const root = base.endsWith("/") ? base : `${base}/`;
-    const rel = (req.url.startsWith("/") ? req.url.slice(1) : req.url) || "";
-    const target = new URL(rel, root);
-    const headers = { ...req.headers, host: target.host };
-    delete headers.connection;
-    delete headers["content-length"];
-    const request = http.request(
-      target,
-      { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
-      (upstream) => {
-        const out = fixMediaType({ ...upstream.headers }, target.href);
-        delete out.location;
-        delete out.Location;
-        res.writeHead(upstream.statusCode || 502, out);
-        if (req.method === "HEAD") {
-          upstream.resume();
-          res.end();
-          return;
-        }
-        upstream.pipe(res);
-      },
-    );
-    request.on("error", () => {
-      if (!res.headersSent) res.status(502).json({ error: "upstream" });
-      else res.destroy();
-    });
-    if (req.method === "HEAD") request.end();
-    else req.pipe(request);
-  };
 }
 
 function proxyOriginal(base) {
@@ -337,7 +300,6 @@ app.post("/live/sources/delete", async (req, res) => {
   res.json({ ok: true, sources: next });
 });
 
-app.use("/stremio", proxyTo(STREMIO_UPSTREAM));
 app.use("/api/proxy", proxyOriginal(config.dlhdUrl));
 app.use("/api/stream", proxyOriginal(config.dlhdUrl));
 
@@ -351,7 +313,6 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/resolve") ||
     req.path.startsWith("/live") ||
     req.path.startsWith("/health") ||
-    req.path.startsWith("/stremio") ||
     req.path.startsWith("/api") ||
     req.path.startsWith("/login")
   ) {
