@@ -114,7 +114,6 @@ async function overview() {
   const locked = Boolean(liveLinks?.locked);
   const jfPlaylist = keyedUrl("/jellyfin/playlist.m3u8", liveLinks);
   const jfGuide = keyedUrl("/jellyfin/guide.xml", liveLinks);
-  const stremio = keyedUrl("/stremio/manifest.json", liveLinks);
   const primaryOk = Boolean(health?.checks?.dlhdProxy?.ok);
   const fallbackOk = Boolean(health?.checks?.dlhd?.ok);
 
@@ -125,53 +124,24 @@ async function overview() {
         <h1>JustOne</h1>
         <p class="muted">Live channels, source failover, Jellyfin lineup normalization and guide data in one place.</p>
       </div>
-      <div class="actions">
-        <button id="refresh-live" type="button">Refresh Live TV</button>
-      </div>
+      <div class="actions"><button id="refresh-live" type="button">Refresh Live TV</button></div>
     </div>
 
     <section class="metric-grid">
-      <div class="metric">
-        <span class="metric-label">Platform channels</span>
-        <strong>${fmtNumber(liveStatus?.channels)}</strong>
-        ${badge(liveStatus?.error ? "Refresh error" : "Ready", liveStatus?.error ? "bad" : "ok")}
-      </div>
-      <div class="metric">
-        <span class="metric-label">Jellyfin Live</span>
-        <strong>${fmtNumber(jellyfin?.channels)} channels</strong>
-        ${serviceState(jfOk, jfOk ? "Healthy" : "Unavailable")}
-      </div>
-      <div class="metric">
-        <span class="metric-label">Live resolver cache</span>
-        <strong>${fmtNumber(cache)}</strong>
-        <span class="muted tiny">validated channel selections</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Playlist access</span>
-        <strong>${locked ? "Protected" : "Open"}</strong>
-        ${badge(locked ? "PLAYLIST_KEY" : "No key", locked ? "ok" : "warn")}
-      </div>
-      <div class="metric">
-        <span class="metric-label">Primary live backend</span>
-        <strong>${primaryOk ? "Online" : "Unavailable"}</strong>
-        ${serviceState(primaryOk)}
-      </div>
-      <div class="metric">
-        <span class="metric-label">Fallback live backend</span>
-        <strong>${fallbackOk ? "Online" : "Unavailable"}</strong>
-        ${serviceState(fallbackOk)}
-      </div>
+      <div class="metric"><span class="metric-label">Platform channels</span><strong>${fmtNumber(liveStatus?.channels)}</strong>${badge(liveStatus?.error ? "Refresh error" : "Ready", liveStatus?.error ? "bad" : "ok")}</div>
+      <div class="metric"><span class="metric-label">Jellyfin Live</span><strong>${fmtNumber(jellyfin?.channels)} channels</strong>${serviceState(jfOk, jfOk ? "Healthy" : "Unavailable")}</div>
+      <div class="metric"><span class="metric-label">Live resolver cache</span><strong>${fmtNumber(cache)}</strong><span class="muted tiny">validated channel selections</span></div>
+      <div class="metric"><span class="metric-label">Playlist access</span><strong>${locked ? "Protected" : "Open"}</strong>${badge(locked ? "PLAYLIST_KEY" : "No key", locked ? "ok" : "warn")}</div>
+      <div class="metric"><span class="metric-label">Primary live backend</span><strong>${primaryOk ? "Online" : "Unavailable"}</strong>${serviceState(primaryOk)}</div>
+      <div class="metric"><span class="metric-label">Fallback live backend</span><strong>${fallbackOk ? "Online" : "Unavailable"}</strong>${serviceState(fallbackOk)}</div>
     </section>
 
     ${liveStatus?.error ? `<div class="notice bad"><strong>Live refresh error</strong><br>${esc(liveStatus.error)}</div>` : ""}
 
     <section class="panel">
-      <div class="section-title">
-        <div><p class="eyebrow">RECOMMENDED</p><h2>Client endpoints</h2></div>
-      </div>
+      <div class="section-title"><div><p class="eyebrow">RECOMMENDED</p><h2>Jellyfin endpoints</h2></div></div>
       ${urlBox("jf-m3u", "Jellyfin tuner", jfPlaylist, "Normalized M3U")}
       ${urlBox("jf-xml", "Jellyfin guide", jfGuide, "XMLTV")}
-      ${urlBox("stremio-url", "Stremio Live TV manifest", stremio, "Optional")}
     </section>
 
     <section class="two-col">
@@ -196,7 +166,6 @@ async function overview() {
     </section>`;
 
   bindCopies();
-
   document.getElementById("refresh-live").onclick = async () => {
     const btn = document.getElementById("refresh-live");
     btn.disabled = true;
@@ -230,15 +199,8 @@ async function live() {
 
   app.innerHTML = `
     <div class="pagehead">
-      <div>
-        <p class="eyebrow">LIVE TV</p>
-        <h1>Channels & guide</h1>
-        <p class="muted">The Jellyfin feed is normalized separately from the raw compatibility feeds.</p>
-      </div>
-      <div class="actions">
-        ${serviceState(Boolean(jellyfin?.ok), jellyfin?.ok ? "Organizer healthy" : "Organizer unavailable")}
-        <button id="live-refresh" type="button">Refresh sources</button>
-      </div>
+      <div><p class="eyebrow">LIVE TV</p><h1>Channels & guide</h1><p class="muted">Jellyfin receives the normalized live lineup while the raw feeds remain available for compatibility and diagnostics.</p></div>
+      <div class="actions">${serviceState(Boolean(jellyfin?.ok), jellyfin?.ok ? "Organizer healthy" : "Organizer unavailable")}<button id="live-refresh" type="button">Refresh sources</button></div>
     </div>
 
     <section class="panel">
@@ -247,10 +209,10 @@ async function live() {
       ${urlBox("jf-guide", "XMLTV guide", jfGuide, `${fmtNumber(jellyfin?.epgSources || 0)} guide sources`)}
       <div class="feature-grid">
         <div><strong>Adult filtering</strong><span>18+ content excluded from the Jellyfin feed.</span></div>
-        <div><strong>Non-live filtering</strong><span>Movie, TV Show, Series and other on-demand groups excluded from the live lineup.</span></div>
+        <div><strong>Non-live filtering</strong><span>On-demand groups excluded from the live lineup.</span></div>
         <div><strong>Sports slots</strong><span>Duplicate event sources collapse into reusable sport channels with failover.</span></div>
         <div><strong>EPG & artwork</strong><span>XMLTV mapping and channel artwork enrichment.</span></div>
-        <div><strong>Metadata only</strong><span>IPTV-org is used for metadata/guide enrichment, not as a stream source.</span></div>
+        <div><strong>Metadata only</strong><span>IPTV-org is used for metadata/guide enrichment, not playback.</span></div>
         <div><strong>Protected URLs</strong><span>${links?.locked ? "Playlist key is enabled." : "Playlist key is not configured."}</span></div>
       </div>
     </section>
@@ -264,32 +226,18 @@ async function live() {
     </section>
 
     <section class="panel">
-      <div class="section-title">
-        <div><p class="eyebrow">SOURCES</p><h2>Extra M3U sources</h2></div>
-        <span class="muted">${fmtNumber(sources?.length || 0)} configured</span>
-      </div>
+      <div class="section-title"><div><p class="eyebrow">SOURCES</p><h2>Extra M3U sources</h2></div><span class="muted">${fmtNumber(sources?.length || 0)} configured</span></div>
       <form id="add-source" class="inline-form">
         <input name="name" placeholder="Source name" required>
         <input name="url" type="url" placeholder="https://…/playlist.m3u8" required>
         <button type="submit">Add source</button>
       </form>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Source</th><th>URL</th><th>Status</th><th></th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="4" class="muted">No extra sources configured.</td></tr>`}</tbody>
-        </table>
-      </div>
+      <div class="table-wrap"><table><thead><tr><th>Source</th><th>URL</th><th>Status</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">No extra sources configured.</td></tr>`}</tbody></table></div>
     </section>
 
-    <section class="panel">
-      <details>
-        <summary>Raw playlist preview</summary>
-        <pre id="preview" class="preview">Loading…</pre>
-      </details>
-    </section>`;
+    <section class="panel"><details><summary>Raw playlist preview</summary><pre id="preview" class="preview">Loading…</pre></details></section>`;
 
   bindCopies();
-
   document.getElementById("live-refresh").onclick = async () => {
     const btn = document.getElementById("live-refresh");
     btn.disabled = true;
@@ -343,20 +291,11 @@ async function loadPreview(url = "/live/playlist.m3u8") {
 }
 
 async function health() {
-  const links = await j("/live/links");
-  const [h, jf, manifest] = await Promise.all([
-    j("/health"),
-    maybe("/jellyfin/health"),
-    maybe(keyedUrl("/stremio/manifest.json", links)),
-  ]);
+  const [h, jf] = await Promise.all([j("/health"), maybe("/jellyfin/health")]);
   const checks = h?.checks || {};
   app.innerHTML = `
     <div class="pagehead">
-      <div>
-        <p class="eyebrow">HEALTH</p>
-        <h1>Live TV services</h1>
-        <p class="muted">Current reachability and in-memory state from the running live stack.</p>
-      </div>
+      <div><p class="eyebrow">HEALTH</p><h1>Live TV services</h1><p class="muted">Current reachability and in-memory state from the running live stack.</p></div>
       <button id="health-refresh" class="secondary" type="button">Refresh</button>
     </div>
 
@@ -365,7 +304,6 @@ async function health() {
       <div class="metric"><span class="metric-label">Primary DLHD proxy</span><strong>${checks?.dlhdProxy?.status || "—"}</strong>${serviceState(Boolean(checks?.dlhdProxy?.ok))}</div>
       <div class="metric"><span class="metric-label">Fallback DLHD</span><strong>${checks?.dlhd?.status || "—"}</strong>${serviceState(Boolean(checks?.dlhd?.ok))}</div>
       <div class="metric"><span class="metric-label">Jellyfin organizer</span><strong>${jf?.ok ? "Online" : "Offline"}</strong>${serviceState(Boolean(jf?.ok))}</div>
-      <div class="metric"><span class="metric-label">Stremio Live TV</span><strong>${esc(manifest?.name || "Unavailable")}</strong>${serviceState(Boolean(manifest?.id))}</div>
       <div class="metric"><span class="metric-label">Resolver cache</span><strong>${fmtNumber(h?.cache?.size)}</strong><span class="muted tiny">live entries</span></div>
     </section>
 
@@ -392,12 +330,7 @@ async function health() {
       </div>
     </section>
 
-    <section class="panel">
-      <details>
-        <summary>Raw health response</summary>
-        <pre>${esc(JSON.stringify({ platform: h, jellyfin: jf, stremio: manifest ? { id: manifest.id, name: manifest.name, version: manifest.version } : null }, null, 2))}</pre>
-      </details>
-    </section>`;
+    <section class="panel"><details><summary>Raw health response</summary><pre>${esc(JSON.stringify({ platform: h, jellyfin: jf }, null, 2))}</pre></details></section>`;
 
   document.getElementById("health-refresh").onclick = health;
 }
@@ -409,13 +342,7 @@ function settingRow(name, value, description) {
 async function settings() {
   const [status, links] = await Promise.all([j("/live/status"), j("/live/links")]);
   app.innerHTML = `
-    <div class="pagehead">
-      <div>
-        <p class="eyebrow">CONFIGURATION</p>
-        <h1>Settings reference</h1>
-        <p class="muted">Runtime configuration comes from <code>.env</code>. Secret values are never displayed here. Recreate the affected container after changing environment settings.</p>
-      </div>
-    </div>
+    <div class="pagehead"><div><p class="eyebrow">CONFIGURATION</p><h1>Settings reference</h1><p class="muted">Runtime configuration comes from <code>.env</code>. Secret values are never displayed here. Recreate the affected container after changing environment settings.</p></div></div>
 
     <section class="metric-grid">
       <div class="metric"><span class="metric-label">Live refresh</span><strong>${fmtNumber(status?.refreshMin)} min</strong></div>
@@ -443,6 +370,8 @@ async function settings() {
         ${settingRow("RESOLVE_TTL_MS", "3600000", "Maximum in-memory live source cache lifetime.")}
         ${settingRow("LIVE_SOURCE_PROBE_TIMEOUT_MS", "7000", "Maximum media-aware validation time for a live provider candidate.")}
         ${settingRow("LIVE_SOURCE_RECHECK_MS", "15000", "How soon a cached live source must prove readable media again.")}
+        ${settingRow("LIVE_BUFFER_SECONDS", "5", "RAM-only startup cushion before MPEG-TS is released to Jellyfin. Set 0 to disable.")}
+        ${settingRow("LIVE_BUFFER_MAX_BYTES", "67108864", "Maximum RAM used by the startup cushion per stream before early release.")}
         ${settingRow("ADMIN_PASSWORD", "secret", "Protects this admin dashboard. Value is never shown here.")}
         ${settingRow("PLAYLIST_KEY", "secret", "Protects stream, guide and artwork URLs. Value is never shown here.")}
       </tbody></table></div>
