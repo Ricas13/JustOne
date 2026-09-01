@@ -36,8 +36,8 @@ jobs:
       - name: Test platform
         run: npm test --prefix apps/platform
 
-      - name: Syntax-check Stremio addon entrypoint
-        run: node --check apps/stremio-addon/src/index.js
+      - name: Syntax-check platform dashboard
+        run: node --check apps/platform/public/app.js
 
       - name: Validate Docker Compose config
         run: |

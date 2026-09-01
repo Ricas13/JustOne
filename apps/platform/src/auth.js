@@ -44,7 +44,6 @@ export function isPublicPath(pathname) {
   return (
     pathname.startsWith("/play/") ||
     pathname.startsWith("/resolve/live/") ||
-    pathname.startsWith("/stremio") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
     (pathname.startsWith("/live/") && pathname.endsWith(".m3u8")) ||
@@ -57,7 +56,6 @@ export function isStreamPath(pathname) {
   return (
     pathname.startsWith("/play/") ||
     pathname.startsWith("/resolve/live/") ||
-    pathname.startsWith("/stremio") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
     (pathname.startsWith("/live/") && pathname.endsWith(".m3u8"))
