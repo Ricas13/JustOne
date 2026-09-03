@@ -3,6 +3,10 @@ import { config, withKey } from "./config.js";
 
 const WINNER_TTL_MS = Math.max(5000, Number(process.env.JELLYFIN_EVENT_WINNER_TTL_MS || 60000));
 const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.JELLYFIN_EVENT_PROBE_TIMEOUT_MS || 8000));
+const EVENT_FAILOVER_MAX_SOURCES = Math.max(
+  1,
+  Math.min(16, Number(process.env.JELLYFIN_EVENT_FAILOVER_MAX_SOURCES || 8)),
+);
 const winners = new Map();
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
@@ -35,17 +39,12 @@ function trailingSourceDelimiter(name) {
   const tail = name.slice(delimiter + 3).trim();
   if (!tail) return -1;
 
-  // For head-to-head fixtures, only a delimiter that occurs after the actual
-  // matchup can be a source suffix. This avoids treating the competition
-  // separator in "England - Premier League : Team A vs Team B" as a source.
   const matchup = HEAD_TO_HEAD_RE.exec(name);
   if (matchup && delimiter > matchup.index) return delimiter;
 
   const colon = name.lastIndexOf(":");
   if (colon >= 0 && delimiter < colon) return -1;
 
-  // Non-head-to-head sports need a conservative tail check so event names such
-  // as "Formula 1 - British Grand Prix" are not accidentally shortened.
   if (SOURCE_TAIL_RE.test(tail) && (colon >= 0 || EVENT_CORE_RE.test(eventPart))) return delimiter;
   if (eventPart.includes(":") && EVENT_CORE_RE.test(eventPart) && /\b(?:tv|sport|sports|network|channel|stream|feed)\b/i.test(tail)) {
     return delimiter;
@@ -143,7 +142,7 @@ function mergedEvent(rows, key) {
   const programmes = (best.programmes || []).map((programme, index) => ({
     ...programme,
     title,
-    description: `${candidates.length} source${candidates.length === 1 ? "" : "s"}; highest quality working source selected at playback time.`,
+    description: `${candidates.length} source${candidates.length === 1 ? "" : "s"}; highest quality working source selected at playback time with mid-stream failover.`,
     icon: withKey(`${config.publicUrl}/jellyfin/artwork/program/${encodeURIComponent(`${id}.event.${index}`)}.png`),
   }));
 
@@ -164,13 +163,6 @@ function mergedEvent(rows, key) {
   };
 }
 
-/**
- * Collapse only duplicate sports-event display rows. Ordinary TV channels and
- * single-source events retain their exact existing playback URL.
- *
- * The merged row stores every original playback URL in candidates[]; its M3U
- * URL is only a selector endpoint which redirects to one of those originals.
- */
 export function collapseSportsEvents(lineup = []) {
   const groups = new Map();
   for (const channel of lineup) {
@@ -202,15 +194,55 @@ export function collapseSportsEvents(lineup = []) {
   return out;
 }
 
-/**
- * Event candidates must be validated through the exact URL the client will
- * receive. In particular, /play/live/<id>.ts exercises JustOne's FFmpeg HLS
- * remux while /play/live/<id>.m3u8 is only an intermediate HLS proxy and can
- * have different availability. Rewriting .ts to .m3u8 therefore produces both
- * false negatives and false positives.
- */
 export function probeUrlForCandidate(url) {
   return String(url || "");
+}
+
+export function playLiveIdFromUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const match = /^\/play\/live\/([^/]+?)\.(?:ts|m3u8)$/i.exec(url.pathname);
+    return match ? decodeURIComponent(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Keep Jellyfin on one long-lived platform MPEG-TS connection. The selected
+ * source remains first, while the remaining event source ids are carried in a
+ * bounded `failover` query parameter. The platform consumes those ids only as
+ * local /play/live/<id>.m3u8 fallbacks, so this does not introduce SSRF.
+ */
+export function eventFailoverPlaybackUrl(selectedUrl, candidates = []) {
+  const selectedId = playLiveIdFromUrl(selectedUrl);
+  if (!selectedId) return String(selectedUrl || "");
+
+  let url;
+  try {
+    url = new URL(String(selectedUrl));
+  } catch {
+    return String(selectedUrl || "");
+  }
+
+  const ordered = sortEventCandidates(candidates);
+  const selectedIndex = ordered.findIndex((candidate) => candidate.url === selectedUrl);
+  const rotated = selectedIndex >= 0
+    ? [...ordered.slice(selectedIndex + 1), ...ordered.slice(0, selectedIndex)]
+    : ordered;
+  const fallbackIds = [];
+  const seen = new Set([selectedId]);
+  for (const candidate of rotated) {
+    const id = playLiveIdFromUrl(candidate.url);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    fallbackIds.push(id);
+    if (fallbackIds.length >= EVENT_FAILOVER_MAX_SOURCES - 1) break;
+  }
+
+  url.searchParams.delete("failover");
+  if (fallbackIds.length) url.searchParams.set("failover", fallbackIds.join(","));
+  return url.href;
 }
 
 async function probeCandidate(candidate, fetchImpl, timeoutMs) {
@@ -230,9 +262,6 @@ async function probeCandidate(candidate, fetchImpl, timeoutMs) {
     const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
     if (contentType.includes("text/html")) return false;
 
-    // A manifest/status response is not enough. Read the first bytes from the
-    // exact playback transport, then cancel immediately so a health probe does
-    // not keep an FFmpeg live-remux process running.
     const reader = response.body?.getReader?.();
     if (!reader) return false;
     const first = await reader.read();
@@ -264,7 +293,6 @@ async function probeCandidate(candidate, fetchImpl, timeoutMs) {
       || /\.ts$/i.test(pathname);
     if (mpegTsResponse) return bytes[0] === 0x47;
 
-    // Non-HLS direct media is acceptable once real non-HTML bytes arrive.
     return true;
   } catch {
     return false;
@@ -275,11 +303,6 @@ export function clearEventWinnerCache() {
   winners.clear();
 }
 
-/**
- * Find a working source, highest quality to lowest quality. This function never
- * proxies, rewrites or serves media. The returned url is the exact original
- * candidate URL and the HTTP route must redirect the client to it.
- */
 export async function selectWorkingEventCandidate(
   channel,
   { fetchImpl = fetch, now = Date.now(), timeoutMs = PROBE_TIMEOUT_MS } = {},
@@ -287,17 +310,23 @@ export async function selectWorkingEventCandidate(
   const candidates = sortEventCandidates(channel?.candidates || []);
   if (!candidates.length) return null;
 
+  const decorate = (candidate) => ({
+    ...candidate,
+    sourceUrl: candidate.url,
+    url: eventFailoverPlaybackUrl(candidate.url, candidates),
+  });
+
   const cached = winners.get(channel.id);
   if (cached && cached.expiresAt > now) {
     const candidate = candidates.find((row) => row.url === cached.url);
-    if (candidate && await probeCandidate(candidate, fetchImpl, timeoutMs)) return candidate;
+    if (candidate && await probeCandidate(candidate, fetchImpl, timeoutMs)) return decorate(candidate);
     winners.delete(channel.id);
   }
 
   for (const candidate of candidates) {
     if (await probeCandidate(candidate, fetchImpl, timeoutMs)) {
       winners.set(channel.id, { url: candidate.url, expiresAt: now + WINNER_TTL_MS });
-      return candidate;
+      return decorate(candidate);
     }
   }
   return null;

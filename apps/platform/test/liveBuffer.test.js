@@ -103,6 +103,49 @@ test("rolling PCR buffer keeps a delayed media clock during an upstream stall", 
   buffer.clear();
 });
 
+test("source transition preserves queued media and adopts a fresh PCR PID", () => {
+  let now = 0;
+  const writes = [];
+  const timers = [];
+  const buffer = new RollingTsMediaBuffer({
+    delayMs: 2000,
+    maxBytes: 1024 * 1024,
+    write(data) {
+      writes.push({ at: now, bytes: data.length });
+      return true;
+    },
+    now: () => now,
+    setTimer(fn, ms) {
+      const timer = { fn, at: now + ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) {
+      const index = timers.indexOf(timer);
+      if (index >= 0) timers.splice(index, 1);
+    },
+  });
+
+  buffer.push(pcrPacket(0, { pid: 256 }));
+  now = 500;
+  buffer.push(pcrPacket(90000, { pid: 256 }));
+  const oldBufferedBytes = buffer.bufferedBytes;
+  assert.equal(buffer.pcrPid, 256);
+
+  now = 750;
+  buffer.beginSourceTransition();
+  assert.equal(buffer.pcrPid, null);
+  assert.equal(buffer.mode, "pcr");
+  assert.equal(buffer.bufferedBytes, oldBufferedBytes, "old queued TS is retained");
+
+  buffer.push(pcrPacket(0, { pid: 513, discontinuity: true }));
+  assert.equal(buffer.pcrPid, 513, "new FFmpeg PCR PID becomes authoritative");
+  assert.ok(buffer.lastPcrDueAt >= buffer.lastQueuedDueAt);
+  assert.ok(buffer.bufferedBytes > oldBufferedBytes, "new source is appended after old media");
+
+  buffer.clear();
+});
+
 test("rolling buffer falls back to wall-clock delay if MPEG-TS has no PCR", () => {
   let now = 0;
   const writes = [];

@@ -4,7 +4,9 @@ import {
   clearEventWinnerCache,
   collapseSportsEvents,
   eventDisplayTitle,
+  eventFailoverPlaybackUrl,
   eventHeaderValue,
+  playLiveIdFromUrl,
   probeUrlForCandidate,
   qualityRank,
   selectWorkingEventCandidate,
@@ -134,7 +136,23 @@ test("quality ranking is highest quality to lowest quality", () => {
   assert.ok(qualityRank("Sky Sports") > qualityRank("Event SD Stream"));
 });
 
-test("selector probes the exact .ts transport and returns the original working URL", async () => {
+test("event playback URL keeps selected source first and carries bounded fallback channel ids", () => {
+  const fourK = rawUrl("401");
+  const hd = rawUrl("402");
+  const sd = rawUrl("403");
+  const candidates = [
+    { url: fourK, label: "4K", qualityRank: 500, sourceRank: 0 },
+    { url: hd, label: "HD", qualityRank: 300, sourceRank: 0 },
+    { url: sd, label: "SD", qualityRank: 100, sourceRank: 0 },
+  ];
+  const playback = new URL(eventFailoverPlaybackUrl(hd, candidates));
+  assert.equal(playback.pathname, "/play/live/402.ts");
+  assert.equal(playback.searchParams.get("key"), "exact-402");
+  assert.equal(playback.searchParams.get("failover"), "403,401");
+  assert.equal(playLiveIdFromUrl(playback.href), "402");
+});
+
+test("selector probes the exact .ts transport and returns a supervised playback URL", async () => {
   clearEventWinnerCache();
   const fourK = rawUrl("401");
   const hd = rawUrl("402");
@@ -159,7 +177,11 @@ test("selector probes the exact .ts transport and returns the original working U
   };
 
   const selected = await selectWorkingEventCandidate(channel, { fetchImpl, timeoutMs: 1000 });
-  assert.equal(selected.url, hd, "the exact original .ts playback URL is returned");
+  assert.equal(selected.sourceUrl, hd, "the selected source remains available for diagnostics");
+  const playback = new URL(selected.url);
+  assert.equal(playback.pathname, "/play/live/402.ts");
+  assert.equal(playback.searchParams.get("key"), "exact-402");
+  assert.equal(playback.searchParams.get("failover"), "403,401");
   assert.deepEqual(calls, [fourK, hd]);
   assert.equal(probeUrlForCandidate(fourK), fourK);
   assert.equal(probeUrlForCandidate(hd), hd);
