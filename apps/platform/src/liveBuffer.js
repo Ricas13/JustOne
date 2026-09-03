@@ -70,7 +70,7 @@ function concatPackets(packets) {
  *
  * PCR timestamps pace output on the original media clock, so every packet is
  * kept roughly `delayMs` behind the upstream. That means a short upstream/CDN
- * fetch stall can consume the queued media while delayed packets catch up.
+ * fetch stall can consume the queued media while late packets catch up.
  * Streams without a usable PCR fall back to a simple wall-clock delay instead
  * of failing playback.
  */
@@ -192,7 +192,7 @@ export class RollingTsMediaBuffer {
     if (this.pcrPid == null) {
       this.pcrPid = pcr.pid;
       this.lastPcrTicks = pcr.ticks;
-      this.lastPcrDueAt = receivedAt + this.delayMs;
+      this.lastPcrDueAt = Math.max(this.lastQueuedDueAt, receivedAt + this.delayMs);
       this._clearNoPcrTimer();
       this._schedulePacketInterval(this.lastPcrDueAt, this.lastPcrDueAt);
       return;
@@ -223,6 +223,34 @@ export class RollingTsMediaBuffer {
       this._schedule(data.subarray(0, offset), receivedAt + this.delayMs);
     }
     return offset;
+  }
+
+  /**
+   * Start a fresh MPEG-TS producer without throwing away media already queued
+   * for Jellyfin. Full packets from the old producer are committed to the tail
+   * of the queue; an incomplete trailing packet is discarded so bytes from two
+   * different FFmpeg processes can never be spliced into one corrupt TS packet.
+   * PCR/PID discovery then starts again for the new producer and its first PCR
+   * is scheduled no earlier than the existing queue tail.
+   */
+  beginSourceTransition() {
+    if (this.destroyed || this.mode === "off") return;
+    this._clearNoPcrTimer();
+
+    if (this.intervalPackets.length) {
+      const tailDueAt = Math.max(this.now(), this.lastQueuedDueAt);
+      this._schedule(concatPackets(this.intervalPackets), tailDueAt);
+      this.intervalPackets = [];
+      this.intervalBytes = 0;
+    }
+
+    this.residual = Buffer.alloc(0);
+    this.firstDataAt = null;
+    this.pcrPid = null;
+    this.lastPcrTicks = null;
+    this.lastPcrDueAt = null;
+    this._setMode("pcr");
+    this._pump();
   }
 
   push(chunk) {
