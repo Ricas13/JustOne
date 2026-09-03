@@ -18,11 +18,11 @@ const {
 function childUrl(body) {
   return String(body)
     .split(/\r?\n/)
-    .find((line) => line.startsWith("http://resolver.test/play/renew/") && line.includes(".m3u8"));
+    .find((line) => line.startsWith("/play/renew/") && line.includes(".m3u8"));
 }
 
 function tokenPath(url) {
-  return new URL(url).pathname.split("/").pop();
+  return new URL(url, "http://resolver.test").pathname.split("/").pop();
 }
 
 function fakeResponse() {
@@ -78,7 +78,7 @@ test("playlist selector order is stable across media and stream-inf entries", ()
   ]);
 });
 
-test("signed child URL changes keep the same client-facing renewable playlist identity", () => {
+test("signed child URL changes keep the same local client-facing renewable playlist identity", () => {
   resetRenewableLiveForTests();
   const rootUrl = "http://dlhd-proxy:3000/stream/425.m3u8";
   const first = rewriteRenewableManifest(
@@ -93,6 +93,8 @@ test("signed child URL changes keep the same client-facing renewable playlist id
   );
 
   assert.equal(childUrl(first), childUrl(second));
+  assert.ok(childUrl(first).startsWith("/play/renew/"));
+  assert.ok(!childUrl(first).includes("resolver.test"), "renewable child must not hairpin through PUBLIC_URL");
   assert.equal(
     tokenPath(childUrl(first)).replace(/\.m3u8$/, ""),
     renewablePlaylistToken("425", rootUrl, [0]),
@@ -144,7 +146,8 @@ test("expired signed playlist is re-resolved behind the same stable client URL",
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["x-justone-hls-renewal"], "current");
     assert.match(res.body, /#EXT-X-MEDIA-SEQUENCE:10/);
-    assert.match(res.body, /http:\/\/resolver\.test\/play\/renew\/.+\.ts/);
+    assert.match(res.body, /\/play\/renew\/.+\.ts/);
+    assert.ok(!res.body.includes("resolver.test/play/renew/"));
     assert.deepEqual(calls, [signedA, rootUrl, signedB]);
   } finally {
     globalThis.fetch = originalFetch;

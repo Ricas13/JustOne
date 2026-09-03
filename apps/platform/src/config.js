@@ -13,7 +13,19 @@ export const config = {
 };
 
 export function withKey(url) {
-  if (!config.playlistKey) return url;
-  const sep = String(url).includes("?") ? "&" : "?";
-  return `${url}${sep}key=${encodeURIComponent(config.playlistKey)}`;
+  let value = String(url);
+
+  // Renewable HLS children must stay on the same origin as the manifest that
+  // referenced them. The platform's FFmpeg enters /play/live through loopback;
+  // returning an absolute PUBLIC_URL here would hairpin every HLS refresh out
+  // through Traefik/TLS and back into this same container. External clients
+  // likewise resolve the relative path against the public origin naturally.
+  const renewablePrefix = `${config.publicUrl}/play/renew/`;
+  if (value.startsWith(renewablePrefix)) {
+    value = value.slice(config.publicUrl.length);
+  }
+
+  if (!config.playlistKey) return value;
+  const sep = value.includes("?") ? "&" : "?";
+  return `${value}${sep}key=${encodeURIComponent(config.playlistKey)}`;
 }
