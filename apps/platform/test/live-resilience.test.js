@@ -14,7 +14,7 @@ const {
   restreamMpegTs,
 } = await import("../src/play.js?live-resilience-test=1");
 
-test("FFmpeg live argv reconnects and marks fresh TS output as discontinuous", () => {
+test("FFmpeg retries transport errors but lets stale HLS HTTP failures reach the supervisor", () => {
   const args = liveFfmpegArgs("http://127.0.0.1/live.m3u8");
   const expectPair = (flag, value) => {
     const index = args.indexOf(flag);
@@ -22,11 +22,11 @@ test("FFmpeg live argv reconnects and marks fresh TS output as discontinuous", (
     assert.equal(args[index + 1], value);
   };
   expectPair("-reconnect", "1");
-  expectPair("-reconnect_at_eof", "1");
   expectPair("-reconnect_streamed", "1");
   expectPair("-reconnect_on_network_error", "1");
-  expectPair("-reconnect_on_http_error", "4xx,5xx");
   expectPair("-mpegts_flags", "+resend_headers+initial_discontinuity");
+  assert.equal(args.includes("-reconnect_at_eof"), false);
+  assert.equal(args.includes("-reconnect_on_http_error"), false);
   assert.ok(args.includes("-rw_timeout"));
 });
 
