@@ -9,7 +9,7 @@ const TARGET_TTL_MS = Math.max(
 const TARGET_MAX = Math.max(1000, Number(process.env.LIVE_HLS_TARGET_MAX || 50_000));
 const RENEW_INTERVAL_MS = Math.max(
   1000,
-  Math.min(30_000, Number(process.env.LIVE_HLS_RENEW_INTERVAL_MS || 4000)),
+  Math.min(30_000, Number(process.env.LIVE_HLS_RENEW_INTERVAL_MS || 30_000)),
 );
 const RENEW_RETRY_DELAY_MS = Math.max(
   100,
@@ -17,12 +17,13 @@ const RENEW_RETRY_DELAY_MS = Math.max(
 );
 const RENEW_BUDGET_MS = Math.max(
   2000,
-  Math.min(15_000, Number(process.env.LIVE_HLS_RENEW_BUDGET_MS || 9000)),
+  Math.min(15_000, Number(process.env.LIVE_HLS_RENEW_BUDGET_MS || 3000)),
 );
-const STALE_GRACE_MS = Math.max(
-  1000,
-  Math.min(120_000, Number(process.env.LIVE_HLS_STALE_GRACE_MS || 30_000)),
-);
+const staleGraceRaw = Number(process.env.LIVE_HLS_STALE_GRACE_MS || 0);
+const STALE_GRACE_MS =
+  Number.isFinite(staleGraceRaw) && staleGraceRaw > 0
+    ? Math.min(3_600_000, Math.max(1000, staleGraceRaw))
+    : 0;
 const MANIFEST_MAX_BYTES = Math.max(
   64 * 1024,
   Number(process.env.LIVE_HLS_MANIFEST_MAX_BYTES || 4 * 1024 * 1024),
@@ -367,6 +368,12 @@ async function renewPlaylistTarget(target, { force = false } = {}) {
   return promise;
 }
 
+function canServeLastGood(target) {
+  if (!target?.lastGoodBody) return false;
+  if (STALE_GRACE_MS === 0) return true;
+  return Date.now() - target.lastGoodAt <= STALE_GRACE_MS;
+}
+
 function sendManifest(res, body, mode = "current") {
   if (res.destroyed || res.writableEnded) return;
   res.statusCode = 200;
@@ -390,7 +397,7 @@ async function servePlaylistTarget(req, res, target) {
       `upstream-failed=${error?.status || error?.message || error}`,
     );
 
-    if (target.lastGoodBody && Date.now() - target.lastGoodAt <= STALE_GRACE_MS) {
+    if (canServeLastGood(target)) {
       void renewPlaylistTarget(target, { force: true }).catch((renewError) => {
         log(
           "live hls renewable",
@@ -513,7 +520,7 @@ export async function proxyRenewableLiveManifest(req, res, { channelId, rootUrl 
     root.lastGoodAt = Date.now();
     sendManifest(res, rewritten, "root");
   } catch (error) {
-    if (root.lastGoodBody && Date.now() - root.lastGoodAt <= STALE_GRACE_MS) {
+    if (canServeLastGood(root)) {
       sendManifest(res, root.lastGoodBody, "root-stale-hold");
       return;
     }

@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 
 process.env.PUBLIC_URL = "http://resolver.test";
 process.env.PLAYLIST_KEY = "";
-process.env.LIVE_HLS_RENEW_INTERVAL_MS = "4000";
-process.env.LIVE_HLS_RENEW_BUDGET_MS = "3000";
+process.env.LIVE_HLS_RENEW_INTERVAL_MS = "30000";
+process.env.LIVE_HLS_RENEW_BUDGET_MS = "2000";
 process.env.LIVE_HLS_RENEW_RETRY_DELAY_MS = "100";
+process.env.LIVE_HLS_STALE_GRACE_MS = "0";
 
 const {
   listHlsPlaylistTargets,
   proxyRenewableLiveAsset,
+  renewableLiveStats,
   renewablePlaylistToken,
   resetRenewableLiveForTests,
   rewriteRenewableManifest,
@@ -149,6 +151,55 @@ test("expired signed playlist is re-resolved behind the same stable client URL",
     assert.match(res.body, /\/play\/renew\/.+\.ts/);
     assert.ok(!res.body.includes("resolver.test/play/renew/"));
     assert.deepEqual(calls, [signedA, rootUrl, signedB]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an established renewable playlist never returns 5xx while renewal is unavailable", async () => {
+  resetRenewableLiveForTests();
+  assert.equal(renewableLiveStats().staleGraceMs, 0, "zero stale grace means indefinite last-good hold");
+
+  const originalFetch = globalThis.fetch;
+  const rootUrl = "http://dlhd-proxy:3000/stream/139.m3u8";
+  const signed = "https://xameleon.example/secure/token-live/mono.m3u8";
+  const master = `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\n${signed}\n`;
+  const media = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:22\n#EXTINF:4,\nsegment-22.ts\n";
+  const rewrittenRoot = rewriteRenewableManifest(master, rootUrl, {
+    channelId: "139",
+    rootUrl,
+  });
+  const stableChild = childUrl(rewrittenRoot);
+  assert.ok(stableChild);
+
+  let healthy = true;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (healthy && value === signed) {
+      return new Response(media, {
+        status: 200,
+        headers: { "content-type": "application/vnd.apple.mpegurl" },
+      });
+    }
+    throw new Error("simulated DaddyLive renewal outage");
+  };
+
+  try {
+    const req = { method: "GET", headers: {} };
+    const first = fakeResponse();
+    await proxyRenewableLiveAsset(req, first, tokenPath(stableChild));
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.headers["x-justone-hls-renewal"], "current");
+
+    healthy = false;
+    const held = fakeResponse();
+    await proxyRenewableLiveAsset(req, held, tokenPath(stableChild));
+    assert.equal(held.statusCode, 200);
+    assert.equal(held.headers["x-justone-hls-renewal"], "stale-hold");
+    assert.match(held.body, /#EXT-X-MEDIA-SEQUENCE:22/);
+
+    // Let the detached single-flight renewal finish before restoring fetch.
+    await new Promise((resolve) => setTimeout(resolve, 2200));
   } finally {
     globalThis.fetch = originalFetch;
   }
