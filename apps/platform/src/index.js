@@ -31,6 +31,11 @@ import {
 } from "./auth.js";
 import { readSources, writeSources, getExtChannel, loadAllExtra } from "./sources.js";
 import { activeStreamStats, beginLiveStream } from "./liveStreams.js";
+import {
+  proxyRenewableLiveManifest,
+  proxyRenewableLiveAsset,
+  renewableLiveStats,
+} from "./renewableLive.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -156,6 +161,7 @@ app.get("/health", async (_req, res) => {
     cache: cacheStats(),
     live: liveStatus(),
     streams: activeStreamStats(),
+    renewableHls: renewableLiveStats(),
     checks,
   });
 });
@@ -172,6 +178,10 @@ app.get("/resolve/live/:channelId", async (req, res) => {
 
 app.get("/play/hls/:token", (req, res) => {
   proxyHlsToken(req, res, req.params.token);
+});
+
+app.get("/play/renew/:token", async (req, res) => {
+  await proxyRenewableLiveAsset(req, res, req.params.token);
 });
 
 app.get("/play/live/:channelId", async (req, res) => {
@@ -199,7 +209,7 @@ app.get("/play/live/:channelId", async (req, res) => {
       }
       return;
     }
-    proxyStream(req, res, picked.url, { filename: null, download: false });
+    await proxyRenewableLiveManifest(req, res, { channelId: id, rootUrl: picked.url });
   } catch (error) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });
   }
