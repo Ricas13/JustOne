@@ -16,6 +16,28 @@ const HLS_MANIFEST_MAX_BYTES = Math.max(
   Number(process.env.HLS_PROXY_MANIFEST_MAX_BYTES || 4 * 1024 * 1024),
 );
 
+const LIVE_FFMPEG_RESTART_DELAY_MS = Math.max(
+  100,
+  Math.min(10000, Number(process.env.LIVE_FFMPEG_RESTART_DELAY_MS || 500)),
+);
+const LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE = Math.max(
+  0,
+  Math.min(20, Number(process.env.LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE || 3)),
+);
+const LIVE_FFMPEG_STABLE_MS = Math.max(
+  1000,
+  Number(process.env.LIVE_FFMPEG_STABLE_MS || 15000),
+);
+const LIVE_FAILOVER_MAX_SWITCHES = Math.max(
+  0,
+  Math.min(100, Number(process.env.LIVE_FAILOVER_MAX_SWITCHES || 12)),
+);
+const LIVE_FFMPEG_RW_TIMEOUT_US = Math.max(
+  5_000_000,
+  Number(process.env.LIVE_FFMPEG_RW_TIMEOUT_US || 15_000_000),
+);
+const LIVE_FAILOVER_MAX_SOURCES = 8;
+
 function log(...args) {
   process.stdout.write(args.map(String).join(" ") + "\n");
 }
@@ -28,56 +50,105 @@ export function playLivePath(channelId) {
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-/**
- * Jellyfin is fed MPEG-TS for Live TV compatibility, but the upstream is HLS.
- * Let ffmpeg own HLS sequence tracking, encryption keys and discontinuities.
- *
- * When LIVE_BUFFER_SECONDS is non-zero, ffmpeg output is kept continuously
- * behind the upstream in a bounded RAM-only delay line. MPEG-TS PCR timestamps
- * pace the delayed output, so brief HLS/CDN fetch stalls can consume the queued
- * media while late packets catch up. Streams without usable PCR timestamps
- * safely fall back to a wall-clock delay. Set LIVE_BUFFER_SECONDS=0 to restore
- * the previous immediate-delivery path.
- */
-export function restreamMpegTs(req, res, inputUrl) {
-  return new Promise((resolve) => {
-    const args = [
-      "-hide_banner",
-      "-loglevel",
-      "warning",
-      "-nostdin",
-      "-fflags",
-      "+genpts+discardcorrupt",
-      "-reconnect",
-      "1",
-      "-reconnect_streamed",
-      "1",
-      "-reconnect_delay_max",
-      "2",
-      "-i",
-      String(inputUrl),
-      "-map",
-      "0:v?",
-      "-map",
-      "0:a?",
-      "-c",
-      "copy",
-      "-muxdelay",
-      "0",
-      "-muxpreload",
-      "0",
-      "-f",
-      "mpegts",
-      "pipe:1",
-    ];
+/** Build the FFmpeg argv used for Jellyfin's MPEG-TS live transport. */
+export function liveFfmpegArgs(inputUrl) {
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-nostdin",
+    "-fflags",
+    "+genpts+discardcorrupt",
+    "-rw_timeout",
+    String(LIVE_FFMPEG_RW_TIMEOUT_US),
+    "-reconnect",
+    "1",
+    "-reconnect_at_eof",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_on_network_error",
+    "1",
+    "-reconnect_on_http_error",
+    "4xx,5xx",
+    "-reconnect_delay_max",
+    "3",
+    "-i",
+    String(inputUrl),
+    "-map",
+    "0:v?",
+    "-map",
+    "0:a?",
+    "-c",
+    "copy",
+    "-muxdelay",
+    "0",
+    "-muxpreload",
+    "0",
+    "-f",
+    "mpegts",
+    "pipe:1",
+  ];
+}
 
-    const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+function cleanFailoverId(value) {
+  const id = String(value || "").trim().replace(/\.(?:ts|m3u8)$/i, "");
+  if (!id || id.length > 160 || /[\r\n/\\]/.test(id)) return "";
+  return id;
+}
+
+/**
+ * Convert the event selector's bounded failover id list into loopback-only HLS
+ * inputs. No user-supplied host is ever used, which keeps the feature outside
+ * the SSRF boundary.
+ */
+export function liveFailoverInputUrls(req, initialInputUrl) {
+  const raw = Array.isArray(req?.query?.failover)
+    ? req.query.failover.join(",")
+    : String(req?.query?.failover || "");
+  const seen = new Set();
+  const ids = [];
+  for (const part of raw.split(",")) {
+    let decoded = part;
+    try {
+      decoded = decodeURIComponent(part);
+    } catch {
+      /* invalid percent-encoding is rejected by cleanFailoverId */
+    }
+    const id = cleanFailoverId(decoded);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= LIVE_FAILOVER_MAX_SOURCES - 1) break;
+  }
+  return [
+    String(initialInputUrl),
+    ...ids.map((id) => `http://127.0.0.1:${config.port}/play/live/${encodeURIComponent(id)}.m3u8`),
+  ];
+}
+
+/**
+ * Jellyfin is fed MPEG-TS while the upstream is HLS. One HTTP response remains
+ * open for the whole viewing session. FFmpeg is supervised beneath it: short
+ * failures restart the same source, and duplicate sports-event ids can switch
+ * to the next source without sending Jellyfin EOF.
+ */
+export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
+  return new Promise((resolve) => {
+    const inputs = liveFailoverInputUrls(req, inputUrl);
     const bufferSettings = liveBufferSettings();
     const buffering = bufferSettings.delayMs > 0;
     let rollingBuffer = null;
+    let currentChild = null;
+    let currentInputIndex = 0;
+    let sourceFailures = 0;
+    let failoverSwitches = 0;
+    let restartTimer = null;
     let started = false;
     let settled = false;
-    let stderr = "";
+    let stopping = false;
+
+    const currentInput = () => inputs[currentInputIndex];
 
     const setLiveHeaders = () => {
       const mode = buffering ? `rolling-${rollingBuffer?.mode || "pcr"}-ram` : "off";
@@ -85,10 +156,11 @@ export function restreamMpegTs(req, res, inputUrl) {
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
-      res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux");
+      res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux-supervised");
       res.setHeader("X-JustOne-Live-Buffer-Seconds", String(bufferSettings.seconds));
       res.setHeader("X-JustOne-Live-Buffer-Mode", mode);
       res.setHeader("X-JustOne-Live-Buffer-Max-Bytes", String(bufferSettings.maxBytes));
+      res.setHeader("X-JustOne-Live-Failover-Sources", String(inputs.length));
     };
 
     const ensureStarted = () => {
@@ -98,14 +170,16 @@ export function restreamMpegTs(req, res, inputUrl) {
       return true;
     };
 
-    const onDrain = () => {
-      rollingBuffer?.drain();
-      if (!child.killed && !res.destroyed && !res.writableEnded) child.stdout.resume();
+    const clearRestartTimer = () => {
+      if (!restartTimer) return;
+      clearTimeout(restartTimer);
+      restartTimer = null;
     };
 
     const finish = () => {
       if (settled) return;
       settled = true;
+      clearRestartTimer();
       rollingBuffer?.clear();
       req.off("aborted", stop);
       res.off("close", stop);
@@ -114,92 +188,154 @@ export function restreamMpegTs(req, res, inputUrl) {
     };
 
     const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      clearRestartTimer();
       rollingBuffer?.clear();
-      if (!child.killed) child.kill("SIGKILL");
-    };
-
-    const connectDirectOutput = (initialChunk) => {
-      if (started || res.destroyed || res.writableEnded) return;
-      ensureStarted();
-
-      const attach = () => {
-        if (res.destroyed || res.writableEnded) {
-          stop();
-          return;
-        }
-        child.stdout.pipe(res, { end: false });
-        child.stdout.resume();
-      };
-
-      if (initialChunk?.length) {
-        const writable = res.write(initialChunk);
-        if (!writable) {
-          res.once("drain", attach);
-          return;
-        }
-      }
-      attach();
-    };
-
-    req.once("aborted", stop);
-    res.once("close", stop);
-    res.on("drain", onDrain);
-
-    child.stderr.on("data", (chunk) => {
-      stderr = (stderr + chunk.toString("utf8")).slice(-8192);
-    });
-
-    if (buffering) {
-      rollingBuffer = new RollingTsMediaBuffer({
-        delayMs: bufferSettings.delayMs,
-        maxBytes: bufferSettings.maxBytes,
-        write(data) {
-          if (res.destroyed || res.writableEnded) return false;
-          ensureStarted();
-          const writable = res.write(data);
-          if (!writable) child.stdout.pause();
-          return writable;
-        },
-        onModeChange(mode) {
-          if (mode === "wall") log("live buffer", "PCR unavailable; using wall-clock rolling delay");
-        },
-        onOverflow(bytes) {
-          log(
-            "live buffer",
-            `released-early bytes=${bytes}`,
-            `limit=${bufferSettings.maxBytes}`,
-          );
-        },
-      });
-
-      child.stdout.on("data", (chunk) => {
-        if (res.destroyed || res.writableEnded) return;
-        rollingBuffer.push(chunk);
-      });
-    } else {
-      child.stdout.once("data", (chunk) => {
-        if (res.destroyed || res.writableEnded) return;
-        connectDirectOutput(chunk);
-      });
-    }
-
-    child.on("error", (error) => {
-      log("live ffmpeg", String(error?.message || error));
-      if (!started && !res.headersSent && !res.destroyed) {
-        res.status(502).end("live remux failed");
-      }
+      if (currentChild && !currentChild.killed) currentChild.kill("SIGKILL");
       finish();
-    });
+    };
 
-    child.on("close", (code, signal) => {
-      if (stderr.trim()) log("live ffmpeg", `exit=${code}`, `signal=${signal || ""}`, stderr.trim());
+    const onDrain = () => {
+      rollingBuffer?.drain();
+      const child = currentChild;
+      if (child && !child.killed && !res.destroyed && !res.writableEnded) child.stdout.resume();
+    };
+
+    const finalFailure = () => {
       if (!started && !res.headersSent && !res.destroyed) {
         res.status(502).end("live remux failed");
       } else if (started && !res.writableEnded && !res.destroyed) {
         res.end();
       }
       finish();
-    });
+    };
+
+    const scheduleSpawn = (reason) => {
+      if (stopping || settled || res.destroyed || res.writableEnded) return finish();
+      clearRestartTimer();
+      if (reason) {
+        log(
+          "live supervisor",
+          reason,
+          `source=${currentInputIndex + 1}/${inputs.length}`,
+          `switches=${failoverSwitches}`,
+        );
+      }
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        spawnCurrent();
+      }, LIVE_FFMPEG_RESTART_DELAY_MS);
+      restartTimer.unref?.();
+    };
+
+    const switchSource = () => {
+      if (inputs.length <= 1 || failoverSwitches >= LIVE_FAILOVER_MAX_SWITCHES) return false;
+      currentInputIndex = (currentInputIndex + 1) % inputs.length;
+      failoverSwitches += 1;
+      sourceFailures = 0;
+      return true;
+    };
+
+    const writeChunk = (child, chunk) => {
+      if (!chunk?.length || res.destroyed || res.writableEnded || stopping) return;
+      if (buffering) {
+        rollingBuffer.push(chunk);
+        return;
+      }
+      ensureStarted();
+      const writable = res.write(chunk);
+      if (!writable) child.stdout.pause();
+    };
+
+    const spawnCurrent = () => {
+      if (stopping || settled || res.destroyed || res.writableEnded) return finish();
+      const sourceUrl = currentInput();
+      const child = spawnImpl("ffmpeg", liveFfmpegArgs(sourceUrl), {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      currentChild = child;
+      const attemptStartedAt = Date.now();
+      let attemptBytes = 0;
+      let stderr = "";
+      let closeHandled = false;
+
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk.toString("utf8")).slice(-8192);
+      });
+
+      child.stdout.on("data", (chunk) => {
+        attemptBytes += chunk.length;
+        writeChunk(child, chunk);
+      });
+
+      child.on("error", (error) => {
+        log("live ffmpeg", String(error?.message || error));
+      });
+
+      child.on("close", (code, signal) => {
+        if (closeHandled) return;
+        closeHandled = true;
+        if (currentChild === child) currentChild = null;
+        if (stderr.trim()) {
+          log(
+            "live ffmpeg",
+            `exit=${code}`,
+            `signal=${signal || ""}`,
+            `source=${currentInputIndex + 1}/${inputs.length}`,
+            stderr.trim(),
+          );
+        }
+        if (stopping || settled || res.destroyed || res.writableEnded) return finish();
+
+        const stable = attemptBytes > 0 && Date.now() - attemptStartedAt >= LIVE_FFMPEG_STABLE_MS;
+        sourceFailures = stable ? 0 : sourceFailures + 1;
+
+        if (sourceFailures <= LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE) {
+          scheduleSpawn(`restart=${sourceFailures}/${LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE}`);
+          return;
+        }
+
+        if (switchSource()) {
+          scheduleSpawn("mid-stream-source-failover");
+          return;
+        }
+
+        log(
+          "live supervisor",
+          "exhausted",
+          `source-failures=${sourceFailures}`,
+          `switches=${failoverSwitches}`,
+        );
+        finalFailure();
+      });
+    };
+
+    req.once("aborted", stop);
+    res.once("close", stop);
+    res.on("drain", onDrain);
+
+    if (buffering) {
+      rollingBuffer = new RollingTsMediaBuffer({
+        delayMs: bufferSettings.delayMs,
+        maxBytes: bufferSettings.maxBytes,
+        write(data) {
+          if (res.destroyed || res.writableEnded || stopping) return false;
+          ensureStarted();
+          const writable = res.write(data);
+          if (!writable && currentChild && !currentChild.killed) currentChild.stdout.pause();
+          return writable;
+        },
+        onModeChange(mode) {
+          if (mode === "wall") log("live buffer", "PCR unavailable; using wall-clock rolling delay");
+        },
+        onOverflow(bytes) {
+          log("live buffer", `released-early bytes=${bytes}`, `limit=${bufferSettings.maxBytes}`);
+        },
+      });
+    }
+
+    spawnCurrent();
   });
 }
 
@@ -272,7 +408,6 @@ function normalizedHlsHeaders(headers = {}) {
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
-/** Stable identity for the same upstream HLS resource across manifest refreshes. */
 export function hlsTokenForTarget(url, headers = {}, hls = false) {
   return crypto
     .createHash("sha256")
@@ -295,25 +430,8 @@ function registerHlsTarget(url, headers = {}, hls = false) {
 }
 
 const HLS_PROXY_SUFFIXES = new Set([
-  "m3u8",
-  "ts",
-  "m4s",
-  "m4a",
-  "mp4",
-  "aac",
-  "mp3",
-  "vtt",
-  "webvtt",
-  "mpegts",
-  "mpg",
-  "mpeg",
-  "m2ts",
-  "mts",
-  "cmfv",
-  "cmfa",
-  "fmp4",
-  "bin",
-  "key",
+  "m3u8", "ts", "m4s", "m4a", "mp4", "aac", "mp3", "vtt", "webvtt",
+  "mpegts", "mpg", "mpeg", "m2ts", "mts", "cmfv", "cmfa", "fmp4", "bin", "key",
 ]);
 
 export function hlsProxySuffixForTarget(url, hls = false) {
