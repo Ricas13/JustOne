@@ -11,6 +11,7 @@ process.env.LIVE_FAILOVER_MAX_SWITCHES = "2";
 const {
   liveFfmpegArgs,
   liveFailoverInputUrls,
+  forceRefreshLiveInput,
   restreamMpegTs,
 } = await import("../src/play.js?live-resilience-test=1");
 
@@ -43,10 +44,22 @@ test("event fallback ids become bounded loopback-only HLS inputs", () => {
   assert.equal(urls.some((url) => url.includes("evil.example")), false);
 });
 
-test("FFmpeg death switches event source without ending Jellyfin response", async () => {
-  const req = new EventEmitter();
-  req.query = { failover: "402" };
+test("supervised retry forces fresh resolution only for internal live HLS inputs", () => {
+  assert.equal(
+    forceRefreshLiveInput("http://127.0.0.1:8080/play/live/433.m3u8"),
+    "http://127.0.0.1:8080/play/live/433.m3u8?refresh=1",
+  );
+  assert.equal(
+    forceRefreshLiveInput("http://127.0.0.1:8080/play/live/433.m3u8?key=abc"),
+    "http://127.0.0.1:8080/play/live/433.m3u8?key=abc&refresh=1",
+  );
+  assert.equal(
+    forceRefreshLiveInput("https://example.test/live.m3u8"),
+    "https://example.test/live.m3u8",
+  );
+});
 
+function fakeResponse() {
   const res = new EventEmitter();
   res.destroyed = false;
   res.writableEnded = false;
@@ -63,28 +76,37 @@ test("FFmpeg death switches event source without ending Jellyfin response", asyn
     res.endCalls += 1;
     res.writableEnded = true;
   };
+  return res;
+}
+
+function fakeChild(spawnedInputs, children, args, { closeFirst = true } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+  };
+  children.push(child);
+  spawnedInputs.push(args[args.indexOf("-i") + 1]);
+
+  queueMicrotask(() => {
+    child.stdout.write(Buffer.from([0x47, 0x40, 0x00, 0x10]));
+    if (closeFirst && children.length === 1) {
+      setTimeout(() => child.emit("close", 1, null), 5);
+    }
+  });
+  return child;
+}
+
+test("FFmpeg death switches event source without ending Jellyfin response", async () => {
+  const req = new EventEmitter();
+  req.query = { failover: "402" };
+  const res = fakeResponse();
 
   const spawnedInputs = [];
   const children = [];
-  const spawnImpl = (_cmd, args) => {
-    const child = new EventEmitter();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child.killed = false;
-    child.kill = () => {
-      child.killed = true;
-    };
-    children.push(child);
-    spawnedInputs.push(args[args.indexOf("-i") + 1]);
-
-    queueMicrotask(() => {
-      child.stdout.write(Buffer.from([0x47, 0x40, 0x00, 0x10]));
-      if (children.length === 1) {
-        setTimeout(() => child.emit("close", 1, null), 5);
-      }
-    });
-    return child;
-  };
+  const spawnImpl = (_cmd, args) => fakeChild(spawnedInputs, children, args);
 
   const running = restreamMpegTs(
     req,
@@ -96,10 +118,37 @@ test("FFmpeg death switches event source without ending Jellyfin response", asyn
   await new Promise((resolve) => setTimeout(resolve, 180));
   assert.deepEqual(spawnedInputs, [
     "http://127.0.0.1:8080/play/live/401.m3u8",
-    "http://127.0.0.1:8080/play/live/402.m3u8",
+    "http://127.0.0.1:8080/play/live/402.m3u8?refresh=1",
   ]);
   assert.equal(res.endCalls, 0, "the same Jellyfin HTTP response stays open during failover");
   assert.equal(res.headers.get("X-JustOne-Live-Failover-Sources"), "2");
+
+  req.emit("aborted");
+  await running;
+});
+
+test("normal channel exhaustion reacquires instead of sending Jellyfin EOF", async () => {
+  const req = new EventEmitter();
+  req.query = {};
+  const res = fakeResponse();
+
+  const spawnedInputs = [];
+  const children = [];
+  const spawnImpl = (_cmd, args) => fakeChild(spawnedInputs, children, args);
+
+  const running = restreamMpegTs(
+    req,
+    res,
+    "http://127.0.0.1:8080/play/live/433.m3u8",
+    { spawnImpl },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 1150));
+  assert.deepEqual(spawnedInputs, [
+    "http://127.0.0.1:8080/play/live/433.m3u8",
+    "http://127.0.0.1:8080/play/live/433.m3u8?refresh=1",
+  ]);
+  assert.equal(res.endCalls, 0, "temporary source exhaustion must not EOF Jellyfin");
 
   req.emit("aborted");
   await running;

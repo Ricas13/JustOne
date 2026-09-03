@@ -126,6 +126,24 @@ export function liveFailoverInputUrls(req, initialInputUrl) {
 }
 
 /**
+ * A supervised FFmpeg restart must not reuse resolveLive's recently-validated
+ * cache entry. The old direct HLS token may have failed only milliseconds ago,
+ * so retries explicitly force the internal /play/live route to resolve again.
+ */
+export function forceRefreshLiveInput(inputUrl) {
+  const raw = String(inputUrl || "");
+  try {
+    const url = new URL(raw);
+    const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+    if (!loopback || !/^\/play\/live\/[^/]+\.m3u8$/i.test(url.pathname)) return raw;
+    url.searchParams.set("refresh", "1");
+    return url.href;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Jellyfin is fed MPEG-TS while the upstream is HLS. One HTTP response remains
  * open for the whole viewing session. FFmpeg is supervised beneath it: short
  * failures restart the same source, and duplicate sports-event ids can switch
@@ -201,30 +219,23 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
       if (child && !child.killed && !res.destroyed && !res.writableEnded) child.stdout.resume();
     };
 
-    const finalFailure = () => {
-      if (!started && !res.headersSent && !res.destroyed) {
-        res.status(502).end("live remux failed");
-      } else if (started && !res.writableEnded && !res.destroyed) {
-        res.end();
-      }
-      finish();
-    };
-
-    const scheduleSpawn = (reason) => {
+    const scheduleSpawn = (reason, delayMs = LIVE_FFMPEG_RESTART_DELAY_MS) => {
       if (stopping || settled || res.destroyed || res.writableEnded) return finish();
       clearRestartTimer();
+      const delay = Math.max(100, Math.min(10000, Number(delayMs || LIVE_FFMPEG_RESTART_DELAY_MS)));
       if (reason) {
         log(
           "live supervisor",
           reason,
           `source=${currentInputIndex + 1}/${inputs.length}`,
           `switches=${failoverSwitches}`,
+          `delay=${delay}`,
         );
       }
       restartTimer = setTimeout(() => {
         restartTimer = null;
         spawnCurrent();
-      }, LIVE_FFMPEG_RESTART_DELAY_MS);
+      }, delay);
       restartTimer.unref?.();
     };
 
@@ -249,7 +260,8 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
 
     const spawnCurrent = () => {
       if (stopping || settled || res.destroyed || res.writableEnded) return finish();
-      const sourceUrl = currentInput();
+      const baseSourceUrl = currentInput();
+      const sourceUrl = spawnCount > 0 ? forceRefreshLiveInput(baseSourceUrl) : baseSourceUrl;
       if (spawnCount > 0) rollingBuffer?.beginSourceTransition();
       spawnCount += 1;
       const child = spawnImpl("ffmpeg", liveFfmpegArgs(sourceUrl), {
@@ -302,13 +314,16 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
           return;
         }
 
-        log(
-          "live supervisor",
-          "exhausted",
-          `source-failures=${sourceFailures}`,
-          `switches=${failoverSwitches}`,
-        );
-        finalFailure();
+        // Do not deliberately EOF an established Jellyfin tuner session just
+        // because every current source is temporarily unavailable. Reset the
+        // bounded failure counters, force a fresh root resolution on the next
+        // spawn, and keep retrying until the client itself disconnects.
+        sourceFailures = 0;
+        if (inputs.length > 1 && failoverSwitches >= LIVE_FAILOVER_MAX_SWITCHES) {
+          failoverSwitches = 0;
+          currentInputIndex = 0;
+        }
+        scheduleSpawn("source-reacquire", Math.max(1000, LIVE_FFMPEG_RESTART_DELAY_MS));
       });
     };
 
