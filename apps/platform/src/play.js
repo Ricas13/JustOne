@@ -85,6 +85,8 @@ export function liveFfmpegArgs(inputUrl) {
     "0",
     "-muxpreload",
     "0",
+    "-mpegts_flags",
+    "+resend_headers+initial_discontinuity",
     "-f",
     "mpegts",
     "pipe:1",
@@ -144,6 +146,7 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
     let sourceFailures = 0;
     let failoverSwitches = 0;
     let restartTimer = null;
+    let spawnCount = 0;
     let started = false;
     let settled = false;
     let stopping = false;
@@ -251,6 +254,8 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
     const spawnCurrent = () => {
       if (stopping || settled || res.destroyed || res.writableEnded) return finish();
       const sourceUrl = currentInput();
+      if (spawnCount > 0) rollingBuffer?.beginSourceTransition();
+      spawnCount += 1;
       const child = spawnImpl("ffmpeg", liveFfmpegArgs(sourceUrl), {
         stdio: ["ignore", "pipe", "pipe"],
       });
