@@ -265,9 +265,26 @@ export async function validatePlaybackMedia(
   userAgent = "JustOne source resolver",
 ) {
   if (!candidate?.probeUrl) return false;
+  const probeUrl = candidate.probeUrl;
+  const requestHeaders = candidate.requestHeaders || {};
+
+  // Resolver endpoints are known HLS URLs. Go straight to manifest validation
+  // instead of issuing a ranged GET first and then fetching the same manifest
+  // again after recognising it as HLS.
+  if (/\.m3u8(?:$|[?#])/i.test(String(probeUrl))) {
+    return validateHlsManifest(
+      probeUrl,
+      requestHeaders,
+      deadline,
+      timeoutLimitMs,
+      userAgent,
+      0,
+    );
+  }
+
   return validateMediaUrl(
-    candidate.probeUrl,
-    candidate.requestHeaders || {},
+    probeUrl,
+    requestHeaders,
     deadline,
     timeoutLimitMs,
     userAgent,
