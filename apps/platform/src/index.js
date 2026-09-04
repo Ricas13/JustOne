@@ -91,7 +91,7 @@ function redirectTo(res, picked, format, playPath) {
   return res.redirect(302, opaque);
 }
 
-function proxyOriginal(base) {
+function proxyOriginal(base, { preserveLocation = false } = {}) {
   return (req, res) => {
     const target = new URL(req.originalUrl, base.endsWith("/") ? base : `${base}/`);
     const headers = { ...req.headers, host: target.host };
@@ -103,8 +103,10 @@ function proxyOriginal(base) {
       { method: req.method === "HEAD" ? "GET" : req.method, headers, timeout: 120000 },
       (upstream) => {
         const out = fixMediaType({ ...upstream.headers }, req.originalUrl);
-        delete out.location;
-        delete out.Location;
+        if (!preserveLocation) {
+          delete out.location;
+          delete out.Location;
+        }
         res.writeHead(upstream.statusCode || 502, out);
         if (req.method === "HEAD") {
           upstream.resume();
@@ -313,7 +315,9 @@ app.post("/live/sources/delete", async (req, res) => {
 // On Docker, `resolver:8080` is the platform service. Proxy Jellyfin's metadata
 // endpoints to the dedicated organizer so Jellyfin can use one internal origin
 // for playlist, guide, artwork and playback without traversing Traefik/public DNS.
-app.use("/jellyfin", proxyOriginal(config.jellyfinLiveUrl));
+// Event selector endpoints intentionally return 302 to the chosen internal
+// /play/live/... URL, so preserve Location for this proxy only.
+app.use("/jellyfin", proxyOriginal(config.jellyfinLiveUrl, { preserveLocation: true }));
 app.use("/api/proxy", proxyOriginal(config.dlhdUrl));
 app.use("/api/stream", proxyOriginal(config.dlhdUrl));
 
