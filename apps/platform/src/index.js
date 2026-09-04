@@ -310,6 +310,10 @@ app.post("/live/sources/delete", async (req, res) => {
   res.json({ ok: true, sources: next });
 });
 
+// On Docker, `resolver:8080` is the platform service. Proxy Jellyfin's metadata
+// endpoints to the dedicated organizer so Jellyfin can use one internal origin
+// for playlist, guide, artwork and playback without traversing Traefik/public DNS.
+app.use("/jellyfin", proxyOriginal(config.jellyfinLiveUrl));
 app.use("/api/proxy", proxyOriginal(config.dlhdUrl));
 app.use("/api/stream", proxyOriginal(config.dlhdUrl));
 
@@ -322,6 +326,7 @@ app.get("*", (req, res, next) => {
     req.path.startsWith("/play") ||
     req.path.startsWith("/resolve") ||
     req.path.startsWith("/live") ||
+    req.path.startsWith("/jellyfin") ||
     req.path.startsWith("/health") ||
     req.path.startsWith("/api") ||
     req.path.startsWith("/login")
