@@ -46,6 +46,7 @@ export function isPublicPath(pathname) {
     pathname.startsWith("/resolve/live/") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
+    pathname.startsWith("/jellyfin/") ||
     (pathname.startsWith("/live/") && pathname.endsWith(".m3u8")) ||
     pathname === "/login" ||
     pathname === "/login.html"
@@ -58,6 +59,7 @@ export function isStreamPath(pathname) {
     pathname.startsWith("/resolve/live/") ||
     pathname.startsWith("/api/proxy") ||
     pathname.startsWith("/api/stream") ||
+    pathname.startsWith("/jellyfin/") ||
     (pathname.startsWith("/live/") && pathname.endsWith(".m3u8"))
   );
 }
