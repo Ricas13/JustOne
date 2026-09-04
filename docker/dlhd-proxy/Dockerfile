@@ -46,11 +46,25 @@ RUN python /tmp/patch_subtitle_hls.py && rm /tmp/patch_subtitle_hls.py
 COPY patch_player_fallback.py /tmp/patch_player_fallback.py
 RUN python /tmp/patch_player_fallback.py && rm /tmp/patch_player_fallback.py
 
+# Some DLStreams pages expose multiple embeds/sources inside the same player
+# family (the UI's Stream 1 / Stream 2 choice). Walk all of them and cache the
+# exact winning embed/source rather than giving up after the first dead option.
+COPY patch_secondary_players.py /tmp/patch_secondary_players.py
+RUN python /tmp/patch_secondary_players.py && rm /tmp/patch_secondary_players.py
+
 # Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
 # now imports Pydantic APIs that are unavailable while Reflex applies its v1
 # compatibility patch, so an unpinned install crashes even on plain import.
 # Keep the dependency generation that Reflex 0.8.7 was released against.
 RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==0.35.0"
+
+# Build-time regression coverage for the exact failure mode seen in production:
+# Stream 1 can be dead while Stream 2 in the same family is healthy. Exercise
+# both multiple embedded HLS sources and multiple iframes before the image is
+# considered valid.
+COPY test_secondary_players.py /tmp/test_secondary_players.py
+RUN DLHD_BASE_URL=https://example.invalid python /tmp/test_secondary_players.py \
+    && rm /tmp/test_secondary_players.py
 
 ENV PORT=3000 \
     REFLEX_API_URL=http://dlhd-proxy:3000 \
