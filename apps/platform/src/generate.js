@@ -170,7 +170,7 @@ export function buildM3u(list, kind = "all") {
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${number}" group-title="${group}",${name}`,
     );
     const play = channel.kind === "ext" ? `/play/ext/${channel.id}` : `/play/live/${channel.id}.ts`;
-    lines.push(withKey(config.publicUrl + play));
+    lines.push(withKey(config.playbackUrl + play));
   });
 
   return lines.join("\n") + "\n";
