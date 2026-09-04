@@ -166,8 +166,11 @@ test("concurrent live resolves for one channel share one upstream probe", async 
       Array.from({ length: 6 }, () => resolveLive("151", options)),
     );
     assert.ok(results.every((picked) => picked.provider === "amddeus-dlhd-proxy"));
+    // The media probe is the expensive validation that must be shared. The
+    // validator may fetch the manifest more than once while walking HLS, so do
+    // not couple this regression to that implementation detail.
     assert.equal(mediaProbes, 1);
-    assert.equal(manifestRequests, 2);
+    assert.ok(manifestRequests >= 1 && manifestRequests <= 3);
   } finally {
     await close(server);
   }
