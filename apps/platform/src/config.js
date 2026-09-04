@@ -1,6 +1,7 @@
 export const config = {
   port: Number(process.env.PLATFORM_PORT || 8080),
   publicUrl: (process.env.PUBLIC_URL || "https://resolver.vpn4u.cc").replace(/\/$/, ""),
+  playbackUrl: (process.env.PLAYBACK_URL || process.env.PUBLIC_URL || "https://resolver.vpn4u.cc").replace(/\/$/, ""),
   dlhdProxyUrl: (process.env.DLHD_PROXY_URL || "").replace(/\/$/, ""),
   dlhdUrl: (process.env.DLHD_URL || "http://dlhd:3000").replace(/\/$/, ""),
   dlstreams247: process.env.DLSTREAMS_247 || "https://dlstreams.st/24-7-channels.php",
