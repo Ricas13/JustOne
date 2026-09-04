@@ -63,7 +63,8 @@ RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==
 # both multiple embedded HLS sources and multiple iframes before the image is
 # considered valid.
 COPY test_secondary_players.py /tmp/test_secondary_players.py
-RUN DLHD_BASE_URL=https://example.invalid python /tmp/test_secondary_players.py \
+RUN PYTHONPATH=/app DLHD_BASE_URL=https://example.invalid \
+    python /tmp/test_secondary_players.py \
     && rm /tmp/test_secondary_players.py
 
 ENV PORT=3000 \
