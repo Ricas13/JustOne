@@ -59,6 +59,10 @@ services:
     environment:
       PLATFORM_PORT: "8080"
       PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      # Playback URLs embedded in Jellyfin's M3U stay on Docker and never need
+      # to hairpin through Traefik/public DNS. PUBLIC_URL remains public for the
+      # admin UI, cookies, artwork and any deliberately exposed web endpoints.
+      PLAYBACK_URL: ${PLAYBACK_URL:-http://resolver:8080}
       DLHD_PROXY_URL: http://dlhd-proxy:3000
       DLHD_URL: http://dlhd:3000
       DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
@@ -93,8 +97,10 @@ services:
       - dlhd-proxy
       - dlhd
     networks:
-      - justone
-      - media_net
+      justone:
+      media_net:
+        aliases:
+          - resolver
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=media_net"
@@ -116,7 +122,7 @@ services:
     environment:
       JELLYFIN_LIVE_PORT: "8090"
       PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      PLATFORM_URL: http://platform:8080
+      PLATFORM_URL: http://resolver:8080
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
       EPG_URL: ${EPG_URL:-}
