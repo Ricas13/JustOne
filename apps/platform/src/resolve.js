@@ -69,14 +69,24 @@ async function validateLiveMedia(url) {
 }
 
 async function resolveLiveEndpoint(endpoint) {
-  // The media validator already performs the HTTP request, follows redirects,
-  // walks HLS manifests and proves that a real segment returns bytes. Doing a
-  // separate fetch here caused every fresh tune to resolve the same DLHD
-  // channel once before validation and then again during validation.
-  if (!(await validateLiveMedia(endpoint.url))) {
+  const response = await fetch(endpoint.url, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(Math.max(20000, LIVE_SOURCE_PROBE_TIMEOUT_MS)),
+  });
+  const location = response.headers.get("location");
+  const ok = response.status >= 200 && response.status < 400;
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* best-effort cleanup */
+  }
+  if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
+
+  const url = location ? new URL(location, endpoint.url).href : endpoint.url;
+  if (!(await validateLiveMedia(url))) {
     throw new Error(`${endpoint.provider} returned no readable live media`);
   }
-  return endpoint.url;
+  return url;
 }
 
 async function resolveLiveUncoalesced(
