@@ -101,7 +101,9 @@ jobs:
               resolver._get = types.MethodType(fake_get, resolver)
               resolver._player_folder_cache = {"356": "stream"}
               out = await resolver.stream("356")
-              assert resolver._player_folder_cache["356"] == "watch"
+              cache_entry = resolver._player_folder_cache["356"]
+              cache_folder = cache_entry.get("folder") if isinstance(cache_entry, dict) else cache_entry
+              assert cache_folder == "watch"
               assert "https://cdn.example/bad/seg.ts" in [url for url, _ in calls]
               assert "https://cdn.example/good/seg.ts" in [url for url, _ in calls]
               assert out.startswith("#EXTM3U")
