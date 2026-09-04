@@ -129,7 +129,7 @@ test("live resolver does not accept an HTTP-200 error payload as a working chann
   }
 });
 
-test("concurrent live resolves for one channel share one upstream probe", async () => {
+test("concurrent live resolves for one channel share one single-pass HLS probe", async () => {
   let manifestRequests = 0;
   let mediaProbes = 0;
   const server = http.createServer((req, res) => {
@@ -166,11 +166,53 @@ test("concurrent live resolves for one channel share one upstream probe", async 
       Array.from({ length: 6 }, () => resolveLive("151", options)),
     );
     assert.ok(results.every((picked) => picked.provider === "amddeus-dlhd-proxy"));
-    // The media probe is the expensive validation that must be shared. The
-    // validator may fetch the manifest more than once while walking HLS, so do
-    // not couple this regression to that implementation detail.
+    assert.equal(manifestRequests, 1);
     assert.equal(mediaProbes, 1);
-    assert.ok(manifestRequests >= 1 && manifestRequests <= 3);
+  } finally {
+    await close(server);
+  }
+});
+
+test("single-pass validation follows resolver redirects without a preflight request", async () => {
+  let resolverRequests = 0;
+  let finalManifestRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/primary/stream/152.m3u8") {
+      resolverRequests += 1;
+      res.writeHead(302, { location: "/final/152.m3u8" });
+      res.end();
+      return;
+    }
+    if (req.url === "/final/152.m3u8") {
+      finalManifestRequests += 1;
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      res.end("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\n/final/152.ts\n");
+      return;
+    }
+    if (req.url === "/final/152.ts") {
+      res.writeHead(206, {
+        "content-type": "video/mp2t",
+        "content-range": "bytes 0-0/188",
+      });
+      res.end(Buffer.from([0x47]));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  const address = await listen(server);
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const picked = await resolveLive("152", {
+      force: true,
+      proxyUrl: `${base}/primary`,
+      legacyUrl: "",
+    });
+    assert.equal(picked.provider, "amddeus-dlhd-proxy");
+    assert.equal(picked.url, `${base}/primary/stream/152.m3u8`);
+    assert.equal(resolverRequests, 1);
+    assert.equal(finalManifestRequests, 1);
   } finally {
     await close(server);
   }
