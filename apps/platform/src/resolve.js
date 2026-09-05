@@ -1,19 +1,27 @@
 import { config } from "./config.js";
-import { validatePlaybackMedia } from "./services/mediaProbe.js";
 
 const cache = new Map();
 const inFlight = new Map();
 let coalescedJoins = 0;
 const TTL_MS = Math.max(1000, Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000));
-const PROBE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JustOne live resolver";
 const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(
   1000,
-  Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 7000),
+  Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 3000),
 );
 const LIVE_SOURCE_RECHECK_MS = Math.max(
   0,
-  Number(process.env.LIVE_SOURCE_RECHECK_MS || 15000),
+  Number(process.env.LIVE_SOURCE_RECHECK_MS || 5 * 60 * 1000),
 );
+const MANIFEST_PREFIX_MAX_BYTES = 128 * 1024;
+
+class LiveEndpointError extends Error {
+  constructor(message, { status = null, transport = false, invalid = false } = {}) {
+    super(message);
+    this.status = status;
+    this.transport = transport;
+    this.invalid = invalid;
+  }
+}
 
 function cacheGet(key) {
   const hit = cache.get(key);
@@ -59,34 +67,83 @@ export function liveStreamEndpoints(
   return endpoints;
 }
 
-async function validateLiveMedia(url) {
-  return validatePlaybackMedia(
-    { url, probeUrl: url, requestHeaders: {} },
-    Date.now() + LIVE_SOURCE_PROBE_TIMEOUT_MS,
-    LIVE_SOURCE_PROBE_TIMEOUT_MS,
-    PROBE_UA,
-  );
+async function readManifestPrefix(response) {
+  if (!response?.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < MANIFEST_PREFIX_MAX_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      const remaining = MANIFEST_PREFIX_MAX_BYTES - total;
+      const chunk = Buffer.from(value.subarray(0, remaining));
+      chunks.push(chunk);
+      total += chunk.length;
+      if (value.length > remaining) break;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
 }
 
+/**
+ * Admit a resolver endpoint quickly. dlhd-proxy already walks/player-probes the
+ * DaddyLive candidates, so the platform only verifies that the returned body
+ * is actually HLS. Deep segment validation here used to add another 7+ second
+ * tax before FFmpeg could even start.
+ */
 async function resolveLiveEndpoint(endpoint) {
-  const response = await fetch(endpoint.url, {
-    redirect: "manual",
-    signal: AbortSignal.timeout(Math.max(20000, LIVE_SOURCE_PROBE_TIMEOUT_MS)),
-  });
-  const location = response.headers.get("location");
-  const ok = response.status >= 200 && response.status < 400;
+  let response;
   try {
-    await response.body?.cancel();
+    response = await fetch(endpoint.url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(LIVE_SOURCE_PROBE_TIMEOUT_MS),
+    });
   } catch {
-    /* best-effort cleanup */
+    throw new LiveEndpointError(`${endpoint.provider} transport failed`, {
+      transport: true,
+    });
   }
-  if (!ok) throw new Error(`${endpoint.provider} returned ${response.status}`);
 
-  const url = location ? new URL(location, endpoint.url).href : endpoint.url;
-  if (!(await validateLiveMedia(url))) {
-    throw new Error(`${endpoint.provider} returned no readable live media`);
+  if (response.status < 200 || response.status >= 300) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw new LiveEndpointError(`${endpoint.provider} returned ${response.status}`, {
+      status: response.status,
+    });
   }
-  return url;
+
+  const text = await readManifestPrefix(response);
+  if (!text.trimStart().startsWith("#EXTM3U")) {
+    throw new LiveEndpointError(`${endpoint.provider} returned no HLS manifest`, {
+      status: response.status,
+      invalid: true,
+    });
+  }
+
+  return endpoint.url;
+}
+
+function shouldTryLegacyAfterPrimary(error) {
+  // Primary 404 is authoritative: its full player-family walk completed and no
+  // source exists for the id. Do not double the tune time by immediately doing
+  // the same work in the legacy resolver. Operational failures still fall back.
+  if (Number(error?.status) === 404) return false;
+  return Boolean(
+    error?.transport ||
+      error?.invalid ||
+      (Number(error?.status) >= 500 && Number(error?.status) <= 599),
+  );
 }
 
 async function resolveLiveUncoalesced(
@@ -101,26 +158,23 @@ async function resolveLiveUncoalesced(
   if (!force) {
     const cached = cacheGet(key);
     if (cached) {
-      const recentlyChecked =
+      const recent =
         cached.liveValidatedAt &&
         Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS;
-      if (recentlyChecked) return cached;
+      if (recent) return cached;
 
-      if (await validateLiveMedia(cached.url)) {
-        cached.liveValidated = true;
-        cached.liveValidatedAt = Date.now();
-        return cached;
-      }
-
-      // A channel must not remain pinned to a stale one-hour cache entry when
-      // its playlist still exists but its media segments have died.
-      cache.delete(key);
+      // Do not synchronously deep-probe an established cache entry on a click.
+      // FFmpeg/renewal is the authoritative liveness signal; its supervised
+      // failure path re-enters resolveLive with refresh=1.
+      cached.liveValidatedAt = Date.now();
+      return cached;
     }
   }
 
   const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
   let lastError = null;
-  for (const endpoint of endpoints) {
+  for (let index = 0; index < endpoints.length; index += 1) {
+    const endpoint = endpoints[index];
     try {
       const url = await resolveLiveEndpoint(endpoint);
       const picked = {
@@ -130,7 +184,7 @@ async function resolveLiveUncoalesced(
         wanted: "live",
         matched: true,
         validated: true,
-        playbackValidated: true,
+        playbackValidated: false,
         liveValidated: true,
         liveValidatedAt: Date.now(),
         provider: endpoint.provider,
@@ -139,6 +193,7 @@ async function resolveLiveUncoalesced(
       return picked;
     } catch (error) {
       lastError = error;
+      if (index === 0 && endpoints.length > 1 && !shouldTryLegacyAfterPrimary(error)) break;
     }
   }
 

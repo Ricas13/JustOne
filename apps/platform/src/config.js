@@ -17,14 +17,17 @@ export const config = {
 export function withKey(url) {
   let value = String(url);
 
-  // Renewable HLS children must stay on the same origin as the manifest that
-  // referenced them. The platform's FFmpeg enters /play/live through loopback;
-  // returning an absolute PUBLIC_URL here would hairpin every HLS refresh out
-  // through Traefik/TLS and back into this same container. External clients
-  // likewise resolve the relative path against the public origin naturally.
-  const renewablePrefix = `${config.publicUrl}/play/renew/`;
-  if (value.startsWith(renewablePrefix)) {
-    value = value.slice(config.publicUrl.length);
+  // Renewable HLS children must always remain relative to the manifest origin.
+  // That guarantees FFmpeg entering through 127.0.0.1 stays on loopback and a
+  // public client entering through HTTPS stays public, without ever baking a
+  // specific origin into the renewable child URL.
+  try {
+    const parsed = new URL(value, "http://justone.invalid");
+    if (parsed.pathname.startsWith("/play/renew/")) {
+      value = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+  } catch {
+    /* leave malformed/non-URL values untouched */
   }
 
   if (!config.playlistKey) return value;
