@@ -6,7 +6,7 @@ let coalescedJoins = 0;
 const TTL_MS = Math.max(1000, Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000));
 const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(
   1000,
-  Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 2500),
+  Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 3000),
 );
 const LIVE_SOURCE_RECHECK_MS = Math.max(
   0,
@@ -15,10 +15,11 @@ const LIVE_SOURCE_RECHECK_MS = Math.max(
 const MANIFEST_PREFIX_MAX_BYTES = 128 * 1024;
 
 class LiveEndpointError extends Error {
-  constructor(message, { status = null, transport = false } = {}) {
+  constructor(message, { status = null, transport = false, invalid = false } = {}) {
     super(message);
     this.status = status;
     this.transport = transport;
+    this.invalid = invalid;
   }
 }
 
@@ -55,14 +56,12 @@ export function liveStreamEndpoints(
     endpoints.push({
       provider: "amddeus-dlhd-proxy",
       url: `${String(proxyUrl).replace(/\/$/, "")}/stream/${id}.m3u8`,
-      primary: true,
     });
   }
   if (legacyUrl) {
     endpoints.push({
       provider: "legacy-dlhd-web",
       url: `${String(legacyUrl).replace(/\/$/, "")}/api/stream/${id}.m3u8`,
-      primary: false,
     });
   }
   return endpoints;
@@ -107,7 +106,7 @@ async function resolveLiveEndpoint(endpoint) {
       redirect: "follow",
       signal: AbortSignal.timeout(LIVE_SOURCE_PROBE_TIMEOUT_MS),
     });
-  } catch (error) {
+  } catch {
     throw new LiveEndpointError(`${endpoint.provider} transport failed`, {
       transport: true,
     });
@@ -128,6 +127,7 @@ async function resolveLiveEndpoint(endpoint) {
   if (!text.trimStart().startsWith("#EXTM3U")) {
     throw new LiveEndpointError(`${endpoint.provider} returned no HLS manifest`, {
       status: response.status,
+      invalid: true,
     });
   }
 
@@ -135,11 +135,15 @@ async function resolveLiveEndpoint(endpoint) {
 }
 
 function shouldTryLegacyAfterPrimary(error) {
-  // A primary 404 means the resolver completed its player-family walk and found
-  // no usable source for this id. Running the legacy resolver immediately would
-  // just double cold-tune latency. Transport errors and 5xx can still use the
-  // legacy backend as the operational fallback.
-  return Boolean(error?.transport || (Number(error?.status) >= 500 && Number(error?.status) <= 599));
+  // Primary 404 is authoritative: its full player-family walk completed and no
+  // source exists for the id. Do not double the tune time by immediately doing
+  // the same work in the legacy resolver. Operational failures still fall back.
+  if (Number(error?.status) === 404) return false;
+  return Boolean(
+    error?.transport ||
+      error?.invalid ||
+      (Number(error?.status) >= 500 && Number(error?.status) <= 599),
+  );
 }
 
 async function resolveLiveUncoalesced(
@@ -158,6 +162,7 @@ async function resolveLiveUncoalesced(
         cached.liveValidatedAt &&
         Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS;
       if (recent) return cached;
+
       // Do not synchronously deep-probe an established cache entry on a click.
       // FFmpeg/renewal is the authoritative liveness signal; its supervised
       // failure path re-enters resolveLive with refresh=1.
@@ -188,7 +193,7 @@ async function resolveLiveUncoalesced(
       return picked;
     } catch (error) {
       lastError = error;
-      if (endpoint.primary && !shouldTryLegacyAfterPrimary(error)) break;
+      if (index === 0 && endpoints.length > 1 && !shouldTryLegacyAfterPrimary(error)) break;
     }
   }
 
