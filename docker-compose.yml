@@ -59,10 +59,12 @@ services:
     environment:
       PLATFORM_PORT: "8080"
       PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      # Playback URLs embedded in Jellyfin's M3U stay on Docker and never need
-      # to hairpin through Traefik/public DNS. PUBLIC_URL remains public for the
-      # admin UI, cookies and deliberately exposed web endpoints.
-      PLAYBACK_URL: ${PLAYBACK_URL:-http://resolver:8080}
+      # Jellyfin clients receive the public HTTPS transport again, but every
+      # /play/live URL is short-lived and HMAC-signed instead of carrying the
+      # long-lived PLAYLIST_KEY.
+      PLAYBACK_URL: ${PLAYBACK_URL:-https://resolver.vpn4u.cc}
+      STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
+      STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
       DLHD_PROXY_URL: http://dlhd-proxy:3000
       DLHD_URL: http://dlhd:3000
       JELLYFIN_LIVE_URL: http://jellyfin-live:8090
@@ -122,12 +124,13 @@ services:
       - .env
     environment:
       JELLYFIN_LIVE_PORT: "8090"
-      # Every URL emitted inside the Jellyfin M3U/XMLTV (event selectors,
-      # generated artwork and guide references included) must stay on Docker.
-      # The platform/admin service keeps the public resolver hostname separately.
-      PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
+      # The playlist/guide endpoint itself can still be consumed through the
+      # internal resolver, but URLs emitted to Jellyfin clients use public HTTPS.
+      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
       PLATFORM_URL: http://resolver:8080
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
+      STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
+      STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
       EPG_URL: ${EPG_URL:-}
       JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
