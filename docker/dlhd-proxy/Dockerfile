@@ -52,6 +52,12 @@ RUN python /tmp/patch_player_fallback.py && rm /tmp/patch_player_fallback.py
 COPY patch_secondary_players.py /tmp/patch_secondary_players.py
 RUN python /tmp/patch_secondary_players.py && rm /tmp/patch_secondary_players.py
 
+# Do not let a single dead player-family request consume most of Jellyfin's tune
+# window. HTTP errors still fall through immediately; genuine hangs are bounded
+# to two seconds before the next known player option is attempted.
+COPY patch_fast_tune.py /tmp/patch_fast_tune.py
+RUN python /tmp/patch_fast_tune.py && rm /tmp/patch_fast_tune.py
+
 # Reflex 0.8.7 declares sqlmodel>=0.0.24,<0.1. A much newer SQLModel release
 # now imports Pydantic APIs that are unavailable while Reflex applies its v1
 # compatibility patch, so an unpinned install crashes even on plain import.
