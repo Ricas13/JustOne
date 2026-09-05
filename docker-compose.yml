@@ -3,9 +3,6 @@ name: ${COMPOSE_PROJECT_NAME:-justone}
 # JustOne is Live TV only. The platform and Jellyfin organizer are public
 # through Traefik; both DLHD backends stay private on the internal network.
 services:
-  # Primary DLHD resolver/proxy. Pinned to a known upstream commit so a future
-  # upstream change cannot silently alter production playback. It stays private;
-  # Jellyfin still talks only to JustOne /play/live/... endpoints.
   dlhd-proxy:
     build:
       context: "https://github.com/amddeus/dlhd-proxy.git#d2c691c52976d85218d22c6addc0fcc6dd9a5593"
@@ -32,7 +29,6 @@ services:
     networks:
       - justone
 
-  # Existing DLHD resolver is retained as playback fallback.
   dlhd:
     build:
       context: ./docker/dlhd
@@ -124,13 +120,11 @@ services:
       - .env
     environment:
       JELLYFIN_LIVE_PORT: "8090"
-      # The playlist/guide endpoint itself can still be consumed through the
-      # internal resolver, but URLs emitted to Jellyfin clients use public HTTPS.
-      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
+      # Metadata/event/artwork URLs stay on Docker; only raw platform live
+      # playback URLs are intentionally public and signed.
+      PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
       PLATFORM_URL: http://resolver:8080
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
-      STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
-      STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
       EPG_URL: ${EPG_URL:-}
       JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
