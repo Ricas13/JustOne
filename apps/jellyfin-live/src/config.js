@@ -3,6 +3,8 @@ export const config = {
   publicUrl: (process.env.PUBLIC_URL || "https://resolver.vpn4u.cc").replace(/\/$/, ""),
   platformUrl: (process.env.PLATFORM_URL || "http://platform:8080").replace(/\/$/, ""),
   playlistKey: process.env.PLAYLIST_KEY || "",
+  streamSigningSecret: process.env.STREAM_SIGNING_SECRET || "",
+  streamTokenTtlSeconds: Math.max(300, Number(process.env.STREAM_TOKEN_TTL_SECONDS || 86400)),
   dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlstreams.st/",
   refreshMin: Number(process.env.JELLYFIN_REFRESH_MIN || 10),
   epgCacheMin: Number(process.env.JELLYFIN_EPG_CACHE_MIN || 60),
