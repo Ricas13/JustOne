@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { buildM3u } from "../src/generate.js";
+
+process.env.STREAM_SIGNING_SECRET = "transport-contract-test-secret";
+
+const { buildM3u } = await import("../src/generate.js");
 
 test("raw platform playlist keeps the original Grok live transport path", () => {
   const body = buildM3u([
