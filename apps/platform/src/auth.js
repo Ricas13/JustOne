@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
+import { hasValidPlaybackSignature } from "./playbackSignature.js";
 
 const COOKIE = "justone_admin";
 
@@ -70,9 +71,17 @@ function loopback(req) {
 }
 
 export function hasPlaylistKey(req) {
-  if (!config.playlistKey) return true;
   if (loopback(req)) return true;
   if (isAuthed(req)) return true;
+
+  // Public live playback is deliberately separated from the long-lived playlist
+  // credential. A copied PLAYLIST_KEY must not authorize /play/live/* forever.
+  // These URLs are admitted only by a short-lived HMAC signature.
+  if (req.path?.startsWith("/play/live/")) {
+    return hasValidPlaybackSignature(req);
+  }
+
+  if (!config.playlistKey) return true;
   const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   const got = String(req.query?.key || req.query?.token || req.headers["x-playlist-key"] || bearer || "");
   if (!got) return false;
