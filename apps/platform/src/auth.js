@@ -72,15 +72,15 @@ function loopback(req) {
 
 export function hasPlaylistKey(req) {
   if (loopback(req)) return true;
-  if (isAuthed(req)) return true;
 
   // Public live playback is deliberately separated from the long-lived playlist
   // credential. A copied PLAYLIST_KEY must not authorize /play/live/* forever.
-  // These URLs are admitted only by a short-lived HMAC signature.
+  // Only a valid expiring HMAC (or a real configured admin session) is accepted.
   if (req.path?.startsWith("/play/live/")) {
-    return hasValidPlaybackSignature(req);
+    return hasValidPlaybackSignature(req) || Boolean(config.adminPassword && isAuthed(req));
   }
 
+  if (isAuthed(req)) return true;
   if (!config.playlistKey) return true;
   const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   const got = String(req.query?.key || req.query?.token || req.headers["x-playlist-key"] || bearer || "");
