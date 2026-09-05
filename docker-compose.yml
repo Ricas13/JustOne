@@ -3,9 +3,6 @@ name: ${COMPOSE_PROJECT_NAME:-justone}
 # JustOne is Live TV only. The platform and Jellyfin organizer are public
 # through Traefik; both DLHD backends stay private on the internal network.
 services:
-  # Primary DLHD resolver/proxy. Pinned to a known upstream commit so a future
-  # upstream change cannot silently alter production playback. It stays private;
-  # Jellyfin still talks only to JustOne /play/live/... endpoints.
   dlhd-proxy:
     build:
       context: "https://github.com/amddeus/dlhd-proxy.git#d2c691c52976d85218d22c6addc0fcc6dd9a5593"
@@ -32,7 +29,6 @@ services:
     networks:
       - justone
 
-  # Existing DLHD resolver is retained as playback fallback.
   dlhd:
     build:
       context: ./docker/dlhd
@@ -59,10 +55,12 @@ services:
     environment:
       PLATFORM_PORT: "8080"
       PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      # Playback URLs embedded in Jellyfin's M3U stay on Docker and never need
-      # to hairpin through Traefik/public DNS. PUBLIC_URL remains public for the
-      # admin UI, cookies and deliberately exposed web endpoints.
-      PLAYBACK_URL: ${PLAYBACK_URL:-http://resolver:8080}
+      # Jellyfin clients receive the public HTTPS transport again, but every
+      # /play/live URL is short-lived and HMAC-signed instead of carrying the
+      # long-lived PLAYLIST_KEY.
+      PLAYBACK_URL: ${PLAYBACK_URL:-https://resolver.vpn4u.cc}
+      STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
+      STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
       DLHD_PROXY_URL: http://dlhd-proxy:3000
       DLHD_URL: http://dlhd:3000
       JELLYFIN_LIVE_URL: http://jellyfin-live:8090
@@ -122,9 +120,8 @@ services:
       - .env
     environment:
       JELLYFIN_LIVE_PORT: "8090"
-      # Every URL emitted inside the Jellyfin M3U/XMLTV (event selectors,
-      # generated artwork and guide references included) must stay on Docker.
-      # The platform/admin service keeps the public resolver hostname separately.
+      # Metadata/event/artwork URLs stay on Docker; only raw platform live
+      # playback URLs are intentionally public and signed.
       PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
       PLATFORM_URL: http://resolver:8080
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}

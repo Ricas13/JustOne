@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config, withKey } from "./config.js";
+import { signPlaybackUrl } from "./playbackSignature.js";
 import { slugTvgId } from "./naming.js";
 import { loadAllExtra } from "./sources.js";
 import { withCountry } from "./country.js";
@@ -170,7 +171,8 @@ export function buildM3u(list, kind = "all") {
       `#EXTINF:-1 tvg-id="${tvg}" tvg-name="${name}" tvg-logo="${logo}" tvg-chno="${number}" group-title="${group}",${name}`,
     );
     const play = channel.kind === "ext" ? `/play/ext/${channel.id}` : `/play/live/${channel.id}.ts`;
-    lines.push(withKey(config.playbackUrl + play));
+    const url = config.playbackUrl + play;
+    lines.push(channel.kind === "ext" ? withKey(url) : signPlaybackUrl(url));
   });
 
   return lines.join("\n") + "\n";
