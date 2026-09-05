@@ -191,8 +191,13 @@ app.get("/play/live/:channelId", async (req, res) => {
     const raw = String(req.params.channelId);
     const asTs = /\.ts$/i.test(raw) || req.query.fmt === "ts";
     const id = raw.replace(/\.(m3u8|ts)$/i, "");
-    const picked = await resolveLive(id, { force: req.query.refresh === "1" });
-    if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(id));
+
+    // Jellyfin's MPEG-TS request is the long-lived session boundary. Do not
+    // synchronously resolve the provider before starting that session: FFmpeg
+    // immediately opens the loopback HLS route below, which owns resolution,
+    // renewal and forced re-resolution on failure. Pre-resolving here made a
+    // cold tune pay the provider admission latency twice and turned a transient
+    // resolver timeout into a failed Jellyfin tune instead of an internal retry.
     if (asTs) {
       if (req.method === "HEAD") {
         res.setHeader("Content-Type", "video/mp2t");
@@ -201,7 +206,7 @@ app.get("/play/live/:channelId", async (req, res) => {
       const hls = `http://127.0.0.1:${config.port}/play/live/${id}.m3u8`;
       const stream = beginLiveStream({
         channelId: id,
-        provider: picked.provider,
+        provider: "supervised-live",
         userAgent: req.headers["user-agent"],
       });
       try {
@@ -211,6 +216,9 @@ app.get("/play/live/:channelId", async (req, res) => {
       }
       return;
     }
+
+    const picked = await resolveLive(id, { force: req.query.refresh === "1" });
+    if (!picked?.url) return redirectTo(res, picked, "json", playLivePath(id));
     await proxyRenewableLiveManifest(req, res, { channelId: id, rootUrl: picked.url });
   } catch (error) {
     if (!res.headersSent) res.status(502).json({ error: "play failed" });
