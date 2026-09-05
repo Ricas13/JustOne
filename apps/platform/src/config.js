@@ -12,6 +12,8 @@ export const config = {
   liveRefreshMin: Math.max(1, Number(process.env.LIVE_REFRESH_MIN || 360)),
   adminPassword: process.env.ADMIN_PASSWORD || "",
   playlistKey: process.env.PLAYLIST_KEY || "",
+  streamSigningSecret: process.env.STREAM_SIGNING_SECRET || "",
+  streamTokenTtlSeconds: Math.max(300, Number(process.env.STREAM_TOKEN_TTL_SECONDS || 86400)),
 };
 
 export function withKey(url) {
