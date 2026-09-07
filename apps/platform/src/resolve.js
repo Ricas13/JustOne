@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import {
   liveSourceManagerStats,
+  noteLiveSourceObservation,
   preferredLiveSource,
   qualifyLiveSources,
   retainLiveSourceLearning as retainManagerLearning,
@@ -32,10 +33,7 @@ class LiveEndpointError extends Error {
 function cacheGet(key) {
   const hit = cache.get(key);
   if (!hit) return null;
-  if (Date.now() > hit.exp) {
-    cache.delete(key);
-    return null;
-  }
+  if (Date.now() > hit.exp) { cache.delete(key); return null; }
   return hit.value;
 }
 function cacheSet(key, value) { cache.set(key, { value, exp: Date.now() + TTL_MS }); }
@@ -131,17 +129,22 @@ async function probeManagedEndpoint(endpoint) {
 function pickedFromEndpoint(endpoint) {
   return {
     url: endpoint.url, quality: "live", available: ["live"], wanted: "live", matched: true,
-    validated: true,
-    // Exact Daddy candidates have already reached a real media object inside
-    // dlhd-proxy. Aggregate/legacy fallbacks are manifest-validated only.
-    playbackValidated: Boolean(endpoint.candidate),
-    liveValidated: true, liveValidatedAt: Date.now(), provider: endpoint.provider,
-    candidate: endpoint.candidate || null,
+    validated: true, playbackValidated: Boolean(endpoint.candidate), liveValidated: true,
+    liveValidatedAt: Date.now(), provider: endpoint.provider, candidate: endpoint.candidate || null,
   };
 }
 
 async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl }) {
   const key = `live:${channelId}`;
+  // A forced resolve is entered by the FFmpeg supervisor after its established
+  // HLS input dies. Record one failure against that exact root candidate before
+  // qualification. This represents the playback outage without multiplying one
+  // CDN incident into failures for every nested HLS request.
+  if (force) {
+    const previous = cacheGet(key);
+    if (previous?.url) noteLiveSourceObservation(channelId, previous.url, { ok: false, status: 502 });
+  }
+
   const endpoints = await discoverLiveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
   if (!endpoints.length) throw new Error("no DLHD live provider configured");
   if (!force) {
