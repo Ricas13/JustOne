@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import https from "node:https";
 import { config, withKey } from "./config.js";
@@ -37,6 +38,18 @@ const LIVE_FFMPEG_RW_TIMEOUT_US = Math.max(
   Number(process.env.LIVE_FFMPEG_RW_TIMEOUT_US || 15_000_000),
 );
 const LIVE_FAILOVER_MAX_SOURCES = 8;
+const LIVE_SHARED_REMUX = !/^(?:0|false|no|off)$/i.test(
+  String(process.env.LIVE_SHARED_REMUX ?? "true"),
+);
+const LIVE_SHARED_REMUX_IDLE_MS = Math.max(
+  0,
+  Math.min(120_000, Number(process.env.LIVE_SHARED_REMUX_IDLE_MS || 10_000)),
+);
+const LIVE_SHARED_SUBSCRIBER_MAX_BYTES = Math.max(
+  188 * 1024,
+  Number(process.env.LIVE_SHARED_SUBSCRIBER_MAX_BYTES || 4 * 1024 * 1024),
+);
+const sharedRemuxes = new Map();
 
 function log(...args) {
   process.stdout.write(args.map(String).join(" ") + "\n");
@@ -67,6 +80,10 @@ export function liveFfmpegArgs(inputUrl) {
     "1",
     "-reconnect_on_network_error",
     "1",
+    // Retry only transient gateway/origin failures here. 401/403/404/410 must
+    // still exit FFmpeg so the supervisor can force HLS renewal or fail over.
+    "-reconnect_on_http_error",
+    "500,502,503,504",
     "-reconnect_delay_max",
     "3",
     "-i",
@@ -77,12 +94,26 @@ export function liveFfmpegArgs(inputUrl) {
     "0:a?",
     "-c",
     "copy",
+    "-avoid_negative_ts",
+    "make_zero",
+    "-max_interleave_delta",
+    "1000000",
     "-muxdelay",
     "0",
     "-muxpreload",
     "0",
     "-mpegts_flags",
     "+resend_headers+initial_discontinuity",
+    // Make the remux look like a boring hardware tuner: frequent PSI/PCR and
+    // immediate packet flushing are much easier for Jellyfin/client demuxers.
+    "-pat_period",
+    "0.1",
+    "-sdt_period",
+    "0.5",
+    "-pcr_period",
+    "20",
+    "-flush_packets",
+    "1",
     "-f",
     "mpegts",
     "pipe:1",
@@ -143,13 +174,19 @@ export function forceRefreshLiveInput(inputUrl) {
   }
 }
 
+function disableHttpTimeouts(req, res) {
+  req?.setTimeout?.(0);
+  res?.setTimeout?.(0);
+  req?.socket?.setTimeout?.(0);
+  res?.socket?.setTimeout?.(0);
+}
+
 /**
- * Jellyfin is fed MPEG-TS while the upstream is HLS. One HTTP response remains
- * open for the whole viewing session. FFmpeg is supervised beneath it: short
- * failures restart the same source, and duplicate sports-event ids can switch
- * to the next source without sending Jellyfin EOF.
+ * Direct supervised FFmpeg producer. Shared viewer fan-out is layered on top so
+ * the restart/failover behaviour remains identical whether one or twenty
+ * Jellyfin tuners are attached.
  */
-export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
+function restreamMpegTsDirect(req, res, inputUrl, { spawnImpl = spawn } = {}) {
   return new Promise((resolve) => {
     const inputs = liveFailoverInputUrls(req, inputUrl);
     const bufferSettings = liveBufferSettings();
@@ -165,13 +202,17 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
     let settled = false;
     let stopping = false;
 
+    disableHttpTimeouts(req, res);
+
     const currentInput = () => inputs[currentInputIndex];
 
     const setLiveHeaders = () => {
       const mode = buffering ? `rolling-${rollingBuffer?.mode || "pcr"}-ram` : "off";
       res.setHeader("Content-Type", "video/mp2t");
-      res.setHeader("Cache-Control", "no-store");
-      res.setHeader("Connection", "keep-alive");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("X-Accel-Buffering", "no");
       res.setHeader("X-JustOne-Live-Transport", "ffmpeg-hls-remux-supervised");
       res.setHeader("X-JustOne-Live-Buffer-Seconds", String(bufferSettings.seconds));
@@ -184,6 +225,10 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
       if (started || res.destroyed || res.writableEnded) return false;
       started = true;
       setLiveHeaders();
+      // Establish the tuner socket immediately. Provider resolution can take a
+      // few seconds; Jellyfin should receive HTTP 200 before the first TS packet
+      // rather than mistaking source startup latency for a dead endpoint.
+      res.flushHeaders?.();
       return true;
     };
 
@@ -351,8 +396,221 @@ export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
       });
     }
 
+    ensureStarted();
     spawnCurrent();
   });
+}
+
+function sharedKey(req, inputUrl) {
+  return liveFailoverInputUrls(req, inputUrl).join("|");
+}
+
+function copySharedHeaders(shared, res) {
+  for (const [name, value] of shared.headers) {
+    if (!res.headersSent) res.setHeader(name, value);
+  }
+  if (!res.headersSent) {
+    res.setHeader("X-JustOne-Live-Shared-Remux", "1");
+    res.setHeader("X-JustOne-Live-Shared-Subscribers", String(shared.subscribers.size + 1));
+  }
+}
+
+function scheduleSharedIdle(shared) {
+  if (shared.finished || shared.subscribers.size || shared.idleTimer) return;
+  const stop = () => {
+    shared.idleTimer = null;
+    if (shared.finished || shared.subscribers.size) return;
+    shared.req.emit("aborted");
+  };
+  if (LIVE_SHARED_REMUX_IDLE_MS === 0) return stop();
+  shared.idleTimer = setTimeout(stop, LIVE_SHARED_REMUX_IDLE_MS);
+  shared.idleTimer.unref?.();
+}
+
+function detachSharedSubscriber(shared, subscriber, { destroy = false } = {}) {
+  if (!subscriber || subscriber.ended) return;
+  subscriber.ended = true;
+  shared.subscribers.delete(subscriber);
+  subscriber.req.off("aborted", subscriber.onClose);
+  subscriber.res.off("close", subscriber.onClose);
+  subscriber.res.off("drain", subscriber.onDrain);
+  subscriber.queue.length = 0;
+  subscriber.queueBytes = 0;
+  if (destroy && !subscriber.res.destroyed && !subscriber.res.writableEnded) {
+    if (typeof subscriber.res.destroy === "function") subscriber.res.destroy();
+    else subscriber.res.end?.();
+  }
+  subscriber.resolve?.();
+  scheduleSharedIdle(shared);
+}
+
+function flushSharedSubscriber(shared, subscriber) {
+  if (subscriber.ended || subscriber.res.destroyed || subscriber.res.writableEnded) {
+    detachSharedSubscriber(shared, subscriber);
+    return;
+  }
+  while (subscriber.queue.length) {
+    const chunk = subscriber.queue[0];
+    const writable = subscriber.res.write(chunk);
+    if (!writable) {
+      subscriber.blocked = true;
+      return;
+    }
+    subscriber.queue.shift();
+    subscriber.queueBytes -= chunk.length;
+  }
+  subscriber.blocked = false;
+}
+
+function writeSharedSubscriber(shared, subscriber, chunk) {
+  if (subscriber.ended || subscriber.res.destroyed || subscriber.res.writableEnded) {
+    detachSharedSubscriber(shared, subscriber);
+    return;
+  }
+  if (!subscriber.blocked && subscriber.queue.length === 0) {
+    const writable = subscriber.res.write(chunk);
+    if (writable) return;
+    subscriber.blocked = true;
+    return;
+  }
+  subscriber.queue.push(chunk);
+  subscriber.queueBytes += chunk.length;
+  if (subscriber.queueBytes > LIVE_SHARED_SUBSCRIBER_MAX_BYTES) {
+    log(
+      "live shared remux",
+      `slow-subscriber-dropped key=${shared.key}`,
+      `queued=${subscriber.queueBytes}`,
+    );
+    detachSharedSubscriber(shared, subscriber, { destroy: true });
+  }
+}
+
+function createSharedRemux(req, inputUrl, spawnImpl) {
+  const key = sharedKey(req, inputUrl);
+  const internalReq = new EventEmitter();
+  internalReq.query = {
+    failover: Array.isArray(req?.query?.failover)
+      ? [...req.query.failover]
+      : String(req?.query?.failover || ""),
+  };
+  internalReq.socket = { setTimeout() {} };
+
+  const internalRes = new EventEmitter();
+  internalRes.destroyed = false;
+  internalRes.writableEnded = false;
+  internalRes.headersSent = false;
+  internalRes.socket = { setTimeout() {} };
+  internalRes.setTimeout = () => internalRes;
+  internalRes.flushHeaders = () => {
+    internalRes.headersSent = true;
+  };
+
+  const shared = {
+    key,
+    req: internalReq,
+    res: internalRes,
+    headers: new Map(),
+    subscribers: new Set(),
+    idleTimer: null,
+    finished: false,
+    startedAt: Date.now(),
+    promise: null,
+  };
+
+  internalRes.setHeader = (name, value) => shared.headers.set(String(name), value);
+  internalRes.write = (chunk) => {
+    internalRes.headersSent = true;
+    if (!chunk?.length) return true;
+    for (const subscriber of [...shared.subscribers]) {
+      writeSharedSubscriber(shared, subscriber, chunk);
+    }
+    // A slow viewer must never backpressure the one shared FFmpeg producer.
+    return true;
+  };
+
+  sharedRemuxes.set(key, shared);
+  shared.promise = restreamMpegTsDirect(internalReq, internalRes, inputUrl, { spawnImpl })
+    .catch((error) => {
+      log("live shared remux", `producer-failed key=${key}`, String(error?.message || error));
+    })
+    .finally(() => {
+      shared.finished = true;
+      if (shared.idleTimer) clearTimeout(shared.idleTimer);
+      if (sharedRemuxes.get(key) === shared) sharedRemuxes.delete(key);
+      for (const subscriber of [...shared.subscribers]) {
+        detachSharedSubscriber(shared, subscriber, { destroy: true });
+      }
+    });
+
+  return shared;
+}
+
+function attachSharedRemux(req, res, shared) {
+  if (shared.idleTimer) {
+    clearTimeout(shared.idleTimer);
+    shared.idleTimer = null;
+  }
+  disableHttpTimeouts(req, res);
+  copySharedHeaders(shared, res);
+  res.flushHeaders?.();
+
+  return new Promise((resolve) => {
+    const subscriber = {
+      req,
+      res,
+      resolve,
+      queue: [],
+      queueBytes: 0,
+      blocked: false,
+      ended: false,
+      onClose: null,
+      onDrain: null,
+    };
+    subscriber.onClose = () => detachSharedSubscriber(shared, subscriber);
+    subscriber.onDrain = () => flushSharedSubscriber(shared, subscriber);
+    shared.subscribers.add(subscriber);
+    req.once("aborted", subscriber.onClose);
+    res.once("close", subscriber.onClose);
+    res.on("drain", subscriber.onDrain);
+  });
+}
+
+/**
+ * Jellyfin is fed MPEG-TS while the upstream is HLS. By default one supervised
+ * FFmpeg/PCR buffer is shared by every tuner watching the same logical source.
+ * Each client still owns an independent HTTP socket and bounded backpressure
+ * queue, so a slow television cannot stall the channel for everyone else.
+ */
+export function restreamMpegTs(req, res, inputUrl, { spawnImpl = spawn } = {}) {
+  if (!LIVE_SHARED_REMUX) return restreamMpegTsDirect(req, res, inputUrl, { spawnImpl });
+  const key = sharedKey(req, inputUrl);
+  let shared = sharedRemuxes.get(key);
+  if (!shared || shared.finished) shared = createSharedRemux(req, inputUrl, spawnImpl);
+  return attachSharedRemux(req, res, shared);
+}
+
+export function sharedLiveRemuxStats(now = Date.now()) {
+  const current = Number(now);
+  const producers = [...sharedRemuxes.values()].map((shared) => ({
+    key: shared.key,
+    subscribers: shared.subscribers.size,
+    startedAt: new Date(shared.startedAt).toISOString(),
+    durationSeconds: Math.max(0, Math.floor((current - shared.startedAt) / 1000)),
+  }));
+  return {
+    enabled: LIVE_SHARED_REMUX,
+    producers: producers.length,
+    subscribers: producers.reduce((sum, row) => sum + row.subscribers, 0),
+    items: producers,
+  };
+}
+
+export function clearSharedLiveRemuxes() {
+  for (const shared of sharedRemuxes.values()) {
+    if (shared.idleTimer) clearTimeout(shared.idleTimer);
+    shared.req.emit("aborted");
+  }
+  sharedRemuxes.clear();
 }
 
 export function publicPlayUrl(pathAndQuery) {
