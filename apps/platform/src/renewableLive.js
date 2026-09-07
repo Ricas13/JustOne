@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { config, withKey } from "./config.js";
 
 const TARGET_TTL_MS = Math.max(
@@ -476,11 +477,11 @@ async function serveAsset(req, res, target) {
       res.end();
       return;
     }
-    Readable.fromWeb(response.body).pipe(res);
+    await pipeline(Readable.fromWeb(response.body), res);
   } catch (error) {
     log("live hls asset", String(error?.message || error));
     if (!res.headersSent) res.status(502).end("live HLS asset failed");
-    else res.destroy();
+    else if (!res.destroyed) res.destroy();
   }
 }
 
