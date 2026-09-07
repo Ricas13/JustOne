@@ -79,13 +79,20 @@ services:
       LIVE_HLS_TARGET_TTL_MS: ${LIVE_HLS_TARGET_TTL_MS:-1800000}
       LIVE_HLS_TARGET_MAX: ${LIVE_HLS_TARGET_MAX:-50000}
       LIVE_HLS_MANIFEST_MAX_BYTES: ${LIVE_HLS_MANIFEST_MAX_BYTES:-4194304}
-      LIVE_BUFFER_SECONDS: ${LIVE_BUFFER_SECONDS:-3}
+      # Two seconds keeps enough PCR-paced media to absorb short CDN stalls
+      # without making every channel change pay a three-second tax.
+      LIVE_BUFFER_SECONDS: ${LIVE_BUFFER_SECONDS:-2}
       LIVE_BUFFER_MAX_BYTES: ${LIVE_BUFFER_MAX_BYTES:-67108864}
       LIVE_FFMPEG_RESTART_DELAY_MS: ${LIVE_FFMPEG_RESTART_DELAY_MS:-500}
       LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE: ${LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE:-3}
       LIVE_FFMPEG_STABLE_MS: ${LIVE_FFMPEG_STABLE_MS:-15000}
       LIVE_FFMPEG_RW_TIMEOUT_US: ${LIVE_FFMPEG_RW_TIMEOUT_US:-15000000}
       LIVE_FAILOVER_MAX_SWITCHES: ${LIVE_FAILOVER_MAX_SWITCHES:-12}
+      # One producer can serve every Jellyfin tuner watching the same logical
+      # channel/failover set. Slow subscribers are isolated from the producer.
+      LIVE_SHARED_REMUX: ${LIVE_SHARED_REMUX:-true}
+      LIVE_SHARED_REMUX_IDLE_MS: ${LIVE_SHARED_REMUX_IDLE_MS:-10000}
+      LIVE_SHARED_SUBSCRIBER_MAX_BYTES: ${LIVE_SHARED_SUBSCRIBER_MAX_BYTES:-4194304}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
     volumes:
@@ -110,6 +117,9 @@ services:
       - "traefik.http.routers.justone-platform.priority=10000"
       - "traefik.http.routers.justone-platform.service=justone-platform"
       - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
+      # Explicitly flush the indefinitely-open MPEG-TS response instead of
+      # letting proxy aggregation add latency to tuner startup.
+      - "traefik.http.services.justone-platform.loadbalancer.responseForwarding.flushInterval=100ms"
 
   jellyfin-live:
     build:
