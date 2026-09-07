@@ -34,8 +34,8 @@ RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==
 
 COPY test_secondary_players.py /tmp/test_secondary_players.py
 COPY test_candidate_manager_api.py /tmp/test_candidate_manager_api.py
-RUN PYTHONPATH=/app DLHD_BASE_URL=https://example.invalid \
-    python /tmp/test_secondary_players.py \
+RUN export PYTHONPATH=/app DLHD_BASE_URL=https://example.invalid \
+    && python /tmp/test_secondary_players.py \
     && python /tmp/test_candidate_manager_api.py \
     && rm /tmp/test_secondary_players.py /tmp/test_candidate_manager_api.py
 
