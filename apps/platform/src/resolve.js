@@ -1,4 +1,10 @@
 import { config } from "./config.js";
+import {
+  liveSourceManagerStats,
+  preferredLiveSource,
+  qualifyLiveSources,
+  retainLiveSourceLearning as retainManagerLearning,
+} from "./liveSourceManager.js";
 
 const cache = new Map();
 const inFlight = new Map();
@@ -106,10 +112,9 @@ async function readManifestPrefix(response) {
 }
 
 /**
- * Admit a resolver endpoint quickly. dlhd-proxy already walks/player-probes the
- * DaddyLive candidates, so the platform only verifies that the returned body
- * is actually HLS. Deep segment validation here used to add another 7+ second
- * tax before FFmpeg could even start.
+ * Admit a resolver endpoint quickly. The platform verifies that each configured
+ * candidate returns a real HLS manifest; candidates are qualified in parallel
+ * by the live source manager rather than stopping at the first valid resolver.
  */
 async function resolveLiveEndpoint(endpoint) {
   let response;
@@ -154,11 +159,9 @@ function sleep(ms) {
 }
 
 /**
- * The pinned amddeus backend currently converts every StepDaddy ValueError to
- * HTTP 404. That includes genuinely missing channels, but also transient
- * "direct HLS playlist Timeout" / "player budget exhausted" failures. A single
- * 404 therefore cannot be treated as authoritative. Retry it briefly before
- * falling back to the independent legacy resolver.
+ * The pinned amddeus backend converts every StepDaddy ValueError to HTTP 404,
+ * including transient playlist timeout/player-budget failures. Keep the bounded
+ * recovery from PR #93, but run it concurrently with the other candidates.
  */
 async function resolvePrimaryWith404Recovery(endpoint) {
   let lastError = null;
@@ -176,73 +179,56 @@ async function resolvePrimaryWith404Recovery(endpoint) {
   throw lastError || new Error("primary live resolver failed");
 }
 
-function shouldTryLegacyAfterPrimary(error) {
-  const status = Number(error?.status);
-  // amddeus-dlhd-proxy currently collapses transient player timeouts into 404,
-  // so an exhausted primary 404 is eligible for the independent legacy path.
-  if (status === 404 && error?.provider === "amddeus-dlhd-proxy") return true;
-  return Boolean(
-    error?.transport ||
-      error?.invalid ||
-      (status >= 500 && status <= 599),
-  );
+async function probeManagedEndpoint(endpoint) {
+  if (endpoint?.provider === "amddeus-dlhd-proxy") {
+    return resolvePrimaryWith404Recovery(endpoint);
+  }
+  return resolveLiveEndpoint(endpoint);
 }
 
-async function resolveLiveUncoalesced(
-  channelId,
-  {
-    force,
-    proxyUrl,
-    legacyUrl,
-  },
-) {
-  const key = `live:${channelId}`;
-  if (!force) {
-    const cached = cacheGet(key);
-    if (cached) {
-      const recent =
-        cached.liveValidatedAt &&
-        Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS;
-      if (recent) return cached;
+function pickedFromEndpoint(endpoint) {
+  return {
+    url: endpoint.url,
+    quality: "live",
+    available: ["live"],
+    wanted: "live",
+    matched: true,
+    validated: true,
+    playbackValidated: false,
+    liveValidated: true,
+    liveValidatedAt: Date.now(),
+    provider: endpoint.provider,
+  };
+}
 
-      // Do not synchronously deep-probe an established cache entry on a click.
-      // FFmpeg/renewal is the authoritative liveness signal; its supervised
-      // failure path re-enters resolveLive with refresh=1.
-      cached.liveValidatedAt = Date.now();
+async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl }) {
+  const key = `live:${channelId}`;
+  const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
+  if (!endpoints.length) throw new Error("no DLHD live provider configured");
+
+  if (!force) {
+    const preferred = preferredLiveSource(channelId, endpoints, probeManagedEndpoint, {
+      maxAgeMs: LIVE_SOURCE_RECHECK_MS,
+    });
+    if (preferred) {
+      const picked = pickedFromEndpoint(preferred);
+      cacheSet(key, picked);
+      return picked;
+    }
+
+    // Compatibility fallback for a cache created before a manager selection is
+    // established. Once the manager has qualified candidates, its continuously
+    // learned preference becomes authoritative.
+    const cached = cacheGet(key);
+    if (cached?.liveValidatedAt && Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS) {
       return cached;
     }
   }
 
-  const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
-  let lastError = null;
-  for (let index = 0; index < endpoints.length; index += 1) {
-    const endpoint = endpoints[index];
-    try {
-      const url =
-        index === 0 && endpoint.provider === "amddeus-dlhd-proxy"
-          ? await resolvePrimaryWith404Recovery(endpoint)
-          : await resolveLiveEndpoint(endpoint);
-      const picked = {
-        url,
-        quality: "live",
-        available: ["live"],
-        wanted: "live",
-        matched: true,
-        validated: true,
-        playbackValidated: false,
-        liveValidated: true,
-        liveValidatedAt: Date.now(),
-        provider: endpoint.provider,
-      };
-      cacheSet(key, picked);
-      return picked;
-    } catch (error) {
-      lastError = error;
-      if (index === 0 && endpoints.length > 1 && !shouldTryLegacyAfterPrimary(error)) break;
-    }
-  }
-
-  throw lastError || new Error("no DLHD live provider configured");
+  const selected = await qualifyLiveSources(channelId, endpoints, probeManagedEndpoint, { force });
+  const picked = pickedFromEndpoint(selected);
+  cacheSet(key, picked);
+  return picked;
 }
 
 export async function resolveLive(
@@ -270,6 +256,21 @@ export async function resolveLive(
   }
 }
 
+/**
+ * Keep every configured resolver candidate warm for the lifetime of an actual
+ * Jellyfin tuner session. The manager probes candidates in parallel, learns
+ * their stability/latency and maintains a ready standby without opening a
+ * second full media stream.
+ */
+export function retainLiveSourceLearning(
+  channelId,
+  { proxyUrl = config.dlhdProxyUrl, legacyUrl = config.dlhdUrl } = {},
+) {
+  const endpoints = liveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
+  if (!endpoints.length) return () => {};
+  return retainManagerLearning(channelId, endpoints, probeManagedEndpoint);
+}
+
 export function cacheStats() {
   return {
     size: cache.size,
@@ -280,5 +281,6 @@ export function cacheStats() {
     primary404RetryDelayMs: LIVE_PRIMARY_404_RETRY_DELAY_MS,
     inFlight: inFlight.size,
     coalescedJoins,
+    sourceManager: liveSourceManagerStats(),
   };
 }
