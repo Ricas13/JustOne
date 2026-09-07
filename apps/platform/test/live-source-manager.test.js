@@ -32,7 +32,10 @@ test("parallel qualification scores all healthy candidates and remembers a winne
   const preferred = preferredLiveSource("370", endpoints, probe, { maxAgeMs: 60_000 });
   assert.equal(preferred?.provider, "standby");
   const stats = liveSourceManagerStats();
+  assert.equal(stats.switchConfirmations, 3, "healthy score-only switching requires sustained superiority by default");
   assert.equal(stats.managers.length, 1);
+  assert.equal(stats.managers[0].challengerProvider, null);
+  assert.equal(stats.managers[0].challengerWins, 0);
   assert.equal(stats.managers[0].candidates.length, 2);
 });
 
@@ -51,7 +54,8 @@ test("repeated active-source failures switch to a recently healthy warm standby"
   noteLiveSourceObservation("370", initial.url, { ok: false, latencyMs: 100, status: 500 });
 
   const switched = preferredLiveSource("370", endpoints, probe, { maxAgeMs: 60_000 });
-  assert.equal(switched?.url, standby.url);
+  assert.equal(switched?.url, standby.url, "real repeated failures still promote the warm standby immediately");
   const stats = liveSourceManagerStats();
   assert.equal(stats.managers[0].selectedProvider, standby.provider);
+  assert.equal(stats.managers[0].challengerWins, 0, "failure-driven failover does not wait for score confirmations");
 });
