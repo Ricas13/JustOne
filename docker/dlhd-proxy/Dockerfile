@@ -9,11 +9,6 @@ RUN apt-get update -y \
 
 WORKDIR /app
 
-# We only need amddeus' FastAPI DLHD backend. The upstream Dockerfile also
-# compiles a Reflex frontend (reflex init/export), starts Caddy and Redis, none
-# of which sits in JustOne's playback path. Cloning the pinned source and
-# running fastapi_app directly avoids that fragile frontend build step while
-# retaining the upstream stream/auth/key/content implementation unchanged.
 RUN git clone --filter=blob:none "${UPSTREAM_REPO}" /tmp/dlhd-proxy \
     && cd /tmp/dlhd-proxy \
     && git checkout --detach "${UPSTREAM_REF}" \
@@ -24,31 +19,25 @@ RUN python -c 'from pathlib import Path; p=Path("dlhd_proxy/step_daddy.py"); s=p
 
 COPY patch_upstream.py /tmp/patch_upstream.py
 RUN python /tmp/patch_upstream.py && rm /tmp/patch_upstream.py
-
 COPY patch_subtitle_hls.py /tmp/patch_subtitle_hls.py
 RUN python /tmp/patch_subtitle_hls.py && rm /tmp/patch_subtitle_hls.py
-
 COPY patch_player_fallback.py /tmp/patch_player_fallback.py
 RUN python /tmp/patch_player_fallback.py && rm /tmp/patch_player_fallback.py
-
 COPY patch_secondary_players.py /tmp/patch_secondary_players.py
 RUN python /tmp/patch_secondary_players.py && rm /tmp/patch_secondary_players.py
-
 COPY patch_fast_tune.py /tmp/patch_fast_tune.py
 RUN python /tmp/patch_fast_tune.py && rm /tmp/patch_fast_tune.py
-
-# Expose each DaddyLive family/embed/source as a stable internal candidate URL.
-# The candidate route re-resolves the current signed HLS URL and validates real
-# media before returning it, so JustOne can persist candidate identity safely.
 COPY patch_candidate_manager_api.py /tmp/patch_candidate_manager_api.py
 RUN python /tmp/patch_candidate_manager_api.py && rm /tmp/patch_candidate_manager_api.py
 
 RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==0.35.0"
 
 COPY test_secondary_players.py /tmp/test_secondary_players.py
+COPY test_candidate_manager_api.py /tmp/test_candidate_manager_api.py
 RUN PYTHONPATH=/app DLHD_BASE_URL=https://example.invalid \
     python /tmp/test_secondary_players.py \
-    && rm /tmp/test_secondary_players.py
+    && python /tmp/test_candidate_manager_api.py \
+    && rm /tmp/test_secondary_players.py /tmp/test_candidate_manager_api.py
 
 ENV PORT=3000 \
     REFLEX_API_URL=http://dlhd-proxy:3000 \
