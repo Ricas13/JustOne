@@ -1,5 +1,5 @@
 import { chooseChannelLogo } from "./channel-logos.js";
-import { countrySuffixes as identityCountrySuffixes, normalizeCountryCode } from "./channel-identity.js";
+import { channelIdentityKeys, countrySuffixes as identityCountrySuffixes, normalizeCountryCode } from "./channel-identity.js";
 import { config, withKey } from "./config.js";
 
 const docIndexCache = new WeakMap();
@@ -74,8 +74,6 @@ export function canonicalGuideName(value, country = "") {
     .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
     .replace(/[._/\-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
-    // Split genuine channel-number/quality joins such as Sports4, Eurosport1,
-    // ITV1 and 4HD, but keep one-letter numbered brands such as F1 intact.
     .replace(/([a-z]{2,})(\d)/g, "$1 $2")
     .replace(/(\d)([a-z]{2,})/g, "$1 $2")
     .replace(/\bnova\s+sports?\b/g, "novasports")
@@ -83,8 +81,6 @@ export function canonicalGuideName(value, country = "") {
     .replace(/\s+/g, " ")
     .trim();
 
-  // Quality is commonly appended after the country ("Greece HD"). Remove it
-  // before stripping the country suffix so ordinary regional channels match.
   s = s
     .replace(/\b(?:uhd|fhd|hd|sd|2160p|1080p|720p|576p|480p)\b/g, " ")
     .replace(/\s+/g, " ")
@@ -109,18 +105,20 @@ function guideKeys(value, country = "") {
   const out = new Set();
   for (const item of values) {
     const canonical = canonicalGuideName(item, country);
-    if (!canonical) continue;
-    out.add(canonical);
-    const compact = canonical.replace(/\s+/g, "");
-    if (compact.length >= 3) out.add(compact);
-    const singularSport = canonical.replace(/\bsports\b/g, "sport");
-    if (singularSport !== canonical) {
-      out.add(singularSport);
-      const singularCompact = singularSport.replace(/\s+/g, "");
-      if (singularCompact.length >= 3) out.add(singularCompact);
+    if (canonical) {
+      out.add(canonical);
+      const compact = canonical.replace(/\s+/g, "");
+      if (compact.length >= 3) out.add(compact);
+      const singularSport = canonical.replace(/\bsports\b/g, "sport");
+      if (singularSport !== canonical) {
+        out.add(singularSport);
+        const singularCompact = singularSport.replace(/\s+/g, "");
+        if (singularCompact.length >= 3) out.add(singularCompact);
+      }
     }
+    for (const identity of channelIdentityKeys(item, country)) out.add(identity);
   }
-  return [...out];
+  return [...out].filter(Boolean);
 }
 
 function addAlias(map, key, id) {
@@ -193,8 +191,6 @@ function similarity(a, entry) {
   if (!aa.size) return 0;
   let best = 0;
   for (const b of entry.canonical) {
-    // Numbered families are not interchangeable. Cytavision Sports 4 must not
-    // fuzzy-match Sports 1/2/3/5 simply because the broadcaster words overlap.
     if (!channelNumbersCompatible(a, b)) continue;
     if (a === b) return 100;
     const bb = new Set(b.split(" ").filter(Boolean));
@@ -244,8 +240,6 @@ export function matchGuideChannel(ch, docs) {
   let best = null;
   for (const doc of orderedDocs) {
     const index = indexDoc(doc);
-    // A known country-specific EPG pack is a hard boundary and must never be
-    // used for another country. Country is resolved before channel name/number.
     if (country && index.country && country !== index.country) continue;
     for (const variant of variants) {
       for (const id of candidateIds(index, variant)) {
@@ -445,8 +439,6 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
   ];
   const hits = new Map();
 
-  // Only final lineup channels are emitted. Upstream guide-only channels never
-  // enter the final XMLTV, which keeps M3U and EPG identities in lockstep.
   for (const ch of lineup || []) {
     const hit = ch.kind === "static" && !isEventChannel(ch) ? matchGuideChannel(ch, docs) : null;
     if (hit) hits.set(ch.id, hit);
@@ -462,9 +454,6 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
       const programmes = (ch.programmes || []).filter((p) => {
         const start = Number(p?.start);
         const stop = Number(p?.end);
-        // Only the verified DLStreams event entry is emitted. There are no
-        // filler programmes before or after it, so idle event channels remain
-        // completely absent from Jellyfin's current-programme surfaces.
         return p?.scheduleSource === "dlstreams"
           && Number.isFinite(start)
           && Number.isFinite(stop)
@@ -479,9 +468,6 @@ export function buildXmlTv(lineup, docs = [], { now = Date.now(), horizonHours =
     const scheduledExternal = (hit?.doc?.programmes?.get(hit.id) || [])
       .filter((p) => programmeInWindow(p, now, horizonEnd));
     const external = scheduledExternal.filter((p) => !isIdleExternalProgramme(p));
-    // Missing, idle or otherwise useless guide data is intentionally left as
-    // an empty XMLTV gap. Keep the channel entry for identity/logo matching,
-    // but never fabricate a programme just to fill the timeline.
     for (const p of external) lines.push(adaptExternalProgram(p, ch, hit));
   }
 

@@ -91,6 +91,14 @@ function normalizedWords(value) {
     // ITV1 and 4HD, but keep one-letter numbered brands such as F1 intact.
     .replace(/([a-z]{2,})(\d)/g, "$1 $2")
     .replace(/(\d)([a-z]{2,})/g, "$1 $2")
+    // Provider/guide abbreviations seen in real sports lineups. Keep these in
+    // the shared identity layer so EPG and IPTV-org logo matching agree.
+    .replace(/\bskysp\b/g, "sky sports")
+    .replace(/\bnetwrk\b/g, "network")
+    .replace(/\bfball\b/g, "football")
+    .replace(/\bmain\s+ev\b/g, "main event")
+    .replace(/\bsp\b(?=\s+(?:f1|football|cricket|golf|racing|tennis|mix|news|action))/g, "sports")
+    .replace(/\bsporttv\b/g, "sport tv")
     .replace(/\bnova\s+sports?\b/g, "novasports")
     .replace(/\bcyta\s+vision\b/g, "cytavision")
     .replace(/\s+/g, " ")
@@ -117,6 +125,34 @@ function addKey(out, value) {
   if (compact.length >= 3) out.add(compact);
 }
 
+function addCountryBrandAliases(out, country) {
+  const cc = normalizeCountryCode(country);
+  for (const key of [...out]) {
+    if (!key.includes(" ")) continue;
+
+    if (cc === "GB") {
+      const skyPl = /^sky sports (?:pl|prem league|premierleague)$/i.exec(key);
+      if (skyPl) addKey(out, "sky sports premier league");
+
+      const tnt = /^tnt sports? (\d+)$/i.exec(key);
+      if (tnt) {
+        addKey(out, `bt sport ${tnt[1]}`);
+        addKey(out, `bt sports ${tnt[1]}`);
+      }
+      const bt = /^bt sports? (\d+)$/i.exec(key);
+      if (bt) addKey(out, `tnt sports ${bt[1]}`);
+    }
+
+    if (cc === "PT") {
+      if (key === "benfica tv") addKey(out, "btv");
+      if (key === "sporttv") addKey(out, "sport tv");
+    }
+  }
+
+  // BTV is a compact brand name, so handle it separately from spaced aliases.
+  if (cc === "PT" && out.has("btv")) addKey(out, "benfica tv");
+}
+
 export function channelIdentityKeys(value, country = "") {
   const out = new Set();
   const raw = normalizedWords(value);
@@ -133,6 +169,8 @@ export function channelIdentityKeys(value, country = "") {
     .trim();
   const withoutQuality = stripCountrySuffix(rawWithoutQuality, country);
   addKey(out, withoutQuality);
+
+  addCountryBrandAliases(out, country);
 
   for (const key of [...out]) {
     const words = key.includes(" ") ? key : "";
