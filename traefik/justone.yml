@@ -15,5 +15,9 @@ http:
   services:
     justone-platform:
       loadBalancer:
+        responseForwarding:
+          # Live TV is one indefinitely-open response. Flush chunks promptly so
+          # Jellyfin sees tuner media without proxy-side aggregation latency.
+          flushInterval: 100ms
         servers:
           - url: http://justone-platform:8080
