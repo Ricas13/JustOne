@@ -115,15 +115,56 @@ test("HTTP-200 error payload is rejected and operationally falls back to legacy"
   }
 });
 
-test("primary 404 is authoritative and does not double tune latency with legacy", async () => {
+test("transient primary 404 is retried and can recover without legacy failover", async () => {
+  let primaryRequests = 0;
   let legacyRequests = 0;
   const server = http.createServer((req, res) => {
-    if (req.url === "/primary/stream/722.m3u8") {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ detail: "stream unavailable" }));
+    if (req.url === "/primary/stream/370.m3u8") {
+      primaryRequests += 1;
+      if (primaryRequests === 1) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Stream not found" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      res.end("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\n/primary/370.ts\n");
       return;
     }
     if (req.url.startsWith("/legacy/")) {
+      legacyRequests += 1;
+      res.writeHead(500).end();
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  const address = await listen(server);
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const picked = await resolveLive("370", {
+      force: true,
+      proxyUrl: `${base}/primary`,
+      legacyUrl: `${base}/legacy`,
+    });
+    assert.equal(picked.provider, "amddeus-dlhd-proxy");
+    assert.equal(primaryRequests, 2, "the timeout-shaped 404 is retried");
+    assert.equal(legacyRequests, 0, "primary recovery avoids an unnecessary source switch");
+  } finally {
+    await close(server);
+  }
+});
+
+test("exhausted primary 404 retries are eligible for legacy failover", async () => {
+  let primaryRequests = 0;
+  let legacyRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/primary/stream/722.m3u8") {
+      primaryRequests += 1;
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Stream not found" }));
+      return;
+    }
+    if (req.url === "/legacy/api/stream/722.m3u8") {
       legacyRequests += 1;
       res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
       res.end("#EXTM3U\n#EXTINF:2,\n/legacy/722.ts\n");
@@ -135,15 +176,14 @@ test("primary 404 is authoritative and does not double tune latency with legacy"
   const address = await listen(server);
   const base = `http://127.0.0.1:${address.port}`;
   try {
-    await assert.rejects(
-      resolveLive("722", {
-        force: true,
-        proxyUrl: `${base}/primary`,
-        legacyUrl: `${base}/legacy`,
-      }),
-      /returned 404/,
-    );
-    assert.equal(legacyRequests, 0);
+    const picked = await resolveLive("722", {
+      force: true,
+      proxyUrl: `${base}/primary`,
+      legacyUrl: `${base}/legacy`,
+    });
+    assert.equal(picked.provider, "legacy-dlhd-web");
+    assert.equal(primaryRequests, 3, "initial primary attempt plus two bounded retries");
+    assert.equal(legacyRequests, 1);
   } finally {
     await close(server);
   }

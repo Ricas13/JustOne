@@ -12,14 +12,26 @@ const LIVE_SOURCE_RECHECK_MS = Math.max(
   0,
   Number(process.env.LIVE_SOURCE_RECHECK_MS || 5 * 60 * 1000),
 );
+const LIVE_PRIMARY_404_RETRIES = Math.max(
+  0,
+  Math.min(4, Number(process.env.LIVE_PRIMARY_404_RETRIES ?? 2)),
+);
+const LIVE_PRIMARY_404_RETRY_DELAY_MS = Math.max(
+  100,
+  Math.min(3000, Number(process.env.LIVE_PRIMARY_404_RETRY_DELAY_MS ?? 500)),
+);
 const MANIFEST_PREFIX_MAX_BYTES = 128 * 1024;
 
 class LiveEndpointError extends Error {
-  constructor(message, { status = null, transport = false, invalid = false } = {}) {
+  constructor(
+    message,
+    { status = null, transport = false, invalid = false, provider = "" } = {},
+  ) {
     super(message);
     this.status = status;
     this.transport = transport;
     this.invalid = invalid;
+    this.provider = provider;
   }
 }
 
@@ -109,6 +121,7 @@ async function resolveLiveEndpoint(endpoint) {
   } catch {
     throw new LiveEndpointError(`${endpoint.provider} transport failed`, {
       transport: true,
+      provider: endpoint.provider,
     });
   }
 
@@ -120,6 +133,7 @@ async function resolveLiveEndpoint(endpoint) {
     }
     throw new LiveEndpointError(`${endpoint.provider} returned ${response.status}`, {
       status: response.status,
+      provider: endpoint.provider,
     });
   }
 
@@ -128,21 +142,49 @@ async function resolveLiveEndpoint(endpoint) {
     throw new LiveEndpointError(`${endpoint.provider} returned no HLS manifest`, {
       status: response.status,
       invalid: true,
+      provider: endpoint.provider,
     });
   }
 
   return endpoint.url;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The pinned amddeus backend currently converts every StepDaddy ValueError to
+ * HTTP 404. That includes genuinely missing channels, but also transient
+ * "direct HLS playlist Timeout" / "player budget exhausted" failures. A single
+ * 404 therefore cannot be treated as authoritative. Retry it briefly before
+ * falling back to the independent legacy resolver.
+ */
+async function resolvePrimaryWith404Recovery(endpoint) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= LIVE_PRIMARY_404_RETRIES; attempt += 1) {
+    try {
+      return await resolveLiveEndpoint(endpoint);
+    } catch (error) {
+      lastError = error;
+      const transient404 =
+        endpoint.provider === "amddeus-dlhd-proxy" && Number(error?.status) === 404;
+      if (!transient404 || attempt >= LIVE_PRIMARY_404_RETRIES) throw error;
+      await sleep(LIVE_PRIMARY_404_RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+  throw lastError || new Error("primary live resolver failed");
+}
+
 function shouldTryLegacyAfterPrimary(error) {
-  // Primary 404 is authoritative: its full player-family walk completed and no
-  // source exists for the id. Do not double the tune time by immediately doing
-  // the same work in the legacy resolver. Operational failures still fall back.
-  if (Number(error?.status) === 404) return false;
+  const status = Number(error?.status);
+  // amddeus-dlhd-proxy currently collapses transient player timeouts into 404,
+  // so an exhausted primary 404 is eligible for the independent legacy path.
+  if (status === 404 && error?.provider === "amddeus-dlhd-proxy") return true;
   return Boolean(
     error?.transport ||
       error?.invalid ||
-      (Number(error?.status) >= 500 && Number(error?.status) <= 599),
+      (status >= 500 && status <= 599),
   );
 }
 
@@ -176,7 +218,10 @@ async function resolveLiveUncoalesced(
   for (let index = 0; index < endpoints.length; index += 1) {
     const endpoint = endpoints[index];
     try {
-      const url = await resolveLiveEndpoint(endpoint);
+      const url =
+        index === 0 && endpoint.provider === "amddeus-dlhd-proxy"
+          ? await resolvePrimaryWith404Recovery(endpoint)
+          : await resolveLiveEndpoint(endpoint);
       const picked = {
         url,
         quality: "live",
@@ -231,6 +276,8 @@ export function cacheStats() {
     ttlMs: TTL_MS,
     liveSourceProbeTimeoutMs: LIVE_SOURCE_PROBE_TIMEOUT_MS,
     liveSourceRecheckMs: LIVE_SOURCE_RECHECK_MS,
+    primary404Retries: LIVE_PRIMARY_404_RETRIES,
+    primary404RetryDelayMs: LIVE_PRIMARY_404_RETRY_DELAY_MS,
     inFlight: inFlight.size,
     coalescedJoins,
   };
