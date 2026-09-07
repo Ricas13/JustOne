@@ -72,6 +72,18 @@ services:
       RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-3600000}
       LIVE_SOURCE_PROBE_TIMEOUT_MS: ${LIVE_SOURCE_PROBE_TIMEOUT_MS:-3000}
       LIVE_SOURCE_RECHECK_MS: ${LIVE_SOURCE_RECHECK_MS:-300000}
+      # Stateful source manager: qualify configured resolvers in parallel,
+      # continuously keep the standby warm while a tuner is active, and only
+      # switch when the challenger is materially better or the active source is
+      # repeatedly unhealthy. History stores stable resolver identity/scores,
+      # never expiring signed DaddyLive URLs.
+      LIVE_SOURCE_WARM_INTERVAL_MS: ${LIVE_SOURCE_WARM_INTERVAL_MS:-10000}
+      LIVE_SOURCE_SWITCH_MARGIN: ${LIVE_SOURCE_SWITCH_MARGIN:-12}
+      LIVE_SOURCE_SWITCH_COOLDOWN_MS: ${LIVE_SOURCE_SWITCH_COOLDOWN_MS:-30000}
+      LIVE_SOURCE_FAILURE_THRESHOLD: ${LIVE_SOURCE_FAILURE_THRESHOLD:-2}
+      LIVE_SOURCE_STANDBY_FRESH_MS: ${LIVE_SOURCE_STANDBY_FRESH_MS:-30000}
+      LIVE_SOURCE_HISTORY_SAVE_DELAY_MS: ${LIVE_SOURCE_HISTORY_SAVE_DELAY_MS:-5000}
+      LIVE_SOURCE_HISTORY_PATH: ${LIVE_SOURCE_HISTORY_PATH:-/mnt/resolver-files/Live/.live-source-history.json}
       LIVE_HLS_RENEW_INTERVAL_MS: ${LIVE_HLS_RENEW_INTERVAL_MS:-30000}
       LIVE_HLS_RENEW_RETRY_DELAY_MS: ${LIVE_HLS_RENEW_RETRY_DELAY_MS:-350}
       LIVE_HLS_RENEW_BUDGET_MS: ${LIVE_HLS_RENEW_BUDGET_MS:-3000}
