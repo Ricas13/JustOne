@@ -8,9 +8,13 @@ import {
 } from "../src/renewableLive.js";
 
 function tokenFromRewrittenManifest(manifest) {
-  const match = String(manifest).match(/\/play\/renew\/([^?\s]+?)(?:\.[a-z0-9]{1,8})?(?:\?|$)/i);
-  assert.ok(match, "rewritten manifest should contain a renewable asset token");
-  return match[1].replace(/\.[a-z0-9]{1,8}$/i, "");
+  const assetUrl = String(manifest)
+    .split(/\r?\n/)
+    .find((line) => line.includes("/play/renew/"));
+  assert.ok(assetUrl, "rewritten manifest should contain a renewable asset URL");
+  const leaf = new URL(assetUrl.trim()).pathname.split("/").pop();
+  assert.ok(leaf, "renewable asset URL should contain a token path");
+  return leaf.replace(/\.[a-z0-9]{1,8}$/i, "");
 }
 
 function responseSink() {
