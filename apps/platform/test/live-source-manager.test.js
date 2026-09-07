@@ -33,10 +33,33 @@ test("parallel qualification scores all healthy candidates and remembers a winne
   assert.equal(preferred?.provider, "standby");
   const stats = liveSourceManagerStats();
   assert.equal(stats.switchConfirmations, 3, "healthy score-only switching requires sustained superiority by default");
+  assert.equal(stats.fallbackScanEvery, 12, "aggregate/legacy fallback sampling is slower once exact redundancy is warm");
   assert.equal(stats.managers.length, 1);
   assert.equal(stats.managers[0].challengerProvider, null);
   assert.equal(stats.managers[0].challengerWins, 0);
   assert.equal(stats.managers[0].candidates.length, 2);
+});
+
+test("media-validated exact Daddy candidate is preferred over a faster aggregate fallback", async () => {
+  resetLiveSourceManagerForTests();
+  const candidates = [
+    { provider: "legacy-dlhd-web", url: "http://legacy.test/api/stream/454.m3u8" },
+    { provider: "amddeus-dlhd-proxy", url: "http://dlhd.test/stream/454.m3u8" },
+    { provider: "daddy:stream:e1:s1", url: "http://dlhd.test/candidate/454/stream/0/0.m3u8" },
+    { provider: "daddy:watch:e1:s1", url: "http://dlhd.test/candidate/454/watch/0/0.m3u8" },
+  ];
+  const probe = async (endpoint) => {
+    await new Promise((resolve) => setTimeout(resolve, endpoint.provider.startsWith("daddy:") ? 25 : 1));
+    return endpoint.url;
+  };
+
+  const selected = await qualifyLiveSources("454", candidates, probe, { force: true });
+  assert.match(selected.provider, /^daddy:/, "successful exact candidates outrank aggregate/legacy resolver paths");
+
+  const stats = liveSourceManagerStats();
+  const selectedRows = stats.managers[0].candidates.filter((row) => row.selected);
+  assert.equal(selectedRows.length, 1);
+  assert.match(selectedRows[0].provider, /^daddy:/);
 });
 
 test("repeated active-source failures switch to a recently healthy warm standby", async () => {
