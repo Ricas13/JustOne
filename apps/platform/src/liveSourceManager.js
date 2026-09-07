@@ -4,6 +4,7 @@ import path from "node:path";
 const WARM_INTERVAL_MS = Math.max(3000, Math.min(120_000, Number(process.env.LIVE_SOURCE_WARM_INTERVAL_MS || 10_000)));
 const SWITCH_MARGIN = Math.max(1, Math.min(50, Number(process.env.LIVE_SOURCE_SWITCH_MARGIN || 12)));
 const SWITCH_COOLDOWN_MS = Math.max(0, Math.min(10 * 60_000, Number(process.env.LIVE_SOURCE_SWITCH_COOLDOWN_MS || 30_000)));
+const SWITCH_CONFIRMATIONS = Math.max(1, Math.min(12, Number(process.env.LIVE_SOURCE_SWITCH_CONFIRMATIONS || 3)));
 const FAILURE_THRESHOLD = Math.max(1, Math.min(10, Number(process.env.LIVE_SOURCE_FAILURE_THRESHOLD || 2)));
 const STANDBY_FRESH_MS = Math.max(WARM_INTERVAL_MS, Math.min(10 * 60_000, Number(process.env.LIVE_SOURCE_STANDBY_FRESH_MS || 30_000)));
 const HISTORY_SAVE_DELAY_MS = Math.max(1000, Math.min(60_000, Number(process.env.LIVE_SOURCE_HISTORY_SAVE_DELAY_MS || 5000)));
@@ -22,6 +23,7 @@ function log(...args) { process.stdout.write(args.map(String).join(" ") + "\n");
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function historyKey(channelId, endpoint) { return JSON.stringify([String(channelId || ""), String(endpoint?.provider || "unknown"), String(endpoint?.url || "")]); }
 function managerKey(channelId, endpoints) { return JSON.stringify([String(channelId || ""), ...(endpoints || []).map((endpoint) => [String(endpoint.provider || ""), String(endpoint.url || "")])]); }
+function endpointKey(endpoint) { return endpoint ? `${String(endpoint.provider || "")}\n${String(endpoint.url || "")}` : ""; }
 
 function blankHealth(channelId, endpoint) {
   return { channelId: String(channelId || ""), provider: String(endpoint?.provider || "unknown"), url: String(endpoint?.url || ""), successes: 0, failures: 0, consecutiveSuccesses: 0, consecutiveFailures: 0, ewmaLatencyMs: 0, lastSuccessAt: 0, lastFailureAt: 0, lastStatus: null, selectedCount: 0 };
@@ -122,6 +124,21 @@ function selectedEndpoint(manager) {
   return manager.endpoints.find((endpoint) => endpoint.provider === manager.selectedProvider && endpoint.url === manager.selectedUrl) || null;
 }
 
+function resetChallenger(manager) {
+  manager.challengerKey = "";
+  manager.challengerWins = 0;
+}
+
+function noteChallengerWin(manager, endpoint) {
+  const key = endpointKey(endpoint);
+  if (manager.challengerKey === key) manager.challengerWins += 1;
+  else {
+    manager.challengerKey = key;
+    manager.challengerWins = 1;
+  }
+  return manager.challengerWins;
+}
+
 function restoreHistoricalSelection(manager) {
   const now = Date.now();
   const ranked = manager.endpoints
@@ -131,13 +148,14 @@ function restoreHistoricalSelection(manager) {
   if (!ranked.length) return;
   manager.selectedProvider = ranked[0].endpoint.provider;
   manager.selectedUrl = ranked[0].endpoint.url;
+  resetChallenger(manager);
 }
 
 function getManager(channelId, endpoints, probe) {
   const key = managerKey(channelId, endpoints);
   let manager = managers.get(key);
   if (!manager) {
-    manager = { key, channelId: String(channelId || ""), endpoints: [...(endpoints || [])], probe, selectedProvider: "", selectedUrl: "", lastSwitchAt: 0, activeRefs: 0, monitorTimer: null, monitorInFlight: null, lastQualificationAt: 0, monitorTicks: 0 };
+    manager = { key, channelId: String(channelId || ""), endpoints: [...(endpoints || [])], probe, selectedProvider: "", selectedUrl: "", lastSwitchAt: 0, activeRefs: 0, monitorTimer: null, monitorInFlight: null, lastQualificationAt: 0, monitorTicks: 0, challengerKey: "", challengerWins: 0 };
     restoreHistoricalSelection(manager);
     managers.set(key, manager);
   } else {
@@ -156,11 +174,29 @@ function choose(manager, successfulEndpoints, { force = false } = {}) {
   const current = selectedEndpoint(manager);
   const currentSuccess = current ? ranked.find((row) => row.endpoint.provider === current.provider && row.endpoint.url === current.url) : null;
   let next = current || best.endpoint;
-  if (!current) next = best.endpoint;
-  else if (!currentSuccess) {
+
+  if (!current) {
+    next = best.endpoint;
+    resetChallenger(manager);
+  } else if (!currentSuccess) {
     const currentHealth = healthFor(manager.channelId, current);
-    if (force || currentHealth.consecutiveFailures >= FAILURE_THRESHOLD) next = best.endpoint;
-  } else if (best.endpoint.url !== current.url && best.score >= currentSuccess.score + SWITCH_MARGIN && now - manager.lastSwitchAt >= SWITCH_COOLDOWN_MS) next = best.endpoint;
+    if (force || currentHealth.consecutiveFailures >= FAILURE_THRESHOLD) {
+      next = best.endpoint;
+      resetChallenger(manager);
+    }
+  } else {
+    const challengerIsDifferent = best.endpoint.url !== current.url || best.endpoint.provider !== current.provider;
+    const materiallyBetter = challengerIsDifferent && best.score >= currentSuccess.score + SWITCH_MARGIN;
+    const cooldownPassed = now - manager.lastSwitchAt >= SWITCH_COOLDOWN_MS;
+    if (materiallyBetter && cooldownPassed) {
+      if (force || noteChallengerWin(manager, best.endpoint) >= SWITCH_CONFIRMATIONS) {
+        next = best.endpoint;
+        resetChallenger(manager);
+      }
+    } else {
+      resetChallenger(manager);
+    }
+  }
 
   if (!current || next.url !== current.url || next.provider !== current.provider) {
     manager.selectedProvider = next.provider; manager.selectedUrl = next.url; manager.lastSwitchAt = now;
@@ -284,11 +320,12 @@ export function noteLiveSourceObservation(channelId, rootUrl, { ok, latencyMs = 
 export function liveSourceManagerStats(now = Date.now()) {
   loadHistory();
   return {
-    warmIntervalMs: WARM_INTERVAL_MS, switchMargin: SWITCH_MARGIN, switchCooldownMs: SWITCH_COOLDOWN_MS,
+    warmIntervalMs: WARM_INTERVAL_MS, switchMargin: SWITCH_MARGIN, switchCooldownMs: SWITCH_COOLDOWN_MS, switchConfirmations: SWITCH_CONFIRMATIONS,
     failureThreshold: FAILURE_THRESHOLD, standbyFreshMs: STANDBY_FRESH_MS, maxParallelProbes: MAX_PARALLEL_PROBES,
     fullScanEvery: FULL_SCAN_EVERY, historyMaxAgeMs: HISTORY_MAX_AGE_MS, historyPath: HISTORY_PATH || null, historyRecords: history.size,
     managers: [...managers.values()].map((manager) => ({
       channelId: manager.channelId, activeRefs: manager.activeRefs, selectedProvider: manager.selectedProvider || null,
+      challengerProvider: manager.challengerKey ? manager.challengerKey.split("\n", 1)[0] : null, challengerWins: manager.challengerWins,
       lastQualificationAt: manager.lastQualificationAt ? new Date(manager.lastQualificationAt).toISOString() : null,
       candidates: manager.endpoints.map((endpoint) => {
         const row = healthFor(manager.channelId, endpoint);
