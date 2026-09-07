@@ -12,6 +12,7 @@ const HISTORY_MAX_AGE_MS = Math.max(60_000, Math.min(90 * 24 * 60 * 60_000, Numb
 const HISTORY_PREFERENCE_MAX_AGE_MS = Math.max(60_000, Math.min(HISTORY_MAX_AGE_MS, Number(process.env.LIVE_SOURCE_HISTORY_PREFERENCE_MAX_AGE_MS || 24 * 60 * 60_000)));
 const MAX_PARALLEL_PROBES = Math.max(1, Math.min(8, Number(process.env.LIVE_SOURCE_MAX_PARALLEL_PROBES || 4)));
 const FULL_SCAN_EVERY = Math.max(1, Math.min(12, Number(process.env.LIVE_SOURCE_FULL_SCAN_EVERY || 3)));
+const FALLBACK_SCAN_EVERY = Math.max(FULL_SCAN_EVERY, Math.min(120, Number(process.env.LIVE_SOURCE_FALLBACK_SCAN_EVERY || 12)));
 const HISTORY_PATH = String(process.env.LIVE_SOURCE_HISTORY_PATH || (process.env.PATH_LIVE ? path.join(process.env.PATH_LIVE, ".live-source-history.json") : "")).trim();
 
 const managers = new Map();
@@ -24,6 +25,7 @@ function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function historyKey(channelId, endpoint) { return JSON.stringify([String(channelId || ""), String(endpoint?.provider || "unknown"), String(endpoint?.url || "")]); }
 function managerKey(channelId, endpoints) { return JSON.stringify([String(channelId || ""), ...(endpoints || []).map((endpoint) => [String(endpoint.provider || ""), String(endpoint.url || "")])]); }
 function endpointKey(endpoint) { return endpoint ? `${String(endpoint.provider || "")}\n${String(endpoint.url || "")}` : ""; }
+function isExactDaddyEndpoint(endpoint) { return /^daddy:/i.test(String(endpoint?.provider || "")); }
 
 function blankHealth(channelId, endpoint) {
   return { channelId: String(channelId || ""), provider: String(endpoint?.provider || "unknown"), url: String(endpoint?.url || ""), successes: 0, failures: 0, consecutiveSuccesses: 0, consecutiveFailures: 0, ewmaLatencyMs: 0, lastSuccessAt: 0, lastFailureAt: 0, lastStatus: null, selectedCount: 0 };
@@ -144,7 +146,10 @@ function restoreHistoricalSelection(manager) {
   const ranked = manager.endpoints
     .map((endpoint) => ({ endpoint, health: healthFor(manager.channelId, endpoint) }))
     .filter(({ health }) => health.lastSuccessAt && now - health.lastSuccessAt <= HISTORY_PREFERENCE_MAX_AGE_MS && health.consecutiveFailures < FAILURE_THRESHOLD)
-    .sort((a, b) => scoreHealth(b.health, now) - scoreHealth(a.health, now));
+    .sort((a, b) => {
+      const exact = Number(isExactDaddyEndpoint(b.endpoint)) - Number(isExactDaddyEndpoint(a.endpoint));
+      return exact || scoreHealth(b.health, now) - scoreHealth(a.health, now);
+    });
   if (!ranked.length) return;
   manager.selectedProvider = ranked[0].endpoint.provider;
   manager.selectedUrl = ranked[0].endpoint.url;
@@ -169,7 +174,10 @@ function getManager(channelId, endpoints, probe) {
 function choose(manager, successfulEndpoints, { force = false } = {}) {
   if (!successfulEndpoints.length) return selectedEndpoint(manager);
   const now = Date.now();
-  const ranked = successfulEndpoints.map((endpoint) => ({ endpoint, score: scoreHealth(healthFor(manager.channelId, endpoint), now) })).sort((a, b) => b.score - a.score);
+  const ranked = successfulEndpoints.map((endpoint) => ({ endpoint, score: scoreHealth(healthFor(manager.channelId, endpoint), now) })).sort((a, b) => {
+    const exact = Number(isExactDaddyEndpoint(b.endpoint)) - Number(isExactDaddyEndpoint(a.endpoint));
+    return exact || b.score - a.score;
+  });
   const best = ranked[0];
   const current = selectedEndpoint(manager);
   const currentSuccess = current ? ranked.find((row) => row.endpoint.provider === current.provider && row.endpoint.url === current.url) : null;
@@ -186,7 +194,8 @@ function choose(manager, successfulEndpoints, { force = false } = {}) {
     }
   } else {
     const challengerIsDifferent = best.endpoint.url !== current.url || best.endpoint.provider !== current.provider;
-    const materiallyBetter = challengerIsDifferent && best.score >= currentSuccess.score + SWITCH_MARGIN;
+    const exactUpgrade = challengerIsDifferent && isExactDaddyEndpoint(best.endpoint) && !isExactDaddyEndpoint(current);
+    const materiallyBetter = challengerIsDifferent && (exactUpgrade || best.score >= currentSuccess.score + SWITCH_MARGIN);
     const cooldownPassed = now - manager.lastSwitchAt >= SWITCH_COOLDOWN_MS;
     if (materiallyBetter && cooldownPassed) {
       if (force || noteChallengerWin(manager, best.endpoint) >= SWITCH_CONFIRMATIONS) {
@@ -256,7 +265,59 @@ export function preferredLiveSource(channelId, endpoints, probe, { maxAgeMs = 0 
 
 function rankedEndpoints(manager) {
   const now = Date.now();
-  return [...manager.endpoints].sort((a, b) => scoreHealth(healthFor(manager.channelId, b), now) - scoreHealth(healthFor(manager.channelId, a), now));
+  return [...manager.endpoints].sort((a, b) => {
+    const exact = Number(isExactDaddyEndpoint(b)) - Number(isExactDaddyEndpoint(a));
+    return exact || scoreHealth(healthFor(manager.channelId, b), now) - scoreHealth(healthFor(manager.channelId, a), now);
+  });
+}
+
+function recentlyHealthy(manager, endpoint, now = Date.now()) {
+  const health = healthFor(manager.channelId, endpoint);
+  return Boolean(health.lastSuccessAt && now - health.lastSuccessAt <= STANDBY_FRESH_MS && health.consecutiveFailures < FAILURE_THRESHOLD);
+}
+
+function warmProbeTargets(manager, ranked, current) {
+  const now = Date.now();
+  const exact = ranked.filter(isExactDaddyEndpoint);
+  const healthyExact = exact.filter((endpoint) => recentlyHealthy(manager, endpoint, now));
+
+  // Only suppress aggregate/legacy probing once we genuinely have redundancy
+  // inside the exact media-validated Daddy candidate set. With fewer than two
+  // healthy exact candidates, preserve the old broad warm-standby behaviour.
+  if (healthyExact.length < 2) {
+    if (manager.monitorTicks % FULL_SCAN_EVERY === 0) return ranked;
+    const standby = ranked.find((endpoint) => !current || endpoint.url !== current.url);
+    return [current, standby].filter(Boolean);
+  }
+
+  const targets = [];
+  const add = (endpoint) => {
+    if (!endpoint) return;
+    if (!targets.some((row) => row.provider === endpoint.provider && row.url === endpoint.url)) targets.push(endpoint);
+  };
+
+  // If the historical/current winner is still an aggregate or legacy source,
+  // keep observing it only while exact candidates earn the normal confirmation
+  // count needed to replace it. Once selected is exact, normal warm traffic is
+  // confined to exact candidates.
+  if (!current || isExactDaddyEndpoint(current)) add(current);
+  else add(current);
+
+  const exactStandby = healthyExact.find((endpoint) => !current || endpoint.url !== current.url)
+    || exact.find((endpoint) => !current || endpoint.url !== current.url);
+  add(exactStandby);
+
+  if (manager.monitorTicks % FULL_SCAN_EVERY === 0) {
+    for (const endpoint of exact) add(endpoint);
+  }
+
+  // Aggregate and legacy routes remain available as tertiary recovery paths,
+  // but probing one of them every two minutes is enough when two exact sources
+  // are already warm. Initial/forced qualification still probes every endpoint.
+  if (manager.monitorTicks % FALLBACK_SCAN_EVERY === 0) {
+    add(ranked.find((endpoint) => !isExactDaddyEndpoint(endpoint)));
+  }
+  return targets;
 }
 
 async function monitorCycle(manager) {
@@ -265,13 +326,7 @@ async function monitorCycle(manager) {
     manager.monitorTicks += 1;
     const ranked = rankedEndpoints(manager);
     const current = selectedEndpoint(manager);
-    let targets;
-    if (manager.monitorTicks % FULL_SCAN_EVERY === 0) {
-      targets = ranked;
-    } else {
-      const standby = ranked.find((endpoint) => !current || endpoint.url !== current.url);
-      targets = [current, standby].filter(Boolean);
-    }
+    const targets = warmProbeTargets(manager, ranked, current);
     const results = await probeMany(manager, targets);
     manager.lastQualificationAt = Date.now();
     const successes = results.filter((row) => row.ok).map((row) => row.endpoint);
@@ -322,7 +377,7 @@ export function liveSourceManagerStats(now = Date.now()) {
   return {
     warmIntervalMs: WARM_INTERVAL_MS, switchMargin: SWITCH_MARGIN, switchCooldownMs: SWITCH_COOLDOWN_MS, switchConfirmations: SWITCH_CONFIRMATIONS,
     failureThreshold: FAILURE_THRESHOLD, standbyFreshMs: STANDBY_FRESH_MS, maxParallelProbes: MAX_PARALLEL_PROBES,
-    fullScanEvery: FULL_SCAN_EVERY, historyMaxAgeMs: HISTORY_MAX_AGE_MS, historyPath: HISTORY_PATH || null, historyRecords: history.size,
+    fullScanEvery: FULL_SCAN_EVERY, fallbackScanEvery: FALLBACK_SCAN_EVERY, historyMaxAgeMs: HISTORY_MAX_AGE_MS, historyPath: HISTORY_PATH || null, historyRecords: history.size,
     managers: [...managers.values()].map((manager) => ({
       channelId: manager.channelId, activeRefs: manager.activeRefs, selectedProvider: manager.selectedProvider || null,
       challengerProvider: manager.challengerKey ? manager.challengerKey.split("\n", 1)[0] : null, challengerWins: manager.challengerWins,
