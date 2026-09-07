@@ -7,6 +7,7 @@ process.env.LIVE_BUFFER_SECONDS = "0";
 process.env.LIVE_FFMPEG_RESTART_DELAY_MS = "100";
 process.env.LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE = "0";
 process.env.LIVE_FAILOVER_MAX_SWITCHES = "2";
+process.env.LIVE_SHARED_REMUX_IDLE_MS = "0";
 
 const {
   liveFfmpegArgs,
@@ -15,7 +16,7 @@ const {
   restreamMpegTs,
 } = await import("../src/play.js?live-resilience-test=1");
 
-test("FFmpeg retries transport errors but lets stale HLS HTTP failures reach the supervisor", () => {
+test("FFmpeg retries transient HTTP failures and emits tuner-shaped MPEG-TS", () => {
   const args = liveFfmpegArgs("http://127.0.0.1/live.m3u8");
   const expectPair = (flag, value) => {
     const index = args.indexOf(flag);
@@ -25,9 +26,14 @@ test("FFmpeg retries transport errors but lets stale HLS HTTP failures reach the
   expectPair("-reconnect", "1");
   expectPair("-reconnect_streamed", "1");
   expectPair("-reconnect_on_network_error", "1");
+  expectPair("-reconnect_on_http_error", "500,502,503,504");
   expectPair("-mpegts_flags", "+resend_headers+initial_discontinuity");
+  expectPair("-avoid_negative_ts", "make_zero");
+  expectPair("-pat_period", "0.1");
+  expectPair("-sdt_period", "0.5");
+  expectPair("-pcr_period", "20");
+  expectPair("-flush_packets", "1");
   assert.equal(args.includes("-reconnect_at_eof"), false);
-  assert.equal(args.includes("-reconnect_on_http_error"), false);
   assert.ok(args.includes("-rw_timeout"));
 });
 
@@ -67,6 +73,9 @@ function fakeResponse() {
   res.endCalls = 0;
   res.headers = new Map();
   res.setHeader = (name, value) => res.headers.set(name, value);
+  res.flushHeaders = () => {
+    res.headersSent = true;
+  };
   res.write = () => {
     res.headersSent = true;
     return true;
@@ -122,6 +131,7 @@ test("FFmpeg death switches event source without ending Jellyfin response", asyn
   ]);
   assert.equal(res.endCalls, 0, "the same Jellyfin HTTP response stays open during failover");
   assert.equal(res.headers.get("X-JustOne-Live-Failover-Sources"), "2");
+  assert.equal(res.headers.get("X-JustOne-Live-Shared-Remux"), "1");
 
   req.emit("aborted");
   await running;
