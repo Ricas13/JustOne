@@ -12,7 +12,8 @@ function tokenFromRewrittenManifest(manifest) {
     .split(/\r?\n/)
     .find((line) => line.includes("/play/renew/"));
   assert.ok(assetUrl, "rewritten manifest should contain a renewable asset URL");
-  const leaf = new URL(assetUrl.trim()).pathname.split("/").pop();
+  const path = assetUrl.trim().split("?", 1)[0];
+  const leaf = path.split("/").pop();
   assert.ok(leaf, "renewable asset URL should contain a token path");
   return leaf.replace(/\.[a-z0-9]{1,8}$/i, "");
 }
