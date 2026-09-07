@@ -1,22 +1,16 @@
 name: ${COMPOSE_PROJECT_NAME:-justone}
 
-# JustOne is Live TV only. The platform and Jellyfin organizer are public
-# through Traefik; both DLHD backends stay private on the internal network.
 services:
   dlhd-proxy:
     build:
-      context: "https://github.com/amddeus/dlhd-proxy.git#d2c691c52976d85218d22c6addc0fcc6dd9a5593"
-      args:
-        PORT: "3000"
-        API_URL: http://dlhd-proxy:3000
-        PROXY_CONTENT: "TRUE"
-        SOCKS5: ""
+      context: ./docker/dlhd-proxy
     image: justone-amddeus-dlhd-proxy:local
     container_name: justone-dlhd-proxy
     restart: unless-stopped
     environment:
       PORT: "3000"
       REFLEX_API_URL: http://dlhd-proxy:3000
+      DLHD_BASE_URL: ${DLHD_BASE_URL:-https://dlstreams.st}
       PROXY_CONTENT: "TRUE"
       SOCKS5: ""
       TZ: Europe/London
@@ -55,9 +49,6 @@ services:
     environment:
       PLATFORM_PORT: "8080"
       PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      # Jellyfin clients receive the public HTTPS transport again, but every
-      # /play/live URL is short-lived and HMAC-signed instead of carrying the
-      # long-lived PLAYLIST_KEY.
       PLAYBACK_URL: ${PLAYBACK_URL:-https://resolver.vpn4u.cc}
       STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
       STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
@@ -72,11 +63,8 @@ services:
       RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-3600000}
       LIVE_SOURCE_PROBE_TIMEOUT_MS: ${LIVE_SOURCE_PROBE_TIMEOUT_MS:-3000}
       LIVE_SOURCE_RECHECK_MS: ${LIVE_SOURCE_RECHECK_MS:-300000}
-      # Stateful source manager: qualify configured resolvers in parallel,
-      # continuously keep the standby warm while a tuner is active, and only
-      # switch when the challenger is materially better or the active source is
-      # repeatedly unhealthy. History stores stable resolver identity/scores,
-      # never expiring signed DaddyLive URLs.
+      LIVE_SOURCE_DISCOVERY_TIMEOUT_MS: ${LIVE_SOURCE_DISCOVERY_TIMEOUT_MS:-2500}
+      LIVE_SOURCE_MAX_CANDIDATES: ${LIVE_SOURCE_MAX_CANDIDATES:-8}
       LIVE_SOURCE_WARM_INTERVAL_MS: ${LIVE_SOURCE_WARM_INTERVAL_MS:-10000}
       LIVE_SOURCE_SWITCH_MARGIN: ${LIVE_SOURCE_SWITCH_MARGIN:-12}
       LIVE_SOURCE_SWITCH_COOLDOWN_MS: ${LIVE_SOURCE_SWITCH_COOLDOWN_MS:-30000}
@@ -91,8 +79,6 @@ services:
       LIVE_HLS_TARGET_TTL_MS: ${LIVE_HLS_TARGET_TTL_MS:-1800000}
       LIVE_HLS_TARGET_MAX: ${LIVE_HLS_TARGET_MAX:-50000}
       LIVE_HLS_MANIFEST_MAX_BYTES: ${LIVE_HLS_MANIFEST_MAX_BYTES:-4194304}
-      # Two seconds keeps enough PCR-paced media to absorb short CDN stalls
-      # without making every channel change pay a three-second tax.
       LIVE_BUFFER_SECONDS: ${LIVE_BUFFER_SECONDS:-2}
       LIVE_BUFFER_MAX_BYTES: ${LIVE_BUFFER_MAX_BYTES:-67108864}
       LIVE_FFMPEG_RESTART_DELAY_MS: ${LIVE_FFMPEG_RESTART_DELAY_MS:-500}
@@ -100,8 +86,6 @@ services:
       LIVE_FFMPEG_STABLE_MS: ${LIVE_FFMPEG_STABLE_MS:-15000}
       LIVE_FFMPEG_RW_TIMEOUT_US: ${LIVE_FFMPEG_RW_TIMEOUT_US:-15000000}
       LIVE_FAILOVER_MAX_SWITCHES: ${LIVE_FAILOVER_MAX_SWITCHES:-12}
-      # One producer can serve every Jellyfin tuner watching the same logical
-      # channel/failover set. Slow subscribers are isolated from the producer.
       LIVE_SHARED_REMUX: ${LIVE_SHARED_REMUX:-true}
       LIVE_SHARED_REMUX_IDLE_MS: ${LIVE_SHARED_REMUX_IDLE_MS:-10000}
       LIVE_SHARED_SUBSCRIBER_MAX_BYTES: ${LIVE_SHARED_SUBSCRIBER_MAX_BYTES:-4194304}
@@ -129,8 +113,6 @@ services:
       - "traefik.http.routers.justone-platform.priority=10000"
       - "traefik.http.routers.justone-platform.service=justone-platform"
       - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
-      # Explicitly flush the indefinitely-open MPEG-TS response instead of
-      # letting proxy aggregation add latency to tuner startup.
       - "traefik.http.services.justone-platform.loadbalancer.responseForwarding.flushInterval=100ms"
 
   jellyfin-live:
@@ -142,8 +124,6 @@ services:
       - .env
     environment:
       JELLYFIN_LIVE_PORT: "8090"
-      # Metadata/event/artwork URLs stay on Docker; only raw platform live
-      # playback URLs are intentionally public and signed.
       PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
       PLATFORM_URL: http://resolver:8080
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
