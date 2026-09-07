@@ -19,7 +19,7 @@ function close(server) {
   });
 }
 
-test("amddeus DLHD proxy is preferred while legacy resolver remains fallback", () => {
+test("amddeus and legacy resolvers are exposed as independent candidates", () => {
   assert.deepEqual(
     liveStreamEndpoints("123.ts", {
       proxyUrl: "http://dlhd-proxy:3000/",
@@ -39,7 +39,7 @@ test("legacy DLHD remains usable when the new proxy is not configured", () => {
   );
 });
 
-test("cold tune accepts a real HLS manifest without a second segment probe", async () => {
+test("cold tune qualifies all configured resolvers without a second segment probe", async () => {
   let manifestRequests = 0;
   let mediaProbes = 0;
   let legacyRequests = 0;
@@ -76,13 +76,13 @@ test("cold tune accepts a real HLS manifest without a second segment probe", asy
     assert.equal(picked.liveValidated, true);
     assert.equal(manifestRequests, 1);
     assert.equal(mediaProbes, 0);
-    assert.equal(legacyRequests, 0);
+    assert.equal(legacyRequests, 1, "standby resolver is qualified in parallel");
   } finally {
     await close(server);
   }
 });
 
-test("HTTP-200 error payload is rejected and operationally falls back to legacy", async () => {
+test("HTTP-200 error payload is rejected while healthy legacy candidate wins", async () => {
   let legacyRequests = 0;
   const server = http.createServer((req, res) => {
     if (req.url === "/primary/stream/150.m3u8") {
@@ -115,7 +115,7 @@ test("HTTP-200 error payload is rejected and operationally falls back to legacy"
   }
 });
 
-test("transient primary 404 is retried and can recover without legacy failover", async () => {
+test("transient primary 404 is retried while legacy is qualified concurrently", async () => {
   let primaryRequests = 0;
   let legacyRequests = 0;
   const server = http.createServer((req, res) => {
@@ -148,13 +148,13 @@ test("transient primary 404 is retried and can recover without legacy failover",
     });
     assert.equal(picked.provider, "amddeus-dlhd-proxy");
     assert.equal(primaryRequests, 2, "the timeout-shaped 404 is retried");
-    assert.equal(legacyRequests, 0, "primary recovery avoids an unnecessary source switch");
+    assert.equal(legacyRequests, 1, "standby qualification no longer waits for primary failure");
   } finally {
     await close(server);
   }
 });
 
-test("exhausted primary 404 retries are eligible for legacy failover", async () => {
+test("exhausted primary 404 retries leave healthy legacy candidate ready", async () => {
   let primaryRequests = 0;
   let legacyRequests = 0;
   const server = http.createServer((req, res) => {
@@ -189,7 +189,48 @@ test("exhausted primary 404 retries are eligible for legacy failover", async () 
   }
 });
 
-test("concurrent live resolves for one channel share one manifest admission", async () => {
+test("parallel qualification can choose the stronger currently healthy candidate", async () => {
+  let primaryRequests = 0;
+  let legacyRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/primary/stream/860.m3u8") {
+      primaryRequests += 1;
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+        res.end("#EXTM3U\n#EXTINF:2,\n/primary/860.ts\n");
+      }, 180);
+      return;
+    }
+    if (req.url === "/legacy/api/stream/860.m3u8") {
+      legacyRequests += 1;
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+        res.end("#EXTM3U\n#EXTINF:2,\n/legacy/860.ts\n");
+      }, 15);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  const address = await listen(server);
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const startedAt = Date.now();
+    const picked = await resolveLive("860", {
+      force: true,
+      proxyUrl: `${base}/primary`,
+      legacyUrl: `${base}/legacy`,
+    });
+    assert.equal(primaryRequests, 1);
+    assert.equal(legacyRequests, 1);
+    assert.ok(Date.now() - startedAt < 1000, "qualification is bounded by concurrent probes");
+    assert.equal(picked.provider, "legacy-dlhd-web");
+  } finally {
+    await close(server);
+  }
+});
+
+test("concurrent live resolves for one channel share one qualification", async () => {
   let manifestRequests = 0;
   let mediaProbes = 0;
   const server = http.createServer((req, res) => {
@@ -229,7 +270,7 @@ test("concurrent live resolves for one channel share one manifest admission", as
   }
 });
 
-test("recent successful resolve is reused without another upstream request", async () => {
+test("recent manager preference is reused without another upstream request", async () => {
   let manifestRequests = 0;
   const server = http.createServer((req, res) => {
     if (req.url === "/primary/stream/153.m3u8") {

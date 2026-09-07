@@ -3,7 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, withKey } from "./config.js";
-import { resolveLive, cacheStats } from "./resolve.js";
+import { resolveLive, cacheStats, retainLiveSourceLearning } from "./resolve.js";
 import {
   loadChannels,
   buildM3u,
@@ -209,9 +209,15 @@ app.get("/play/live/:channelId", async (req, res) => {
         provider: "supervised-live",
         userAgent: req.headers["user-agent"],
       });
+      // Keep the non-selected resolver(s) warm while this tuner exists. This
+      // continuously refreshes their health score without opening another full
+      // media stream, so FFmpeg can force-resolve straight onto a known-good
+      // standby after a short upstream outage.
+      const releaseSourceLearning = retainLiveSourceLearning(id);
       try {
         await restreamMpegTs(req, res, hls);
       } finally {
+        releaseSourceLearning();
         stream.end();
       }
       return;
