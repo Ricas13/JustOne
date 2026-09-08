@@ -37,8 +37,14 @@ function cacheGet(key) {
   return hit.value;
 }
 function cacheSet(key, value) { cache.set(key, { value, exp: Date.now() + TTL_MS }); }
-function inFlightKey(channelId, { force, proxyUrl, legacyUrl }) {
-  return JSON.stringify([String(channelId || ""), Boolean(force), String(proxyUrl || ""), String(legacyUrl || "")]);
+function inFlightKey(channelId, { force, proxyUrl, legacyUrl, excludeUrl }) {
+  return JSON.stringify([
+    String(channelId || ""),
+    Boolean(force),
+    String(proxyUrl || ""),
+    String(legacyUrl || ""),
+    String(excludeUrl || ""),
+  ]);
 }
 
 export function liveStreamEndpoints(channelId, { proxyUrl = config.dlhdProxyUrl, legacyUrl = config.dlhdUrl } = {}) {
@@ -134,19 +140,33 @@ function pickedFromEndpoint(endpoint) {
   };
 }
 
-async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl }) {
+async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, excludeUrl }) {
   const key = `live:${channelId}`;
-  // A forced resolve is entered by the FFmpeg supervisor after its established
-  // HLS input dies. Record one failure against that exact root candidate before
-  // qualification. This represents the playback outage without multiplying one
-  // CDN incident into failures for every nested HLS request.
+  // A forced resolve is entered after an established HLS input fails. When the
+  // renewable layer supplies excludeUrl, that exact root is the failed source
+  // even if another background preference has since been learned. Count the
+  // hard in-session failure against the full manager before choosing an
+  // alternate. Two observations intentionally satisfy the existing failure
+  // threshold: the renewable layer has already seen the request fail and its
+  // renewal/re-fetch path fail before asking for a source handoff.
   if (force) {
     const previous = cacheGet(key);
-    if (previous?.url) noteLiveSourceObservation(channelId, previous.url, { ok: false, status: 502 });
+    const failedUrl = String(excludeUrl || previous?.url || "");
+    if (failedUrl) {
+      noteLiveSourceObservation(channelId, failedUrl, { ok: false, status: 502 });
+      if (excludeUrl) noteLiveSourceObservation(channelId, failedUrl, { ok: false, status: 502 });
+    }
   }
 
-  const endpoints = await discoverLiveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
-  if (!endpoints.length) throw new Error("no DLHD live provider configured");
+  const discovered = await discoverLiveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
+  const excluded = String(excludeUrl || "");
+  const endpoints = excluded
+    ? discovered.filter((endpoint) => String(endpoint.url) !== excluded)
+    : discovered;
+  if (!endpoints.length) {
+    if (excluded && discovered.length) throw new Error("no alternate live source candidates");
+    throw new Error("no DLHD live provider configured");
+  }
   if (!force) {
     const preferred = preferredLiveSource(channelId, endpoints, probeManagedEndpoint, { maxAgeMs: LIVE_SOURCE_RECHECK_MS });
     if (preferred) { const picked = pickedFromEndpoint(preferred); cacheSet(key, picked); return picked; }
@@ -157,8 +177,16 @@ async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl })
   const picked = pickedFromEndpoint(selected); cacheSet(key, picked); return picked;
 }
 
-export async function resolveLive(channelId, { force = false, proxyUrl = config.dlhdProxyUrl, legacyUrl = config.dlhdUrl } = {}) {
-  const options = { force, proxyUrl, legacyUrl };
+export async function resolveLive(
+  channelId,
+  {
+    force = false,
+    proxyUrl = config.dlhdProxyUrl,
+    legacyUrl = config.dlhdUrl,
+    excludeUrl = "",
+  } = {},
+) {
+  const options = { force, proxyUrl, legacyUrl, excludeUrl };
   const operationKey = inFlightKey(channelId, options);
   const existing = inFlight.get(operationKey);
   if (existing) { coalescedJoins += 1; return existing; }
