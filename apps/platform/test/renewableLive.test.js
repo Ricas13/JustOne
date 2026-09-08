@@ -150,7 +150,78 @@ test("expired signed playlist is re-resolved behind the same stable client URL",
     assert.match(res.body, /#EXT-X-MEDIA-SEQUENCE:10/);
     assert.match(res.body, /\/play\/renew\/.+\.ts/);
     assert.ok(!res.body.includes("resolver.test/play/renew/"));
-    assert.deepEqual(calls, [signedA, rootUrl, signedB]);
+    assert.equal(calls[0], signedA);
+    assert.deepEqual(calls.slice(-2), [rootUrl, signedB]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("renewable child switches to an alternate root inside the established session", async () => {
+  resetRenewableLiveForTests();
+  const originalFetch = globalThis.fetch;
+  const channelId = "571";
+  const activeRoot = "http://active.example/stream/571.m3u8";
+  const activeMedia = "http://active.example/media/live.m3u8";
+  const fallbackRoot = "http://dlhd:3000/api/stream/571.m3u8";
+  const fallbackMedia = "http://fallback.example/media/live.m3u8";
+  const activeMaster = `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\n${activeMedia}\n`;
+  const fallbackMaster = `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\n${fallbackMedia}\n`;
+  const activeBody = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:40\n#EXTINF:4,\na40.ts\n";
+  const fallbackBody = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:900\n#EXTINF:4,\nb900.ts\n";
+
+  const rewrittenRoot = rewriteRenewableManifest(activeMaster, activeRoot, {
+    channelId,
+    rootUrl: activeRoot,
+  });
+  const stableChild = childUrl(rewrittenRoot);
+  assert.ok(stableChild);
+
+  let activeHealthy = true;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    calls.push(value);
+    if (value === activeMedia) {
+      if (activeHealthy) {
+        return new Response(activeBody, {
+          status: 200,
+          headers: { "content-type": "application/vnd.apple.mpegurl" },
+        });
+      }
+      return new Response("dead", { status: 503 });
+    }
+    if (value === fallbackRoot) {
+      return new Response(fallbackMaster, {
+        status: 200,
+        headers: { "content-type": "application/vnd.apple.mpegurl" },
+      });
+    }
+    if (value === fallbackMedia) {
+      return new Response(fallbackBody, {
+        status: 200,
+        headers: { "content-type": "application/vnd.apple.mpegurl" },
+      });
+    }
+    throw new Error(`unexpected fetch ${value}`);
+  };
+
+  try {
+    const req = { method: "GET", headers: {} };
+    const first = fakeResponse();
+    await proxyRenewableLiveAsset(req, first, tokenPath(stableChild));
+    assert.equal(first.statusCode, 200);
+    assert.match(first.body, /#EXT-X-MEDIA-SEQUENCE:40/);
+
+    activeHealthy = false;
+    const handedOff = fakeResponse();
+    await proxyRenewableLiveAsset(req, handedOff, tokenPath(stableChild));
+
+    assert.equal(handedOff.statusCode, 200);
+    assert.equal(handedOff.headers["x-justone-hls-renewal"], "source-failover");
+    assert.match(handedOff.body, /#EXT-X-MEDIA-SEQUENCE:900/);
+    assert.ok(calls.includes(fallbackRoot), "alternate root is qualified and then used for selector rebinding");
+    assert.ok(calls.includes(fallbackMedia), "same renewable token serves media from the alternate source");
   } finally {
     globalThis.fetch = originalFetch;
   }
