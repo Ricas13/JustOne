@@ -10,12 +10,18 @@ import {
 const cache = new Map();
 const inFlight = new Map();
 const learningSessions = new Map();
+const failedSourceQuarantine = new Map();
+const failoverRetryAfter = new Map();
 let coalescedJoins = 0;
 const TTL_MS = Math.max(1000, Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000));
 const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 3000));
 const LIVE_SOURCE_RECHECK_MS = Math.max(0, Number(process.env.LIVE_SOURCE_RECHECK_MS || 5 * 60 * 1000));
 const LIVE_PRIMARY_404_RETRIES = Math.max(0, Math.min(4, Number(process.env.LIVE_PRIMARY_404_RETRIES ?? 2)));
 const LIVE_PRIMARY_404_RETRY_DELAY_MS = Math.max(100, Math.min(3000, Number(process.env.LIVE_PRIMARY_404_RETRY_DELAY_MS ?? 500)));
+const LIVE_CANDIDATE_TRANSIENT_RETRIES = Math.max(0, Math.min(3, Number(process.env.LIVE_CANDIDATE_TRANSIENT_RETRIES ?? 1)));
+const LIVE_CANDIDATE_RETRY_DELAY_MS = Math.max(100, Math.min(2000, Number(process.env.LIVE_CANDIDATE_RETRY_DELAY_MS ?? 250)));
+const LIVE_SOURCE_FAILURE_QUARANTINE_MS = Math.max(5000, Math.min(5 * 60_000, Number(process.env.LIVE_SOURCE_FAILURE_QUARANTINE_MS || 30_000)));
+const LIVE_FAILOVER_RETRY_BACKOFF_MS = Math.max(1000, Math.min(30_000, Number(process.env.LIVE_FAILOVER_RETRY_BACKOFF_MS || 3000)));
 const LIVE_SOURCE_DISCOVERY_TIMEOUT_MS = Math.max(1000, Math.min(5000, Number(process.env.LIVE_SOURCE_DISCOVERY_TIMEOUT_MS || 2500)));
 const LIVE_SOURCE_MAX_CANDIDATES = Math.max(2, Math.min(16, Number(process.env.LIVE_SOURCE_MAX_CANDIDATES || 8)));
 const MANIFEST_PREFIX_MAX_BYTES = 128 * 1024;
@@ -46,6 +52,48 @@ function inFlightKey(channelId, { force, proxyUrl, legacyUrl, excludeUrl }) {
     String(excludeUrl || ""),
   ]);
 }
+function sourceFailureKey(channelId, url) {
+  return JSON.stringify([String(channelId || ""), String(url || "")]);
+}
+function quarantineLiveSource(channelId, url) {
+  const value = String(url || "");
+  if (!value) return;
+  failedSourceQuarantine.set(sourceFailureKey(channelId, value), Date.now() + LIVE_SOURCE_FAILURE_QUARANTINE_MS);
+}
+function isSourceQuarantined(channelId, url, now = Date.now()) {
+  const key = sourceFailureKey(channelId, url);
+  const until = Number(failedSourceQuarantine.get(key) || 0);
+  if (!until) return false;
+  if (until <= now) {
+    failedSourceQuarantine.delete(key);
+    return false;
+  }
+  return true;
+}
+function failoverBackoffKey(channelId, excludeUrl) {
+  return sourceFailureKey(channelId, excludeUrl);
+}
+function activeFailoverBackoff(channelId, excludeUrl) {
+  const key = failoverBackoffKey(channelId, excludeUrl);
+  const until = Number(failoverRetryAfter.get(key) || 0);
+  if (!until) return 0;
+  if (until <= Date.now()) {
+    failoverRetryAfter.delete(key);
+    return 0;
+  }
+  return until;
+}
+function markFailoverFailure(channelId, excludeUrl) {
+  if (!excludeUrl) return;
+  failoverRetryAfter.set(failoverBackoffKey(channelId, excludeUrl), Date.now() + LIVE_FAILOVER_RETRY_BACKOFF_MS);
+}
+function clearFailoverFailure(channelId, excludeUrl) {
+  if (!excludeUrl) return;
+  failoverRetryAfter.delete(failoverBackoffKey(channelId, excludeUrl));
+}
+function isExactDaddyEndpoint(endpoint) {
+  return /^daddy:/i.test(String(endpoint?.provider || ""));
+}
 
 export function liveStreamEndpoints(channelId, { proxyUrl = config.dlhdProxyUrl, legacyUrl = config.dlhdUrl } = {}) {
   const id = encodeURIComponent(String(channelId || "").replace(/\.(?:m3u8|ts)$/i, ""));
@@ -74,8 +122,13 @@ async function discoverLiveStreamEndpoints(channelId, { proxyUrl = config.dlhdPr
           endpoints.push({ provider: `daddy:${family}:e${embed + 1}:s${source + 1}`, url: `${base}/candidate/${id}/${family}/${embed}/${source}.m3u8`, candidate: { family, embed, source } });
         }
       }
-    } catch { /* aggregate fallback below */ }
-    if (!endpoints.length) endpoints.push({ provider: "amddeus-dlhd-proxy", url: `${base}/stream/${id}.m3u8` });
+    } catch { /* stable aggregate route below */ }
+
+    // Keep the aggregate proxy available even when exact candidate discovery
+    // succeeds. Exact candidates are valuable for normal tuning/learning, but
+    // the aggregate route is a structurally stable tertiary recovery path for
+    // an already-established renewable HLS hierarchy.
+    endpoints.push({ provider: "amddeus-dlhd-proxy", url: `${base}/stream/${id}.m3u8` });
   }
   if (legacyUrl) endpoints.push({ provider: "legacy-dlhd-web", url: `${String(legacyUrl).replace(/\/$/, "")}/api/stream/${id}.m3u8` });
   return endpoints;
@@ -114,21 +167,29 @@ async function resolveLiveEndpoint(endpoint) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function resolvePrimaryWith404Recovery(endpoint) {
+function retryableManagedFailure(endpoint, error) {
+  const provider = String(endpoint?.provider || "");
+  if (provider !== "amddeus-dlhd-proxy" && !isExactDaddyEndpoint(endpoint)) return false;
+  if (error?.transport || error?.invalid) return true;
+  return [404, 429, 500, 502, 503, 504].includes(Number(error?.status));
+}
+async function resolveManagedWithRecovery(endpoint) {
+  const aggregate = endpoint?.provider === "amddeus-dlhd-proxy";
+  const maxRetries = aggregate ? LIVE_PRIMARY_404_RETRIES : LIVE_CANDIDATE_TRANSIENT_RETRIES;
+  const baseDelay = aggregate ? LIVE_PRIMARY_404_RETRY_DELAY_MS : LIVE_CANDIDATE_RETRY_DELAY_MS;
   let lastError = null;
-  for (let attempt = 0; attempt <= LIVE_PRIMARY_404_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try { return await resolveLiveEndpoint(endpoint); }
     catch (error) {
       lastError = error;
-      const transient404 = endpoint.provider === "amddeus-dlhd-proxy" && Number(error?.status) === 404;
-      if (!transient404 || attempt >= LIVE_PRIMARY_404_RETRIES) throw error;
-      await sleep(LIVE_PRIMARY_404_RETRY_DELAY_MS * (attempt + 1));
+      if (!retryableManagedFailure(endpoint, error) || attempt >= maxRetries) throw error;
+      await sleep(baseDelay * (attempt + 1));
     }
   }
-  throw lastError || new Error("primary live resolver failed");
+  throw lastError || new Error("managed live resolver failed");
 }
 async function probeManagedEndpoint(endpoint) {
-  if (endpoint?.provider === "amddeus-dlhd-proxy") return resolvePrimaryWith404Recovery(endpoint);
+  if (endpoint?.provider === "amddeus-dlhd-proxy" || isExactDaddyEndpoint(endpoint)) return resolveManagedWithRecovery(endpoint);
   return resolveLiveEndpoint(endpoint);
 }
 
@@ -140,38 +201,83 @@ function pickedFromEndpoint(endpoint) {
   };
 }
 
+function eligibleEndpoints(channelId, discovered, excluded) {
+  const nonExcluded = discovered.filter((endpoint) => String(endpoint.url) !== excluded);
+  const fresh = nonExcluded.filter((endpoint) => !isSourceQuarantined(channelId, endpoint.url));
+  // A quarantine is advisory for alternates: if every remaining candidate has
+  // recently failed, qualify them again rather than manufacturing an outage.
+  // The explicitly failed root remains hard-excluded for this handoff.
+  return fresh.length ? fresh : nonExcluded;
+}
+
+async function qualifyHandoff(channelId, endpoints, excluded) {
+  const stable = endpoints.filter((endpoint) => !isExactDaddyEndpoint(endpoint));
+  const exact = endpoints.filter(isExactDaddyEndpoint);
+  let stableError = null;
+
+  // For an established renewable hierarchy, prefer a freshly validated stable
+  // aggregate/legacy root. Direct Daddy candidates can legitimately expose a
+  // different master/media shape, so use them only when no stable alternate is
+  // currently healthy.
+  if (stable.length) {
+    try {
+      return await qualifyLiveSources(channelId, stable, probeManagedEndpoint, { force: true });
+    } catch (error) {
+      stableError = error;
+    }
+  }
+  if (exact.length) return qualifyLiveSources(channelId, exact, probeManagedEndpoint, { force: true });
+  throw stableError || new Error(`no healthy live source candidates after excluding ${excluded}`);
+}
+
 async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, excludeUrl }) {
   const key = `live:${channelId}`;
-  // A forced resolve is entered after an established HLS input fails. When the
-  // renewable layer supplies excludeUrl, that exact root is the failed source
-  // even if another background preference has since been learned. Count the
-  // hard in-session failure against the full manager before choosing an
-  // alternate. Two observations intentionally satisfy the existing failure
-  // threshold: the renewable layer has already seen the request fail and its
-  // renewal/re-fetch path fail before asking for a source handoff.
-  if (force) {
-    const previous = cacheGet(key);
-    const failedUrl = String(excludeUrl || previous?.url || "");
-    if (failedUrl) {
-      noteLiveSourceObservation(channelId, failedUrl, { ok: false, status: 502 });
-      if (excludeUrl) noteLiveSourceObservation(channelId, failedUrl, { ok: false, status: 502 });
+  const excluded = String(excludeUrl || "");
+
+  if (force && excluded) {
+    quarantineLiveSource(channelId, excluded);
+    const retryAt = activeFailoverBackoff(channelId, excluded);
+    if (retryAt) {
+      const error = new Error("live source failover cooling down");
+      error.retryAfterMs = Math.max(1, retryAt - Date.now());
+      throw error;
     }
+  } else if (force) {
+    // Preserve the old FFmpeg-restart signal for non-renewable forced resolves.
+    // Explicit renewable handoffs deliberately avoid this path because stale
+    // warm health must not select a replacement before fresh qualification.
+    const previous = cacheGet(key);
+    if (previous?.url) noteLiveSourceObservation(channelId, previous.url, { ok: false, status: 502 });
   }
 
   const discovered = await discoverLiveStreamEndpoints(channelId, { proxyUrl, legacyUrl });
-  const excluded = String(excludeUrl || "");
-  const endpoints = excluded
-    ? discovered.filter((endpoint) => String(endpoint.url) !== excluded)
-    : discovered;
+  const endpoints = eligibleEndpoints(channelId, discovered, excluded);
   if (!endpoints.length) {
-    if (excluded && discovered.length) throw new Error("no alternate live source candidates");
+    if (excluded && discovered.length) {
+      markFailoverFailure(channelId, excluded);
+      throw new Error("no alternate live source candidates");
+    }
     throw new Error("no DLHD live provider configured");
   }
+
+  if (force && excluded) {
+    try {
+      const selected = await qualifyHandoff(channelId, endpoints, excluded);
+      const picked = pickedFromEndpoint(selected);
+      cacheSet(key, picked);
+      clearFailoverFailure(channelId, excluded);
+      return picked;
+    } catch (error) {
+      markFailoverFailure(channelId, excluded);
+      throw error;
+    }
+  }
+
   if (!force) {
     const preferred = preferredLiveSource(channelId, endpoints, probeManagedEndpoint, { maxAgeMs: LIVE_SOURCE_RECHECK_MS });
     if (preferred) { const picked = pickedFromEndpoint(preferred); cacheSet(key, picked); return picked; }
     const cached = cacheGet(key);
-    if (cached?.liveValidatedAt && Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS) return cached;
+    if (cached?.liveValidatedAt && Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS && !isSourceQuarantined(channelId, cached.url)) return cached;
   }
   const selected = await qualifyLiveSources(channelId, endpoints, probeManagedEndpoint, { force });
   const picked = pickedFromEndpoint(selected); cacheSet(key, picked); return picked;
@@ -213,5 +319,26 @@ export function retainLiveSourceLearning(channelId, { proxyUrl = config.dlhdProx
 }
 
 export function cacheStats() {
-  return { size: cache.size, ttlMs: TTL_MS, liveSourceProbeTimeoutMs: LIVE_SOURCE_PROBE_TIMEOUT_MS, liveSourceRecheckMs: LIVE_SOURCE_RECHECK_MS, sourceDiscoveryTimeoutMs: LIVE_SOURCE_DISCOVERY_TIMEOUT_MS, sourceMaxCandidates: LIVE_SOURCE_MAX_CANDIDATES, primary404Retries: LIVE_PRIMARY_404_RETRIES, primary404RetryDelayMs: LIVE_PRIMARY_404_RETRY_DELAY_MS, inFlight: inFlight.size, coalescedJoins, sourceManager: liveSourceManagerStats() };
+  const now = Date.now();
+  for (const [key, until] of failedSourceQuarantine) if (until <= now) failedSourceQuarantine.delete(key);
+  for (const [key, until] of failoverRetryAfter) if (until <= now) failoverRetryAfter.delete(key);
+  return {
+    size: cache.size,
+    ttlMs: TTL_MS,
+    liveSourceProbeTimeoutMs: LIVE_SOURCE_PROBE_TIMEOUT_MS,
+    liveSourceRecheckMs: LIVE_SOURCE_RECHECK_MS,
+    sourceDiscoveryTimeoutMs: LIVE_SOURCE_DISCOVERY_TIMEOUT_MS,
+    sourceMaxCandidates: LIVE_SOURCE_MAX_CANDIDATES,
+    primary404Retries: LIVE_PRIMARY_404_RETRIES,
+    primary404RetryDelayMs: LIVE_PRIMARY_404_RETRY_DELAY_MS,
+    candidateTransientRetries: LIVE_CANDIDATE_TRANSIENT_RETRIES,
+    candidateRetryDelayMs: LIVE_CANDIDATE_RETRY_DELAY_MS,
+    sourceFailureQuarantineMs: LIVE_SOURCE_FAILURE_QUARANTINE_MS,
+    quarantinedSources: failedSourceQuarantine.size,
+    failoverRetryBackoffMs: LIVE_FAILOVER_RETRY_BACKOFF_MS,
+    failoverBackoffs: failoverRetryAfter.size,
+    inFlight: inFlight.size,
+    coalescedJoins,
+    sourceManager: liveSourceManagerStats(),
+  };
 }
