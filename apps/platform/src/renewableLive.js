@@ -21,6 +21,10 @@ const RENEW_BUDGET_MS = Math.max(
   2000,
   Math.min(15_000, Number(process.env.LIVE_HLS_RENEW_BUDGET_MS || 3000)),
 );
+const FAILOVER_RECHECK_BUDGET_MS = Math.max(
+  500,
+  Math.min(3000, Number(process.env.LIVE_HLS_FAILOVER_RECHECK_BUDGET_MS || 1000)),
+);
 const staleGraceRaw = Number(process.env.LIVE_HLS_STALE_GRACE_MS || 0);
 const STALE_GRACE_MS =
   Number.isFinite(staleGraceRaw) && staleGraceRaw > 0
@@ -402,6 +406,15 @@ async function rebindPlaylistTarget(target, cause) {
   }
 }
 
+async function refreshPlaylistFromCurrentRoot(target, req) {
+  const deadline = Date.now() + FAILOVER_RECHECK_BUDGET_MS;
+  const freshUrl = await resolveSelectorPath(target, deadline);
+  target.url = freshUrl;
+  target.lastResolvedAt = Date.now();
+  target.exp = Date.now() + TARGET_TTL_MS;
+  return fetchManifest(target.url, deadline, req);
+}
+
 async function renewPlaylistTarget(target, { force = false } = {}) {
   if (!target || target.kind !== "playlist") return target?.url || null;
   if (!force && Date.now() - target.lastResolvedAt < RENEW_INTERVAL_MS) return target.url;
@@ -474,7 +487,29 @@ async function servePlaylistTarget(req, res, target) {
       `upstream-failed=${error?.status || error?.message || error}`,
     );
 
-    if (await rebindPlaylistTarget(target, error)) {
+    // A signed child can expire while the logical provider is still perfectly
+    // healthy. Give that same root one fast selector re-resolution first. Only
+    // escalate to cross-provider handoff when both the current child and a fresh
+    // child resolved from the same root are unavailable.
+    try {
+      manifest = await refreshPlaylistFromCurrentRoot(target, req);
+      log(
+        "live hls renewable",
+        `channel=${target.channelId}`,
+        `path=${target.selectorPath.join(".")}`,
+        "same-root-recovered=1",
+      );
+    } catch (refreshError) {
+      failure = refreshError;
+      log(
+        "live hls renewable",
+        `channel=${target.channelId}`,
+        `path=${target.selectorPath.join(".")}`,
+        `same-root-failed=${refreshError?.status || refreshError?.message || refreshError}`,
+      );
+    }
+
+    if (!manifest && await rebindPlaylistTarget(target, failure || error)) {
       try {
         manifest = await fetchManifest(target.url, Date.now() + RENEW_BUDGET_MS, req);
         mode = "source-failover";
@@ -690,6 +725,7 @@ export function renewableLiveStats() {
     assets,
     renewIntervalMs: RENEW_INTERVAL_MS,
     renewBudgetMs: RENEW_BUDGET_MS,
+    failoverRecheckBudgetMs: FAILOVER_RECHECK_BUDGET_MS,
     staleGraceMs: STALE_GRACE_MS,
   };
 }
