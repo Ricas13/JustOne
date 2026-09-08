@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { config, withKey } from "./config.js";
+import { resolveLive } from "./resolve.js";
 
 const TARGET_TTL_MS = Math.max(
   60_000,
@@ -20,6 +21,10 @@ const RENEW_BUDGET_MS = Math.max(
   2000,
   Math.min(15_000, Number(process.env.LIVE_HLS_RENEW_BUDGET_MS || 3000)),
 );
+const FAILOVER_RECHECK_BUDGET_MS = Math.max(
+  500,
+  Math.min(3000, Number(process.env.LIVE_HLS_FAILOVER_RECHECK_BUDGET_MS || 1000)),
+);
 const staleGraceRaw = Number(process.env.LIVE_HLS_STALE_GRACE_MS || 0);
 const STALE_GRACE_MS =
   Number.isFinite(staleGraceRaw) && staleGraceRaw > 0
@@ -34,6 +39,7 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const targets = new Map();
 const renewalPromises = new Map();
+const rootFailoverPromises = new Map();
 
 const ASSET_SUFFIXES = new Set([
   "ts",
@@ -328,6 +334,87 @@ async function resolveSelectorPath(target, deadline) {
   return currentUrl;
 }
 
+function rootFailoverKey(channelId, rootUrl) {
+  return JSON.stringify([String(channelId || ""), String(rootUrl || "")]);
+}
+
+async function selectReplacementRoot(channelId, failedRootUrl) {
+  const failed = String(failedRootUrl || "");
+  if (!failed) return null;
+  const key = rootFailoverKey(channelId, failed);
+  const existing = rootFailoverPromises.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const picked = await resolveLive(channelId, { force: true, excludeUrl: failed });
+    const replacement = String(picked?.url || "");
+    if (!replacement || replacement === failed) return null;
+    log(
+      "live hls failover",
+      `channel=${channelId}`,
+      `from=${failed}`,
+      `to=${replacement}`,
+      `provider=${picked?.provider || "unknown"}`,
+    );
+    return replacement;
+  })().finally(() => {
+    rootFailoverPromises.delete(key);
+  });
+
+  rootFailoverPromises.set(key, promise);
+  return promise;
+}
+
+async function rebindPlaylistTarget(target, cause) {
+  if (!target?.channelId || !target?.rootUrl) return false;
+  const failedRoot = String(target.rootUrl);
+  const previousUrl = String(target.url || failedRoot);
+  let replacement;
+  try {
+    replacement = await selectReplacementRoot(target.channelId, failedRoot);
+  } catch (error) {
+    log(
+      "live hls failover",
+      `channel=${target.channelId}`,
+      `from=${failedRoot}`,
+      `unavailable=${error?.message || error}`,
+      `cause=${cause?.status || cause?.message || cause || "unknown"}`,
+    );
+    return false;
+  }
+  if (!replacement) return false;
+
+  target.rootUrl = replacement;
+  try {
+    const deadline = Date.now() + RENEW_BUDGET_MS;
+    target.url = target.selectorPath.length
+      ? await resolveSelectorPath(target, deadline)
+      : replacement;
+    target.lastResolvedAt = Date.now();
+    target.exp = Date.now() + TARGET_TTL_MS;
+    return true;
+  } catch (error) {
+    target.rootUrl = failedRoot;
+    target.url = previousUrl;
+    log(
+      "live hls failover",
+      `channel=${target.channelId}`,
+      `from=${failedRoot}`,
+      `rebind-failed=${error?.message || error}`,
+    );
+    return false;
+  }
+}
+
+async function refreshPlaylistFromCurrentRoot(target, req) {
+  const deadline = Date.now() + FAILOVER_RECHECK_BUDGET_MS;
+  const freshUrl = await resolveSelectorPath(target, deadline);
+  target.url = freshUrl;
+  target.lastResolvedAt = Date.now();
+  target.exp = Date.now() + TARGET_TTL_MS;
+  return fetchManifest(target.url, deadline, req);
+}
+
 async function renewPlaylistTarget(target, { force = false } = {}) {
   if (!target || target.kind !== "playlist") return target?.url || null;
   if (!force && Date.now() - target.lastResolvedAt < RENEW_INTERVAL_MS) return target.url;
@@ -386,11 +473,13 @@ function sendManifest(res, body, mode = "current") {
 }
 
 async function servePlaylistTarget(req, res, target) {
-  const deadline = Date.now() + RENEW_BUDGET_MS;
   let manifest;
+  let mode = "current";
+  let failure = null;
   try {
-    manifest = await fetchManifest(target.url, deadline, req);
+    manifest = await fetchManifest(target.url, Date.now() + RENEW_BUDGET_MS, req);
   } catch (error) {
+    failure = error;
     log(
       "live hls renewable",
       `channel=${target.channelId}`,
@@ -398,7 +487,44 @@ async function servePlaylistTarget(req, res, target) {
       `upstream-failed=${error?.status || error?.message || error}`,
     );
 
-    if (canServeLastGood(target)) {
+    // A signed child can expire while the logical provider is still perfectly
+    // healthy. Give that same root one fast selector re-resolution first. Only
+    // escalate to cross-provider handoff when both the current child and a fresh
+    // child resolved from the same root are unavailable.
+    try {
+      manifest = await refreshPlaylistFromCurrentRoot(target, req);
+      log(
+        "live hls renewable",
+        `channel=${target.channelId}`,
+        `path=${target.selectorPath.join(".")}`,
+        "same-root-recovered=1",
+      );
+    } catch (refreshError) {
+      failure = refreshError;
+      log(
+        "live hls renewable",
+        `channel=${target.channelId}`,
+        `path=${target.selectorPath.join(".")}`,
+        `same-root-failed=${refreshError?.status || refreshError?.message || refreshError}`,
+      );
+    }
+
+    if (!manifest && await rebindPlaylistTarget(target, failure || error)) {
+      try {
+        manifest = await fetchManifest(target.url, Date.now() + RENEW_BUDGET_MS, req);
+        mode = "source-failover";
+      } catch (reboundError) {
+        failure = reboundError;
+        log(
+          "live hls renewable",
+          `channel=${target.channelId}`,
+          `path=${target.selectorPath.join(".")}`,
+          `failover-fetch-failed=${reboundError?.status || reboundError?.message || reboundError}`,
+        );
+      }
+    }
+
+    if (!manifest && canServeLastGood(target)) {
       void renewPlaylistTarget(target, { force: true }).catch((renewError) => {
         log(
           "live hls renewable",
@@ -411,16 +537,30 @@ async function servePlaylistTarget(req, res, target) {
       return;
     }
 
-    try {
-      await renewPlaylistTarget(target, { force: true });
-      manifest = await fetchManifest(target.url, deadline, req);
-    } catch (renewError) {
-      if (!res.headersSent) {
-        res.status(502).json?.({ error: "live HLS renewal failed" });
-        if (!res.writableEnded && !res.headersSent) res.end("live HLS renewal failed");
+    if (!manifest) {
+      try {
+        await renewPlaylistTarget(target, { force: true });
+        manifest = await fetchManifest(target.url, Date.now() + RENEW_BUDGET_MS, req);
+      } catch (renewError) {
+        failure = renewError;
       }
-      return;
     }
+  }
+
+  if (!manifest) {
+    if (!res.headersSent) {
+      res.status(502).json?.({ error: "live HLS renewal failed" });
+      if (!res.writableEnded && !res.headersSent) res.end("live HLS renewal failed");
+    }
+    if (failure) {
+      log(
+        "live hls renewable",
+        `channel=${target.channelId}`,
+        `path=${target.selectorPath.join(".")}`,
+        `exhausted=${failure?.message || failure}`,
+      );
+    }
+    return;
   }
 
   const rewritten = rewriteRenewableManifest(manifest.text, manifest.url, {
@@ -431,7 +571,7 @@ async function servePlaylistTarget(req, res, target) {
   target.lastGoodBody = rewritten;
   target.lastGoodAt = Date.now();
   target.exp = Date.now() + TARGET_TTL_MS;
-  sendManifest(res, rewritten, "current");
+  sendManifest(res, rewritten, mode);
 
   if (Date.now() - target.lastResolvedAt >= RENEW_INTERVAL_MS) {
     void renewPlaylistTarget(target).catch((error) => {
@@ -509,24 +649,50 @@ export async function proxyRenewableLiveManifest(req, res, { channelId, rootUrl 
     root.exp = Date.now() + TARGET_TTL_MS;
   }
 
-  const deadline = Date.now() + RENEW_BUDGET_MS;
+  let manifest;
+  let mode = "root";
   try {
-    const manifest = await fetchManifest(root.rootUrl, deadline, req);
-    const rewritten = rewriteRenewableManifest(manifest.text, manifest.url, {
-      channelId: root.channelId,
-      rootUrl: root.rootUrl,
-      selectorPath: [],
-    });
-    root.lastGoodBody = rewritten;
-    root.lastGoodAt = Date.now();
-    sendManifest(res, rewritten, "root");
+    manifest = await fetchManifest(root.rootUrl, Date.now() + RENEW_BUDGET_MS, req);
   } catch (error) {
-    if (canServeLastGood(root)) {
+    log(
+      "live hls renewable",
+      `channel=${root.channelId}`,
+      "path=root",
+      `upstream-failed=${error?.status || error?.message || error}`,
+    );
+    if (await rebindPlaylistTarget(root, error)) {
+      try {
+        manifest = await fetchManifest(root.rootUrl, Date.now() + RENEW_BUDGET_MS, req);
+        mode = "root-source-failover";
+      } catch (reboundError) {
+        log(
+          "live hls renewable",
+          `channel=${root.channelId}`,
+          "path=root",
+          `failover-fetch-failed=${reboundError?.status || reboundError?.message || reboundError}`,
+        );
+      }
+    }
+    if (!manifest && canServeLastGood(root)) {
       sendManifest(res, root.lastGoodBody, "root-stale-hold");
       return;
     }
-    if (!res.headersSent) res.status(502).end("live HLS root unavailable");
+    if (!manifest) {
+      if (!res.headersSent) res.status(502).end("live HLS root unavailable");
+      return;
+    }
   }
+
+  const rewritten = rewriteRenewableManifest(manifest.text, manifest.url, {
+    channelId: root.channelId,
+    rootUrl: root.rootUrl,
+    selectorPath: [],
+  });
+  root.lastGoodBody = rewritten;
+  root.lastGoodAt = Date.now();
+  root.lastResolvedAt = Date.now();
+  root.exp = Date.now() + TARGET_TTL_MS;
+  sendManifest(res, rewritten, mode);
 }
 
 /** Serve renewable nested playlists and ordinary segment/key assets. */
@@ -559,6 +725,7 @@ export function renewableLiveStats() {
     assets,
     renewIntervalMs: RENEW_INTERVAL_MS,
     renewBudgetMs: RENEW_BUDGET_MS,
+    failoverRecheckBudgetMs: FAILOVER_RECHECK_BUDGET_MS,
     staleGraceMs: STALE_GRACE_MS,
   };
 }
@@ -566,4 +733,5 @@ export function renewableLiveStats() {
 export function resetRenewableLiveForTests() {
   targets.clear();
   renewalPromises.clear();
+  rootFailoverPromises.clear();
 }
