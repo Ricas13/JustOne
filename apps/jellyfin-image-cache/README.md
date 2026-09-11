@@ -11,6 +11,8 @@ Key behaviours:
 - 30-day positive cache by default.
 - 6-hour negative cache for 404/429/timeout/invalid-image failures.
 - Stale cached images remain usable while refresh happens in the background.
+- A first cache miss waits at most 250 ms by default; if the upstream origin is slower, Jellyfin gets a local PNG placeholder immediately while the cache continues warming in the background.
+- 429/5xx/network failures temporarily back off the whole image host so one rate-limited provider cannot be hammered once per logo.
 - First-fetch failures return a local PNG placeholder with HTTP 200 so Jellyfin guide refresh cannot fail because an image host is broken or rate-limited.
 - Remote redirects are revalidated before being followed.
 - Literal private-network/loopback image targets are rejected.
