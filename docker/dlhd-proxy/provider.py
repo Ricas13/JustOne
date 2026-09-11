@@ -51,11 +51,14 @@ def extract_direct_hls_sources(response_text: str) -> list[str]:
     return out
 
 
-def _target_token(url: str, referer: str) -> str:
-    return encrypt(json.dumps({"url": url, "referer": referer}, separators=(",", ":")))
+def _target_token(url: str, referer: str, origin: str = "") -> str:
+    return encrypt(json.dumps(
+        {"url": url, "referer": referer, "origin": origin},
+        separators=(",", ":"),
+    ))
 
 
-def decode_target(path: str) -> tuple[str, str]:
+def decode_target(path: str) -> tuple[str, str, str]:
     token = re.sub(
         r"\.(?:m3u8|ts|m4s|m4a|mp4|aac|mp3|vtt|webvtt|mpegts|m2ts|mts|cmfv|cmfa|fmp4|bin|key)$",
         "",
@@ -68,11 +71,12 @@ def decode_target(path: str) -> tuple[str, str]:
         raise ValueError("Invalid HLS target") from exc
     url = str(data.get("url") or "")
     referer = str(data.get("referer") or "")
+    origin = str(data.get("origin") or "")
     if not url.startswith(("http://", "https://")):
         raise ValueError("Invalid HLS URL")
-    if not referer.startswith(("http://", "https://")):
+    if not referer:
         referer = url
-    return url, referer
+    return url, referer, origin
 
 
 def _visible_suffix(url: str, *, playlist: bool = False, key: bool = False, init: bool = False) -> str:
@@ -90,11 +94,29 @@ def _visible_suffix(url: str, *, playlist: bool = False, key: bool = False, init
     return ".ts"
 
 
-def proxy_url(url: str, referer: str, *, playlist: bool = False, key: bool = False, init: bool = False) -> str:
-    return f"{settings.api_url}/hls/{_target_token(url, referer)}{_visible_suffix(url, playlist=playlist, key=key, init=init)}"
+def proxy_url(
+    url: str,
+    referer: str,
+    *,
+    origin: str = "",
+    playlist: bool = False,
+    key: bool = False,
+    init: bool = False,
+) -> str:
+    return (
+        f"{settings.api_url}/hls/{_target_token(url, referer, origin)}"
+        f"{_visible_suffix(url, playlist=playlist, key=key, init=init)}"
+    )
 
 
-def rewrite_hls_playlist(payload: str, playlist_url: str, referer_url: str | None = None) -> str:
+def rewrite_hls_playlist(
+    payload: str,
+    playlist_url: str,
+    referer_url: str | None = None,
+    *,
+    key_referer_url: str | None = None,
+    key_origin: str = "",
+) -> str:
     referer = referer_url or playlist_url
     rewritten: list[str] = []
     next_line_is_playlist = False
@@ -111,7 +133,8 @@ def rewrite_hls_playlist(payload: str, playlist_url: str, referer_url: str | Non
                     absolute = urljoin(playlist_url, match.group(2))
                     replacement = proxy_url(
                         absolute,
-                        referer,
+                        key_referer_url or referer if uri_is_key else referer,
+                        origin=key_origin if uri_is_key else "",
                         playlist=uri_is_playlist,
                         key=uri_is_key,
                         init=uri_is_init,
@@ -219,7 +242,16 @@ class Provider:
             raise ValueError(f"Legacy playlist HTTP {response.status_code}")
         if not response.text.lstrip().startswith("#EXTM3U"):
             raise ValueError("Legacy source did not return HLS")
-        return rewrite_hls_playlist(response.text, stream_url, source_url)
+
+        # Legacy keys require the player host as both the Referer basis and
+        # Origin. Ordinary media stays on the simple HLS proxy path.
+        return rewrite_hls_playlist(
+            response.text,
+            stream_url,
+            source_url,
+            key_referer_url=f"{parsed_source.netloc}/",
+            key_origin=parsed_source.netloc,
+        )
 
     async def _direct_stream(self, direct_url: str, source_url: str, source_number: int) -> str:
         response = await self._get(direct_url, headers=self.headers(source_url), timeout=12)
@@ -257,8 +289,6 @@ class Provider:
                     timeout=12,
                 )
             except Exception as exc:
-                # A failed iframe still occupies one ordered slot. That lets the
-                # caller move predictably to the following provider iframe.
                 if option == source_index:
                     raise ValueError(f"Source {option + 1} request failed: {type(exc).__name__}") from exc
                 option += 1
