@@ -10,3 +10,10 @@ test("resolver:8080 can front Jellyfin metadata routes", () => {
   assert.equal(isPublicPath("/jellyfin/guide.xml"), true);
   assert.equal(isStreamPath("/jellyfin/artwork/channel/example.png"), true);
 });
+
+test("Jellyfin health endpoints are public diagnostics, not protected stream paths", () => {
+  assert.equal(isPublicPath("/jellyfin/health"), true);
+  assert.equal(isStreamPath("/jellyfin/health"), false);
+  assert.equal(isPublicPath("/jellyfin/image-cache/health"), true);
+  assert.equal(isStreamPath("/jellyfin/image-cache/health"), false);
+});
