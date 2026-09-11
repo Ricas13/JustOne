@@ -62,17 +62,53 @@ test("M3U logos are rewritten to stable local cache URLs without changing playba
   }
 });
 
-test("XMLTV channel and programme artwork is rewritten through the same cache", async () => {
+test("XMLTV keeps cached channel logo but strips programme artwork for Jellyfin 12", async () => {
   const { cache, dir } = await tempCache();
   try {
-    const input = '<?xml version="1.0"?><tv><channel id="one"><icon src="https://logos.example/one.png" /></channel><programme channel="one"><icon src="https://images.example/show.jpg" /><image type="backdrop">https://images.example/wide.jpg</image></programme></tv>';
+    const input = '<?xml version="1.0"?><tv><channel id="one"><icon src="https://logos.example/one.png" /></channel><programme channel="one"><title>Show</title><icon src="https://images.example/show.jpg" /><image type="backdrop">https://images.example/wide.jpg</image><desc>Keep me</desc></programme></tv>';
     const out = rewriteXmlTvImages(input, cache, {
       publicUrl: "http://resolver:8080",
       playlistKey: "secret",
     });
     assert.doesNotMatch(out, /logos\.example|images\.example/);
-    assert.equal((out.match(/\/jellyfin\/image\//g) || []).length, 3);
-    assert.match(out, /\?key=secret/);
+    assert.equal((out.match(/\/jellyfin\/image\//g) || []).length, 1);
+    assert.match(out, /<channel id="one"><icon src="http:\/\/resolver:8080\/jellyfin\/image\/[a-f0-9]{64}\?key=secret" \/><\/channel>/);
+    assert.match(out, /<programme channel="one"><title>Show<\/title><desc>Keep me<\/desc><\/programme>/);
+    assert.doesNotMatch(out, /<programme[^>]*>[\s\S]*?<icon\b/i);
+    assert.doesNotMatch(out, /<programme[^>]*>[\s\S]*?<image\b/i);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("XMLTV drops invalid FR-NR rating but keeps valid ratings and programme data", async () => {
+  const { cache, dir } = await tempCache();
+  try {
+    const input = '<?xml version="1.0"?><tv><programme channel="one"><title>Film</title><rating system="FR"><value>FR-NR</value></rating><rating system="GB"><value>15</value></rating><category>Movie</category></programme></tv>';
+    const out = rewriteXmlTvImages(input, cache, {
+      publicUrl: "http://resolver:8080",
+      playlistKey: "secret",
+    });
+    assert.doesNotMatch(out, /FR-NR/);
+    assert.doesNotMatch(out, /rating system="FR"/);
+    assert.match(out, /<rating system="GB"><value>15<\/value><\/rating>/);
+    assert.match(out, /<title>Film<\/title>/);
+    assert.match(out, /<category>Movie<\/category>/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("programme artwork stripping can be disabled explicitly", async () => {
+  const { cache, dir } = await tempCache();
+  try {
+    const input = '<?xml version="1.0"?><tv><programme channel="one"><icon src="https://images.example/show.jpg" /><image type="backdrop">https://images.example/wide.jpg</image></programme></tv>';
+    const out = rewriteXmlTvImages(input, cache, {
+      publicUrl: "http://resolver:8080",
+      playlistKey: "secret",
+      stripProgramArtwork: false,
+    });
+    assert.equal((out.match(/\/jellyfin\/image\//g) || []).length, 2);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
