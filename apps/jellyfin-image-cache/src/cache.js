@@ -145,9 +145,12 @@ export class ImageCache {
     this.fetchTimeoutMs = Math.max(1_000, Number(options.fetchTimeoutMs || 10_000));
     this.fetchConcurrency = Math.max(1, Math.min(16, Number(options.fetchConcurrency || 4)));
     this.maxBytes = Math.max(64 * 1024, Number(options.maxBytes || 8 * 1024 * 1024));
+    this.missWaitMs = Math.max(0, Math.min(5_000, Number(options.missWaitMs ?? 250)));
+    this.hostBackoffMs = Math.max(10_000, Number(options.hostBackoffMs || 15 * 60 * 1000));
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
     this.sources = new Map();
     this.inflight = new Map();
+    this.hostCooldowns = new Map();
     this.activeFetches = 0;
     this.waiters = [];
     this.stats = {
@@ -156,9 +159,11 @@ export class ImageCache {
       misses: 0,
       stale: 0,
       negativeHits: 0,
+      deferredMisses: 0,
       fetched: 0,
       failures: 0,
       fallback: 0,
+      hostBackoffs: 0,
       bytes: 0,
     };
   }
@@ -219,11 +224,37 @@ export class ImageCache {
     this.waiters.shift()?.();
   }
 
-  async safeFetch(source) {
+  cooldownHost(host, now) {
+    const until = now + this.hostBackoffMs;
+    const previous = this.hostCooldowns.get(host) || 0;
+    if (until > previous) {
+      this.hostCooldowns.set(host, until);
+      this.stats.hostBackoffs += 1;
+    }
+  }
+
+  hostCooldown(host, now) {
+    const until = Number(this.hostCooldowns.get(host) || 0);
+    if (!until) return 0;
+    if (until <= now) {
+      this.hostCooldowns.delete(host);
+      return 0;
+    }
+    return until;
+  }
+
+  async safeFetch(source, now = Date.now()) {
     let current = source;
     for (let redirects = 0; redirects <= 5; redirects += 1) {
       const safe = normalizeRemoteImageUrl(current);
       if (!safe) throw new Error("unsafe image URL");
+      const parsed = new URL(safe);
+      const host = parsed.host.toLowerCase();
+      const coolingUntil = this.hostCooldown(host, now);
+      if (coolingUntil) {
+        throw new Error(`upstream image host cooling down until ${new Date(coolingUntil).toISOString()}`);
+      }
+
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
       let response;
@@ -236,6 +267,9 @@ export class ImageCache {
             accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
           },
         });
+      } catch (error) {
+        this.cooldownHost(host, now);
+        throw error;
       } finally {
         clearTimeout(timer);
       }
@@ -245,6 +279,10 @@ export class ImageCache {
         if (!location) throw new Error(`image redirect ${response.status} without location`);
         current = new URL(location, safe).href;
         continue;
+      }
+
+      if ([429, 500, 502, 503, 504].includes(response.status)) {
+        this.cooldownHost(host, now);
       }
       return response;
     }
@@ -267,7 +305,7 @@ export class ImageCache {
       const before = await this.readRecord(token);
       await this.acquire();
       try {
-        const response = await this.safeFetch(source);
+        const response = await this.safeFetch(source, now);
         if (!response.ok) throw new Error(`upstream image ${response.status}`);
         const body = await readLimitedBody(response, this.maxBytes);
         const contentType = sniffImageType(body);
@@ -311,6 +349,33 @@ export class ImageCache {
     return { body: PLACEHOLDER_PNG, contentType: "image/png", state: "fallback", reason };
   }
 
+  async boundedFirstFetch(task) {
+    if (this.missWaitMs <= 0) {
+      this.stats.deferredMisses += 1;
+      void task.catch(() => {});
+      return this.fallback("warming");
+    }
+
+    let timer;
+    const outcome = await Promise.race([
+      task.then(
+        (value) => ({ type: "value", value }),
+        (error) => ({ type: "error", error }),
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ type: "timeout" }), this.missWaitMs);
+      }),
+    ]);
+    clearTimeout(timer);
+
+    if (outcome.type === "value") return outcome.value;
+    if (outcome.type === "error") return this.fallback(String(outcome.error?.message || outcome.error));
+
+    this.stats.deferredMisses += 1;
+    void task.catch(() => {});
+    return this.fallback("warming");
+  }
+
   async get(token, now = Date.now()) {
     const key = String(token || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(key)) return this.fallback("invalid-token");
@@ -340,20 +405,23 @@ export class ImageCache {
     }
 
     this.stats.misses += 1;
-    try {
-      return await this.fetchAndStore(key, source, now);
-    } catch (error) {
-      return this.fallback(String(error?.message || error));
-    }
+    return this.boundedFirstFetch(this.fetchAndStore(key, source, now));
   }
 
-  snapshot() {
+  snapshot(now = Date.now()) {
+    for (const [host, until] of this.hostCooldowns) {
+      if (until <= now) this.hostCooldowns.delete(host);
+    }
     return {
       ...this.stats,
       knownSources: this.sources.size,
       inflight: this.inflight.size,
       activeFetches: this.activeFetches,
+      queuedFetches: this.waiters.length,
+      hostCooldowns: this.hostCooldowns.size,
       fetchConcurrency: this.fetchConcurrency,
+      missWaitMs: this.missWaitMs,
+      hostBackoffMs: this.hostBackoffMs,
       ttlHours: Math.round((this.ttlMs / 3_600_000) * 10) / 10,
       negativeTtlHours: Math.round((this.negativeTtlMs / 3_600_000) * 10) / 10,
       maxBytes: this.maxBytes,
