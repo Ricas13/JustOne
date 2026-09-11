@@ -15,6 +15,8 @@ export const config = {
   fetchTimeoutMs: numberEnv("JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS", 10_000, 1_000),
   fetchConcurrency: numberEnv("JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY", 4, 1, 16),
   maxBytes: numberEnv("JELLYFIN_IMAGE_CACHE_MAX_BYTES", 8 * 1024 * 1024, 64 * 1024),
+  missWaitMs: numberEnv("JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS", 250, 0, 5_000),
+  hostBackoffMs: numberEnv("JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS", 15 * 60 * 1000, 10_000),
 };
 
 export function withKey(url) {
