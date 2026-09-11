@@ -11,7 +11,7 @@ const PNG = Buffer.from([
   0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
 ]);
 
-async function tempCache(fetchImpl) {
+async function tempCache(fetchImpl, overrides = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "justone-image-cache-"));
   const cache = new ImageCache({
     cacheDir: dir,
@@ -20,7 +20,10 @@ async function tempCache(fetchImpl) {
     fetchTimeoutMs: 5_000,
     fetchConcurrency: 2,
     maxBytes: 1024 * 1024,
+    missWaitMs: 250,
+    hostBackoffMs: 60_000,
     fetchImpl,
+    ...overrides,
   });
   return { cache, dir };
 }
@@ -110,6 +113,33 @@ test("successful remote image is fetched once then served from disk cache", asyn
   }
 });
 
+test("slow first image fetch does not block Jellyfin guide refresh", async () => {
+  let calls = 0;
+  const { cache, dir } = await tempCache(async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return new Response(PNG, { status: 200, headers: { "content-type": "image/png" } });
+  }, { missWaitMs: 10 });
+  try {
+    const { token } = cache.register("https://slow.example/logo.png");
+    const started = Date.now();
+    const first = await cache.get(token);
+    const elapsed = Date.now() - started;
+    assert.equal(first.state, "fallback");
+    assert.equal(first.reason, "warming");
+    assert.ok(elapsed < 70, `first request blocked for ${elapsed}ms`);
+    assert.equal(calls, 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const second = await cache.get(token);
+    assert.equal(second.state, "hit");
+    assert.deepEqual(second.body, PNG);
+    assert.equal(calls, 1);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("429 is negatively cached and returns HTTP-safe placeholder bytes instead of retrying", async () => {
   let calls = 0;
   const { cache, dir } = await tempCache(async () => {
@@ -125,6 +155,26 @@ test("429 is negatively cached and returns HTTP-safe placeholder bytes instead o
     assert.equal(first.contentType, "image/png");
     assert.ok(first.body.length > 20);
     assert.equal(calls, 1);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("one 429 backs off the whole image host instead of hammering every logo URL", async () => {
+  let calls = 0;
+  const { cache, dir } = await tempCache(async () => {
+    calls += 1;
+    return new Response("rate limited", { status: 429, headers: { "content-type": "text/plain" } });
+  });
+  try {
+    const firstToken = cache.register("https://upload.wikimedia.org/one.png").token;
+    const secondToken = cache.register("https://upload.wikimedia.org/two.png").token;
+    const first = await cache.get(firstToken, 3_000_000);
+    const second = await cache.get(secondToken, 3_001_000);
+    assert.equal(first.state, "fallback");
+    assert.equal(second.state, "fallback");
+    assert.equal(calls, 1);
+    assert.equal(cache.snapshot(3_001_000).hostCooldowns, 1);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
