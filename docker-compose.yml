@@ -13,13 +13,24 @@ services:
       - dlhd-data:/app/data
     ports:
       - "${DLHD_PROXY_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3)); sys.exit(0 if data.get('ok') else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   jellyfin-live:
     build:
       context: ./apps/jellyfin-live
     restart: unless-stopped
     depends_on:
-      - dlhd-proxy
+      dlhd-proxy:
+        condition: service_healthy
     environment:
       DLHD_PROXY_URL: http://dlhd-proxy:3000
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8090}
