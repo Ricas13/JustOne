@@ -19,6 +19,12 @@ VISIBLE_MEDIA_SUFFIXES = {
     ".mpegts", ".m2ts", ".mts", ".cmfv", ".cmfa", ".fmp4", ".bin", ".key",
 }
 
+# DLHD exposes equivalent channel players through several fixed URL families.
+# Keep this deterministic: no ranking, learning, warm standby, or background
+# probing. A source is simply the Nth currently resolvable provider path across
+# these families in this order.
+PLAYER_FOLDERS = ("stream", "watch", "cast", "plus", "player", "casting")
+
 
 @dataclass
 class Channel:
@@ -262,68 +268,128 @@ class Provider:
         return rewrite_hls_playlist(response.text, str(response.url), source_url)
 
     async def stream(self, channel_id: str, source_index: int = 0) -> str:
-        """Resolve one provider player by stable, zero-based iframe order."""
+        """Return the Nth currently resolvable DLHD provider source.
+
+        Player families are checked in a fixed order. Dead pages/playlists are
+        skipped during this one tune only; there is deliberately no cache,
+        scoring, learning, warm standby, or background monitoring.
+        """
         if source_index < 0:
             raise ValueError("source must be >= 0")
 
-        page_url = f"{settings.base_url}/stream/stream-{channel_id}.php"
-        page = await self._get(page_url, headers=self.headers(), timeout=12)
-        if page.status_code >= 400:
-            raise ValueError(f"Player page HTTP {page.status_code}")
+        resolved_index = 0
+        seen_sources: set[str] = set()
+        failures: list[str] = []
 
-        iframe_paths = re.findall(
-            r'<iframe[^>]+src=["\']([^"\']+)["\']',
-            page.text,
-            re.IGNORECASE,
+        for folder in PLAYER_FOLDERS:
+            page_url = f"{settings.base_url}/{folder}/stream-{channel_id}.php"
+            try:
+                page = await self._get(page_url, headers=self.headers(), timeout=12)
+            except Exception as exc:
+                failures.append(f"{folder}: page {type(exc).__name__}")
+                continue
+
+            if page.status_code >= 400:
+                failures.append(f"{folder}: page HTTP {page.status_code}")
+                continue
+
+            iframe_paths = re.findall(
+                r'<iframe[^>]+src=["\']([^"\']+)["\']',
+                page.text,
+                re.IGNORECASE,
+            )
+            player_urls: list[str] = []
+            for value in iframe_paths:
+                candidate = urljoin(page_url, value)
+                if candidate not in player_urls:
+                    player_urls.append(candidate)
+
+            # Some provider variants embed the player directly in the family
+            # page. Treat that page as a candidate only when no iframe exists.
+            if not player_urls:
+                player_urls = [page_url]
+
+            for embed_index, player_url in enumerate(player_urls):
+                label = f"{folder}#{embed_index + 1}" if len(player_urls) > 1 else folder
+                try:
+                    player = page if player_url == page_url else await self._get(
+                        player_url,
+                        headers=self.headers(page_url),
+                        timeout=12,
+                    )
+                except Exception as exc:
+                    failures.append(f"{label}: player {type(exc).__name__}")
+                    continue
+
+                if player.status_code >= 400:
+                    failures.append(f"{label}: player HTTP {player.status_code}")
+                    continue
+
+                # Authenticated players take precedence and are not mixed with
+                # base64 direct-HLS fallbacks from the same player page.
+                legacy_keys = re.findall(r'const\s+CHANNEL_KEY\s*=\s*"(.*?)";', player.text)
+                if legacy_keys:
+                    source_key = f"legacy:{legacy_keys[-1]}"
+                    if source_key in seen_sources:
+                        continue
+                    seen_sources.add(source_key)
+                    try:
+                        payload = await self._legacy_stream(player_url, player.text)
+                    except Exception as exc:
+                        failures.append(f"{label}: legacy {exc}")
+                        continue
+
+                    if resolved_index == source_index:
+                        logger.info(
+                            "Channel %s selected source %s via %s (legacy authenticated)",
+                            channel_id,
+                            source_index + 1,
+                            label,
+                        )
+                        return payload
+                    resolved_index += 1
+                    continue
+
+                direct_sources = extract_direct_hls_sources(player.text)
+                if not direct_sources:
+                    failures.append(f"{label}: unsupported player")
+                    continue
+
+                for direct_index, direct_url in enumerate(direct_sources):
+                    source_key = f"direct:{direct_url}"
+                    if source_key in seen_sources:
+                        continue
+                    seen_sources.add(source_key)
+                    direct_label = (
+                        f"{label}/source#{direct_index + 1}"
+                        if len(direct_sources) > 1
+                        else label
+                    )
+                    try:
+                        payload = await self._direct_stream(
+                            direct_url,
+                            player_url,
+                            resolved_index + 1,
+                        )
+                    except Exception as exc:
+                        failures.append(f"{direct_label}: direct HLS {exc}")
+                        continue
+
+                    if resolved_index == source_index:
+                        logger.info(
+                            "Channel %s selected source %s via %s (direct HLS)",
+                            channel_id,
+                            source_index + 1,
+                            direct_label,
+                        )
+                        return payload
+                    resolved_index += 1
+
+        detail = "; ".join(failures[-12:]) or "no provider player candidates"
+        raise ValueError(
+            f"Source {source_index + 1} does not exist or is unavailable "
+            f"({resolved_index} resolvable; {detail})"
         )
-        player_urls = [urljoin(page_url, value) for value in iframe_paths]
-        if not player_urls:
-            player_urls = [page_url]
-
-        if source_index >= len(player_urls):
-            raise ValueError(f"Source {source_index + 1} does not exist")
-
-        player_url = player_urls[source_index]
-        try:
-            player = page if player_url == page_url else await self._get(
-                player_url,
-                headers=self.headers(page_url),
-                timeout=12,
-            )
-        except Exception as exc:
-            raise ValueError(
-                f"Source {source_index + 1} request failed: {type(exc).__name__}"
-            ) from exc
-
-        if player.status_code >= 400:
-            raise ValueError(f"Source {source_index + 1} HTTP {player.status_code}")
-
-        # Match the reference DLHD flow: when the player exposes CHANNEL_KEY,
-        # use the authenticated server_lookup/auth.php path. Player pages may
-        # also contain base64/atob URLs that are transient or unusable directly;
-        # those must not take priority over the authenticated stream.
-        if "CHANNEL_KEY" in player.text:
-            logger.info(
-                "Channel %s selected source %s (legacy authenticated)",
-                channel_id,
-                source_index + 1,
-            )
-            return await self._legacy_stream(player_url, player.text)
-
-        direct_sources = extract_direct_hls_sources(player.text)
-        if direct_sources:
-            logger.info(
-                "Channel %s selected source %s (direct HLS fallback)",
-                channel_id,
-                source_index + 1,
-            )
-            return await self._direct_stream(
-                direct_sources[0],
-                player_url,
-                source_index + 1,
-            )
-
-        raise ValueError(f"Source {source_index + 1} is unsupported")
 
     async def close(self) -> None:
         await self._session.close()
