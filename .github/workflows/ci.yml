@@ -30,6 +30,9 @@ jobs:
       - name: Test Jellyfin Live
         run: npm test --prefix apps/jellyfin-live
 
+      - name: Test Jellyfin image cache gateway
+        run: npm test --prefix apps/jellyfin-image-cache
+
       - name: Install platform dependencies
         run: npm install --prefix apps/platform --no-audit --no-fund
 
@@ -43,6 +46,9 @@ jobs:
         run: |
           touch .env
           docker compose config --quiet
+
+      - name: Build Jellyfin image cache gateway
+        run: docker compose build jellyfin-image-cache
 
       - name: Build DLHD backend image
         run: docker compose build dlhd-proxy

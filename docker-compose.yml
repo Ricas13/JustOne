@@ -54,7 +54,7 @@ services:
       STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
       DLHD_PROXY_URL: http://dlhd-proxy:3000
       DLHD_URL: http://dlhd:3000
-      JELLYFIN_LIVE_URL: http://jellyfin-live:8090
+      JELLYFIN_LIVE_URL: http://jellyfin-image-cache:8091
       DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
       PATH_LIVE: ${PATH_LIVE:-/mnt/resolver-files/Live}
@@ -142,6 +142,36 @@ services:
       - justone
       - media_net
     labels:
+      - "traefik.enable=false"
+
+  jellyfin-image-cache:
+    build:
+      context: ./apps/jellyfin-image-cache
+    container_name: justone-jellyfin-image-cache
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      JELLYFIN_IMAGE_CACHE_PORT: "8091"
+      JELLYFIN_IMAGE_CACHE_UPSTREAM_URL: http://jellyfin-live:8090
+      PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
+      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
+      JELLYFIN_IMAGE_CACHE_DIR: /var/cache/justone-images
+      JELLYFIN_IMAGE_CACHE_TTL_MS: ${JELLYFIN_IMAGE_CACHE_TTL_MS:-2592000000}
+      JELLYFIN_IMAGE_CACHE_NEGATIVE_TTL_MS: ${JELLYFIN_IMAGE_CACHE_NEGATIVE_TTL_MS:-21600000}
+      JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS: ${JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS:-10000}
+      JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY: ${JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY:-4}
+      JELLYFIN_IMAGE_CACHE_MAX_BYTES: ${JELLYFIN_IMAGE_CACHE_MAX_BYTES:-8388608}
+      JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS: ${JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS:-250}
+      JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS: ${JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS:-900000}
+    volumes:
+      - jellyfin_image_cache:/var/cache/justone-images
+    depends_on:
+      - jellyfin-live
+    networks:
+      - justone
+      - media_net
+    labels:
       - "traefik.enable=true"
       - "traefik.docker.network=media_net"
       - "traefik.http.routers.justone-jellyfin.rule=Host(`resolver.vpn4u.cc`) && PathPrefix(`/jellyfin`)"
@@ -152,10 +182,11 @@ services:
       - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
       - "traefik.http.routers.justone-jellyfin.middlewares=justone-jellyfin-compress"
       - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
-      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
+      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8091"
 
 volumes:
   dlhd_proxy_data:
+  jellyfin_image_cache:
 
 networks:
   justone:
