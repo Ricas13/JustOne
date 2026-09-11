@@ -135,28 +135,16 @@ def _reset_hls_progress_for_tests():
 '''
 backend = backend.replace(route_anchor, helpers + route_anchor, 1)
 
-response_anchor = '''        if not payload.lstrip().startswith("#EXTM3U"):
+validation_anchor = '''        if not payload.lstrip().startswith("#EXTM3U"):
             logger.warning("Direct-HLS child was not a playlist: %s", effective_url)
             return JSONResponse(
                 content={"error": "Upstream HLS playlist was invalid"},
                 status_code=status.HTTP_502_BAD_GATEWAY,
             )
-        return Response(
-            content=_rewrite_direct_hls_playlist(
-                payload,
-                effective_url,
-                referer,
-            ),
 '''
-assert response_anchor in backend, "backend HLS playlist response anchor changed"
+assert validation_anchor in backend, "backend HLS playlist validation anchor changed"
 
-replacement = '''        if not payload.lstrip().startswith("#EXTM3U"):
-            logger.warning("Direct-HLS child was not a playlist: %s", effective_url)
-            return JSONResponse(
-                content={"error": "Upstream HLS playlist was invalid"},
-                status_code=status.HTTP_502_BAD_GATEWAY,
-            )
-
+stall_check = '''
         stall_reason = _hls_stall_reason(payload, effective_url)
         if stall_reason:
             logger.warning(
@@ -169,13 +157,6 @@ replacement = '''        if not payload.lstrip().startswith("#EXTM3U"):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 headers={"Retry-After": "1"},
             )
-
-        return Response(
-            content=_rewrite_direct_hls_playlist(
-                payload,
-                effective_url,
-                referer,
-            ),
 '''
-backend = backend.replace(response_anchor, replacement, 1)
+backend = backend.replace(validation_anchor, validation_anchor + stall_check, 1)
 backend_path.write_text(backend)
