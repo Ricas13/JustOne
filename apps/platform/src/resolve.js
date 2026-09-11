@@ -12,6 +12,7 @@ const inFlight = new Map();
 const learningSessions = new Map();
 const failedSourceQuarantine = new Map();
 const failoverRetryAfter = new Map();
+const resolutionRetryAfter = new Map();
 let coalescedJoins = 0;
 const TTL_MS = Math.max(1000, Number(process.env.RESOLVE_TTL_MS || 60 * 60 * 1000));
 const LIVE_SOURCE_PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.LIVE_SOURCE_PROBE_TIMEOUT_MS || 3000));
@@ -22,6 +23,7 @@ const LIVE_CANDIDATE_TRANSIENT_RETRIES = Math.max(0, Math.min(3, Number(process.
 const LIVE_CANDIDATE_RETRY_DELAY_MS = Math.max(100, Math.min(2000, Number(process.env.LIVE_CANDIDATE_RETRY_DELAY_MS ?? 250)));
 const LIVE_SOURCE_FAILURE_QUARANTINE_MS = Math.max(5000, Math.min(5 * 60_000, Number(process.env.LIVE_SOURCE_FAILURE_QUARANTINE_MS || 30_000)));
 const LIVE_FAILOVER_RETRY_BACKOFF_MS = Math.max(1000, Math.min(30_000, Number(process.env.LIVE_FAILOVER_RETRY_BACKOFF_MS || 3000)));
+const LIVE_RESOLUTION_RETRY_BACKOFF_MS = Math.max(1000, Math.min(30_000, Number(process.env.LIVE_RESOLUTION_RETRY_BACKOFF_MS || 8000)));
 const LIVE_SOURCE_DISCOVERY_TIMEOUT_MS = Math.max(1000, Math.min(5000, Number(process.env.LIVE_SOURCE_DISCOVERY_TIMEOUT_MS || 2500)));
 const LIVE_SOURCE_MAX_CANDIDATES = Math.max(2, Math.min(16, Number(process.env.LIVE_SOURCE_MAX_CANDIDATES || 8)));
 const MANIFEST_PREFIX_MAX_BYTES = 128 * 1024;
@@ -90,6 +92,27 @@ function markFailoverFailure(channelId, excludeUrl) {
 function clearFailoverFailure(channelId, excludeUrl) {
   if (!excludeUrl) return;
   failoverRetryAfter.delete(failoverBackoffKey(channelId, excludeUrl));
+}
+function resolutionBackoffKey(channelId) {
+  return String(channelId || "");
+}
+function activeResolutionBackoff(channelId) {
+  const key = resolutionBackoffKey(channelId);
+  const until = Number(resolutionRetryAfter.get(key) || 0);
+  if (!until) return 0;
+  if (until <= Date.now()) {
+    resolutionRetryAfter.delete(key);
+    return 0;
+  }
+  return until;
+}
+function markResolutionFailure(channelId) {
+  const until = Date.now() + LIVE_RESOLUTION_RETRY_BACKOFF_MS;
+  resolutionRetryAfter.set(resolutionBackoffKey(channelId), until);
+  return until;
+}
+function clearResolutionFailure(channelId) {
+  resolutionRetryAfter.delete(resolutionBackoffKey(channelId));
 }
 function isExactDaddyEndpoint(endpoint) {
   return /^daddy:/i.test(String(endpoint?.provider || ""));
@@ -243,6 +266,18 @@ async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, e
       throw error;
     }
   } else if (force) {
+    // A supervised FFmpeg restart can happen several times in a few seconds.
+    // When the previous full qualification proved that the whole channel is
+    // currently unavailable, do not rediscover/reprobe every DaddyLive player
+    // on each restart. One fresh qualification is allowed after the short
+    // outage backoff; a successful source clears it immediately.
+    const retryAt = activeResolutionBackoff(channelId);
+    if (retryAt) {
+      const error = new Error("live source resolution cooling down");
+      error.retryAfterMs = Math.max(1, retryAt - Date.now());
+      throw error;
+    }
+
     // Preserve the old FFmpeg-restart signal for non-renewable forced resolves.
     // Explicit renewable handoffs deliberately avoid this path because stale
     // warm health must not select a replacement before fresh qualification.
@@ -257,6 +292,7 @@ async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, e
       markFailoverFailure(channelId, excluded);
       throw new Error("no alternate live source candidates");
     }
+    if (force && !excluded) markResolutionFailure(channelId);
     throw new Error("no DLHD live provider configured");
   }
 
@@ -266,6 +302,7 @@ async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, e
       const picked = pickedFromEndpoint(selected);
       cacheSet(key, picked);
       clearFailoverFailure(channelId, excluded);
+      clearResolutionFailure(channelId);
       return picked;
     } catch (error) {
       markFailoverFailure(channelId, excluded);
@@ -275,12 +312,29 @@ async function resolveLiveUncoalesced(channelId, { force, proxyUrl, legacyUrl, e
 
   if (!force) {
     const preferred = preferredLiveSource(channelId, endpoints, probeManagedEndpoint, { maxAgeMs: LIVE_SOURCE_RECHECK_MS });
-    if (preferred) { const picked = pickedFromEndpoint(preferred); cacheSet(key, picked); return picked; }
+    if (preferred) {
+      const picked = pickedFromEndpoint(preferred);
+      cacheSet(key, picked);
+      clearResolutionFailure(channelId);
+      return picked;
+    }
     const cached = cacheGet(key);
     if (cached?.liveValidatedAt && Date.now() - cached.liveValidatedAt <= LIVE_SOURCE_RECHECK_MS && !isSourceQuarantined(channelId, cached.url)) return cached;
   }
-  const selected = await qualifyLiveSources(channelId, endpoints, probeManagedEndpoint, { force });
-  const picked = pickedFromEndpoint(selected); cacheSet(key, picked); return picked;
+
+  try {
+    const selected = await qualifyLiveSources(channelId, endpoints, probeManagedEndpoint, { force });
+    const picked = pickedFromEndpoint(selected);
+    cacheSet(key, picked);
+    clearResolutionFailure(channelId);
+    return picked;
+  } catch (error) {
+    if (force && !excluded) {
+      const retryAt = markResolutionFailure(channelId);
+      error.retryAfterMs = Math.max(Number(error?.retryAfterMs || 0), retryAt - Date.now());
+    }
+    throw error;
+  }
 }
 
 export async function resolveLive(
@@ -322,6 +376,7 @@ export function cacheStats() {
   const now = Date.now();
   for (const [key, until] of failedSourceQuarantine) if (until <= now) failedSourceQuarantine.delete(key);
   for (const [key, until] of failoverRetryAfter) if (until <= now) failoverRetryAfter.delete(key);
+  for (const [key, until] of resolutionRetryAfter) if (until <= now) resolutionRetryAfter.delete(key);
   return {
     size: cache.size,
     ttlMs: TTL_MS,
@@ -337,6 +392,8 @@ export function cacheStats() {
     quarantinedSources: failedSourceQuarantine.size,
     failoverRetryBackoffMs: LIVE_FAILOVER_RETRY_BACKOFF_MS,
     failoverBackoffs: failoverRetryAfter.size,
+    resolutionRetryBackoffMs: LIVE_RESOLUTION_RETRY_BACKOFF_MS,
+    resolutionBackoffs: resolutionRetryAfter.size,
     inFlight: inFlight.size,
     coalescedJoins,
     sourceManager: liveSourceManagerStats(),
