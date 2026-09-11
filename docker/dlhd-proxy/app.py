@@ -121,13 +121,17 @@ async def stream(channel_id: str, source: int = Query(default=0, ge=0, le=20)):
 @app.get("/hls/{path:path}")
 async def hls(path: str):
     try:
-        url, referer = decode_target(path)
+        url, referer, origin = decode_target(path)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     try:
         response = await client.send(
-            client.build_request("GET", url, headers=provider.headers(referer)),
+            client.build_request(
+                "GET",
+                url,
+                headers=provider.headers(referer, origin or None),
+            ),
             stream=True,
         )
     except httpx.RequestError as exc:
