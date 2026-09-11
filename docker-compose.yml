@@ -98,6 +98,7 @@ services:
     depends_on:
       - dlhd-proxy
       - dlhd
+      - jellyfin-image-cache
     networks:
       justone:
       media_net:
@@ -162,6 +163,8 @@ services:
       JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS: ${JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS:-10000}
       JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY: ${JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY:-4}
       JELLYFIN_IMAGE_CACHE_MAX_BYTES: ${JELLYFIN_IMAGE_CACHE_MAX_BYTES:-8388608}
+      JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS: ${JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS:-250}
+      JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS: ${JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS:-900000}
     volumes:
       - jellyfin_image_cache:/var/cache/justone-images
     depends_on:
