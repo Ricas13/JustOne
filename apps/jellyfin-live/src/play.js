@@ -57,6 +57,7 @@ function runAttempt(attempt, req, res, { stallMs, log }) {
     let lastDataAt = Date.now();
     let stderr = "";
     let watchdog = null;
+    let backpressured = false;
 
     const finish = (reason, detail = "") => {
       if (finished) return;
@@ -73,8 +74,13 @@ function runAttempt(attempt, req, res, { stallMs, log }) {
       lastDataAt = Date.now();
       bytes += chunk.length;
       if (!res.write(chunk)) {
+        backpressured = true;
         child.stdout.pause();
-        res.once("drain", () => child.stdout?.resume());
+        res.once("drain", () => {
+          backpressured = false;
+          lastDataAt = Date.now();
+          child.stdout?.resume();
+        });
       }
     });
 
@@ -89,7 +95,10 @@ function runAttempt(attempt, req, res, { stallMs, log }) {
 
     watchdog = setInterval(() => {
       if (res.destroyed || req.aborted) return finish("client-closed");
-      if (Date.now() - lastDataAt >= stallMs) {
+      // A slow Jellyfin client can legitimately apply HTTP backpressure. That
+      // is not an upstream stream stall, so do not rotate sources while stdout
+      // is intentionally paused waiting for the response buffer to drain.
+      if (!backpressured && Date.now() - lastDataAt >= stallMs) {
         const phase = bytes ? "stalled" : "no-media";
         log(`${phase}: ${attempt.label} stream ${attempt.source + 1}`);
         finish(phase, `no output for ${stallMs}ms`);
