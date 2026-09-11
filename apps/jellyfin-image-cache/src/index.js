@@ -11,6 +11,8 @@ const imageCache = new ImageCache({
   fetchTimeoutMs: config.fetchTimeoutMs,
   fetchConcurrency: config.fetchConcurrency,
   maxBytes: config.maxBytes,
+  missWaitMs: config.missWaitMs,
+  hostBackoffMs: config.hostBackoffMs,
 });
 
 function log(...values) {
@@ -140,7 +142,7 @@ const server = http.createServer(async (req, res) => {
       res.setHeader(
         "Cache-Control",
         result.state === "fallback"
-          ? "public, max-age=300"
+          ? "public, max-age=30"
           : result.state === "stale"
             ? "public, max-age=3600"
             : "public, max-age=86400",
