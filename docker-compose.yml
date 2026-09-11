@@ -98,7 +98,6 @@ services:
     depends_on:
       - dlhd-proxy
       - dlhd
-      - jellyfin-image-cache
     networks:
       justone:
       media_net:
