@@ -55,6 +55,18 @@ export function isPublicPath(pathname) {
 }
 
 export function isStreamPath(pathname) {
+  // Health/status endpoints expose read-only service diagnostics and must not
+  // inherit the PLAYLIST_KEY requirement just because they live under
+  // /jellyfin/. This is especially important for host-side checks through the
+  // Docker-published 127.0.0.1 port, where the container may see the peer as a
+  // bridge-network address rather than literal loopback.
+  if (
+    pathname === "/jellyfin/health" ||
+    pathname === "/jellyfin/image-cache/health"
+  ) {
+    return false;
+  }
+
   return (
     pathname.startsWith("/play/") ||
     pathname.startsWith("/resolve/live/") ||
