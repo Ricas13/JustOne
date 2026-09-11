@@ -7,7 +7,7 @@ import {
   organizeLineup,
 } from "../src/lineup.js";
 
-test("sports stay first and TV is ordered USA UK Portugal then other countries", () => {
+test("TV is ordered UK Portugal USA then other countries with events last", () => {
   const lineup = [
     { id: "sport", kind: "sport-slot", name: "Arsenal vs Chelsea", group: "Football", number: 100 },
     { id: "fr", kind: "static", name: "TF1 France", country: "FR", group: "France", number: 3000 },
@@ -16,15 +16,15 @@ test("sports stay first and TV is ordered USA UK Portugal then other countries",
     { id: "us", kind: "static", name: "ABC USA", country: "US", group: "USA", number: 2400 },
   ];
   const out = organizeLineup(lineup);
-  assert.deepEqual(out.map((x) => x.id), ["sport", "us", "gb", "pt", "fr"]);
+  assert.deepEqual(out.map((x) => x.id), ["gb", "pt", "us", "fr", "sport"]);
   assert.deepEqual(out.map((x) => x.group), [
-    "Sports | Football",
-    "TV | USA",
     "TV | UK",
     "TV | Portugal",
+    "TV | USA",
     "TV | France",
+    "Sports | Football",
   ]);
-  assert.deepEqual(out.map((x) => x.number), [100, 1000, 2000, 3000, 4000]);
+  assert.deepEqual(out.map((x) => x.number), [1000, 2000, 3000, 4000, 90000]);
 });
 
 test("sports event groups get generated logos without inventing a programme time", () => {

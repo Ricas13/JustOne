@@ -5,7 +5,7 @@ import {
 } from "./channel-identity.js";
 import { config, withKey } from "./config.js";
 
-const PRIORITY_COUNTRIES = ["US", "GB", "PT"];
+const PRIORITY_COUNTRIES = ["GB", "PT", "US"];
 const SPECIAL_NAMES = new Map([
   ["US", "USA"],
   ["GB", "UK"],
@@ -234,23 +234,10 @@ export function organizeLineup(lineup) {
   }
 
   const ordered = [];
-  let nextSportNumber = 100;
-  SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport) => {
-    const rows = sports
-      .filter((entry) => entry.sport.key === sport.key)
-      .map((entry) => styleSportsEvent(entry.channel, sport))
-      .sort(compareSportChannels);
-    rows.forEach((channel) => {
-      ordered.push({ ...channel, group: sport.label, number: nextSportNumber++ });
-    });
-  });
 
-  // Match the compact scheme from the cleaner playlist: sports occupy the low
-  // hundreds, then USA=1000, UK=2000, Portugal=3000 and remaining countries
-  // continue in 1000-channel blocks. If sports ever exceed the first block,
-  // move TV to the next block rather than allowing channel-number collisions.
-  const lastSportNumber = nextSportNumber - 1;
-  const countryBase = Math.max(1000, (Math.floor(lastSportNumber / 1000) + 1) * 1000);
+  // Country TV comes first in the requested priority: UK, Portugal, USA,
+  // followed by every other country alphabetically in 1000-channel blocks.
+  const countryBase = 1000;
   const countries = sortCountries(new Set(television.map((channel) => channel.country)));
   countries.forEach((country, countryIndex) => {
     const rows = television
@@ -265,6 +252,8 @@ export function organizeLineup(lineup) {
     });
   });
 
+  // Keep explicit 24/7 channels after the country TV sections but before
+  // one-off sports/events.
   const alwaysOnCountries = sortCountries(new Set(alwaysOn.map((channel) => channel.country)));
   alwaysOnCountries.forEach((country, countryIndex) => {
     const rows = alwaysOn
@@ -272,6 +261,19 @@ export function organizeLineup(lineup) {
       .sort((a, b) => compareCountryChannels(country, a, b));
     rows.forEach((channel, index) => {
       ordered.push({ ...channel, group: country ? `24/7 | ${countryLabel(country)}` : "24/7", number: 80000 + countryIndex * 1000 + index + 1 });
+    });
+  });
+
+  // Events live at the bottom of the lineup. Their category ordering remains
+  // familiar, but the high channel range makes Jellyfin sort them after TV.
+  let nextSportNumber = 90000;
+  SPORT_GROUPS.concat(SPORT_FALLBACK).forEach((sport) => {
+    const rows = sports
+      .filter((entry) => entry.sport.key === sport.key)
+      .map((entry) => styleSportsEvent(entry.channel, sport))
+      .sort(compareSportChannels);
+    rows.forEach((channel) => {
+      ordered.push({ ...channel, group: sport.label, number: nextSportNumber++ });
     });
   });
 
