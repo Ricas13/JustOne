@@ -262,7 +262,7 @@ class Provider:
         return rewrite_hls_playlist(response.text, str(response.url), source_url)
 
     async def stream(self, channel_id: str, source_index: int = 0) -> str:
-        """Resolve exactly one provider option by stable, zero-based page order."""
+        """Resolve one provider player by stable, zero-based iframe order."""
         if source_index < 0:
             raise ValueError("source must be >= 0")
 
@@ -280,47 +280,50 @@ class Provider:
         if not player_urls:
             player_urls = [page_url]
 
-        option = 0
-        for player_url in player_urls:
-            try:
-                player = page if player_url == page_url else await self._get(
-                    player_url,
-                    headers=self.headers(page_url),
-                    timeout=12,
-                )
-            except Exception as exc:
-                if option == source_index:
-                    raise ValueError(f"Source {option + 1} request failed: {type(exc).__name__}") from exc
-                option += 1
-                continue
+        if source_index >= len(player_urls):
+            raise ValueError(f"Source {source_index + 1} does not exist")
 
-            if player.status_code >= 400:
-                if option == source_index:
-                    raise ValueError(f"Source {option + 1} HTTP {player.status_code}")
-                option += 1
-                continue
+        player_url = player_urls[source_index]
+        try:
+            player = page if player_url == page_url else await self._get(
+                player_url,
+                headers=self.headers(page_url),
+                timeout=12,
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Source {source_index + 1} request failed: {type(exc).__name__}"
+            ) from exc
 
-            direct_sources = extract_direct_hls_sources(player.text)
-            if direct_sources:
-                for direct_url in direct_sources:
-                    if option == source_index:
-                        logger.info("Channel %s selected source %s (direct HLS)", channel_id, option + 1)
-                        return await self._direct_stream(direct_url, player_url, option + 1)
-                    option += 1
-                continue
+        if player.status_code >= 400:
+            raise ValueError(f"Source {source_index + 1} HTTP {player.status_code}")
 
-            if "CHANNEL_KEY" in player.text:
-                if option == source_index:
-                    logger.info("Channel %s selected source %s (legacy)", channel_id, option + 1)
-                    return await self._legacy_stream(player_url, player.text)
-                option += 1
-                continue
+        # Match the reference DLHD flow: when the player exposes CHANNEL_KEY,
+        # use the authenticated server_lookup/auth.php path. Player pages may
+        # also contain base64/atob URLs that are transient or unusable directly;
+        # those must not take priority over the authenticated stream.
+        if "CHANNEL_KEY" in player.text:
+            logger.info(
+                "Channel %s selected source %s (legacy authenticated)",
+                channel_id,
+                source_index + 1,
+            )
+            return await self._legacy_stream(player_url, player.text)
 
-            if option == source_index:
-                raise ValueError(f"Source {option + 1} is unsupported")
-            option += 1
+        direct_sources = extract_direct_hls_sources(player.text)
+        if direct_sources:
+            logger.info(
+                "Channel %s selected source %s (direct HLS fallback)",
+                channel_id,
+                source_index + 1,
+            )
+            return await self._direct_stream(
+                direct_sources[0],
+                player_url,
+                source_index + 1,
+            )
 
-        raise ValueError(f"Source {source_index + 1} does not exist")
+        raise ValueError(f"Source {source_index + 1} is unsupported")
 
     async def close(self) -> None:
         await self._session.close()
