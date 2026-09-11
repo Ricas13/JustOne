@@ -16,11 +16,12 @@ test("Jellyfin playback origin can be public HTTPS", () => {
   assert.equal(config.playbackUrl, "https://resolver.example");
 });
 
-test("generated Jellyfin live URLs are signed and never expose the playlist key", () => {
+test("generated Jellyfin live URLs are stably signed and never expose the playlist key", () => {
   const m3u = buildM3u([
     { id: "49", name: "Example TV", group: "UK", kind: "247" },
   ]);
-  assert.match(m3u, /https:\/\/resolver\.example\/play\/live\/49\.ts\?exp=\d+&sig=[a-f0-9]{64}/);
+  assert.match(m3u, /https:\/\/resolver\.example\/play\/live\/49\.ts\?token=[a-f0-9]{64}/);
+  assert.doesNotMatch(m3u, /[?&]exp=/);
   assert.doesNotMatch(m3u, /key=test-key/);
 });
 
