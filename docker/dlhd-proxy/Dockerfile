@@ -29,15 +29,19 @@ COPY patch_fast_tune.py /tmp/patch_fast_tune.py
 RUN python /tmp/patch_fast_tune.py && rm /tmp/patch_fast_tune.py
 COPY patch_candidate_manager_api.py /tmp/patch_candidate_manager_api.py
 RUN python /tmp/patch_candidate_manager_api.py && rm /tmp/patch_candidate_manager_api.py
+COPY patch_hls_stall_detection.py /tmp/patch_hls_stall_detection.py
+RUN python /tmp/patch_hls_stall_detection.py && rm /tmp/patch_hls_stall_detection.py
 
 RUN pip install --no-cache-dir -r requirements.txt "sqlmodel==0.0.24" "uvicorn==0.35.0"
 
 COPY test_secondary_players.py /tmp/test_secondary_players.py
 COPY test_candidate_manager_api.py /tmp/test_candidate_manager_api.py
+COPY test_hls_stall_detection.py /tmp/test_hls_stall_detection.py
 RUN export PYTHONPATH=/app DLHD_BASE_URL=https://example.invalid \
     && python /tmp/test_secondary_players.py \
     && python /tmp/test_candidate_manager_api.py \
-    && rm /tmp/test_secondary_players.py /tmp/test_candidate_manager_api.py
+    && python /tmp/test_hls_stall_detection.py \
+    && rm /tmp/test_secondary_players.py /tmp/test_candidate_manager_api.py /tmp/test_hls_stall_detection.py
 
 ENV PORT=3000 \
     REFLEX_API_URL=http://dlhd-proxy:3000 \
