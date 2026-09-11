@@ -57,8 +57,9 @@ def _hls_stall_reason(payload: str, playlist_url: str, now: float | None = None)
         match = re.search(r'URI=["\']([^"\']+)["\']', line, re.IGNORECASE)
         if match:
             part_uris.append(match.group(1))
-    if not latest_uri and part_uris:
-        latest_uri = part_uris[-1]
+    latest_part = part_uris[-1] if part_uris else None
+    if not latest_uri and latest_part:
+        latest_uri = latest_part
     if not latest_uri:
         return None
 
@@ -97,7 +98,8 @@ def _hls_stall_reason(payload: str, playlist_url: str, now: float | None = None)
 
     timestamp = time.monotonic() if now is None else float(now)
     key = _stable_hls_path(playlist_url)
-    marker = f"{sequence}|{_stable_hls_path(latest_uri, playlist_url)}"
+    part_marker = _stable_hls_path(latest_part, playlist_url) if latest_part else ""
+    marker = f"{sequence}|{_stable_hls_path(latest_uri, playlist_url)}|{part_marker}"
     state = _HLS_PROGRESS.get(key)
 
     # If this playlist has not been observed for a while, treat the next view as
@@ -133,7 +135,7 @@ def _reset_hls_progress_for_tests():
 '''
 backend = backend.replace(route_anchor, helpers + route_anchor, 1)
 
-response_anchor = r'''        if not payload.lstrip().startswith("#EXTM3U"):
+response_anchor = '''        if not payload.lstrip().startswith("#EXTM3U"):
             logger.warning("Direct-HLS child was not a playlist: %s", effective_url)
             return JSONResponse(
                 content={"error": "Upstream HLS playlist was invalid"},
@@ -148,7 +150,7 @@ response_anchor = r'''        if not payload.lstrip().startswith("#EXTM3U"):
 '''
 assert response_anchor in backend, "backend HLS playlist response anchor changed"
 
-replacement = r'''        if not payload.lstrip().startswith("#EXTM3U"):
+replacement = '''        if not payload.lstrip().startswith("#EXTM3U"):
             logger.warning("Direct-HLS child was not a playlist: %s", effective_url)
             return JSONResponse(
                 content={"error": "Upstream HLS playlist was invalid"},
