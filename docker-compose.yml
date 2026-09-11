@@ -1,196 +1,41 @@
-name: ${COMPOSE_PROJECT_NAME:-justone}
-
 services:
   dlhd-proxy:
     build:
       context: ./docker/dlhd-proxy
-    image: justone-amddeus-dlhd-proxy:local
-    container_name: justone-dlhd-proxy
     restart: unless-stopped
     environment:
-      PORT: "3000"
-      REFLEX_API_URL: http://dlhd-proxy:3000
-      DLHD_BASE_URL: ${DLHD_BASE_URL:-https://dlstreams.st}
-      PROXY_CONTENT: "TRUE"
-      SOCKS5: ""
-      TZ: Europe/London
-      GUIDE_UPDATE: "03:00"
+      DLHD_BASE_URL: ${DLHD_BASE_URL:-https://daddylivestream.com}
+      API_URL: http://dlhd-proxy:3000
+      SOCKS5: ${SOCKS5:-}
+      CHANNEL_REFRESH_SECONDS: ${CHANNEL_REFRESH_SECONDS:-300}
       DLHD_PROXY_KEY_FILE: /app/data/token.key
     volumes:
-      - dlhd_proxy_data:/app/data
-    labels:
-      - "traefik.enable=false"
-    networks:
-      - justone
-
-  dlhd:
-    build:
-      context: ./docker/dlhd
-    image: justone-dlhd:local
-    container_name: justone-dlhd
-    restart: unless-stopped
-    environment:
-      PORT: "3000"
-      DLHD_BASE: ${DLHD_BASE:-https://dlhd.st}
-      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      HOST: "0.0.0.0"
-    labels:
-      - "traefik.enable=false"
-    networks:
-      - justone
-
-  platform:
-    build:
-      context: ./apps/platform
-    container_name: justone-platform
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      PLATFORM_PORT: "8080"
-      PUBLIC_URL: ${PUBLIC_URL:-https://resolver.vpn4u.cc}
-      PLAYBACK_URL: ${PLAYBACK_URL:-https://resolver.vpn4u.cc}
-      STREAM_SIGNING_SECRET: ${STREAM_SIGNING_SECRET:-}
-      STREAM_TOKEN_TTL_SECONDS: ${STREAM_TOKEN_TTL_SECONDS:-86400}
-      DLHD_PROXY_URL: http://dlhd-proxy:3000
-      DLHD_URL: http://dlhd:3000
-      JELLYFIN_LIVE_URL: http://jellyfin-image-cache:8091
-      DLSTREAMS_247: ${DLSTREAMS_247:-https://dlstreams.st/24-7-channels.php}
-      DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
-      PATH_LIVE: ${PATH_LIVE:-/mnt/resolver-files/Live}
-      EPG_URL: ${EPG_URL:-}
-      LIVE_REFRESH_MIN: ${LIVE_REFRESH_MIN:-360}
-      RESOLVE_TTL_MS: ${RESOLVE_TTL_MS:-3600000}
-      LIVE_SOURCE_PROBE_TIMEOUT_MS: ${LIVE_SOURCE_PROBE_TIMEOUT_MS:-3000}
-      LIVE_SOURCE_RECHECK_MS: ${LIVE_SOURCE_RECHECK_MS:-300000}
-      LIVE_SOURCE_DISCOVERY_TIMEOUT_MS: ${LIVE_SOURCE_DISCOVERY_TIMEOUT_MS:-2500}
-      LIVE_SOURCE_MAX_CANDIDATES: ${LIVE_SOURCE_MAX_CANDIDATES:-8}
-      LIVE_SOURCE_WARM_INTERVAL_MS: ${LIVE_SOURCE_WARM_INTERVAL_MS:-10000}
-      LIVE_SOURCE_SWITCH_MARGIN: ${LIVE_SOURCE_SWITCH_MARGIN:-12}
-      LIVE_SOURCE_SWITCH_COOLDOWN_MS: ${LIVE_SOURCE_SWITCH_COOLDOWN_MS:-30000}
-      LIVE_SOURCE_FAILURE_THRESHOLD: ${LIVE_SOURCE_FAILURE_THRESHOLD:-2}
-      LIVE_SOURCE_STANDBY_FRESH_MS: ${LIVE_SOURCE_STANDBY_FRESH_MS:-30000}
-      LIVE_SOURCE_HISTORY_SAVE_DELAY_MS: ${LIVE_SOURCE_HISTORY_SAVE_DELAY_MS:-5000}
-      LIVE_SOURCE_HISTORY_PATH: ${LIVE_SOURCE_HISTORY_PATH:-/mnt/resolver-files/Live/.live-source-history.json}
-      LIVE_HLS_RENEW_INTERVAL_MS: ${LIVE_HLS_RENEW_INTERVAL_MS:-30000}
-      LIVE_HLS_RENEW_RETRY_DELAY_MS: ${LIVE_HLS_RENEW_RETRY_DELAY_MS:-350}
-      LIVE_HLS_RENEW_BUDGET_MS: ${LIVE_HLS_RENEW_BUDGET_MS:-3000}
-      LIVE_HLS_STALE_GRACE_MS: ${LIVE_HLS_STALE_GRACE_MS:-0}
-      LIVE_HLS_TARGET_TTL_MS: ${LIVE_HLS_TARGET_TTL_MS:-1800000}
-      LIVE_HLS_TARGET_MAX: ${LIVE_HLS_TARGET_MAX:-50000}
-      LIVE_HLS_MANIFEST_MAX_BYTES: ${LIVE_HLS_MANIFEST_MAX_BYTES:-4194304}
-      LIVE_BUFFER_SECONDS: ${LIVE_BUFFER_SECONDS:-2}
-      LIVE_BUFFER_MAX_BYTES: ${LIVE_BUFFER_MAX_BYTES:-67108864}
-      LIVE_FFMPEG_RESTART_DELAY_MS: ${LIVE_FFMPEG_RESTART_DELAY_MS:-500}
-      LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE: ${LIVE_FFMPEG_MAX_RESTARTS_PER_SOURCE:-3}
-      LIVE_FFMPEG_STABLE_MS: ${LIVE_FFMPEG_STABLE_MS:-15000}
-      LIVE_FFMPEG_RW_TIMEOUT_US: ${LIVE_FFMPEG_RW_TIMEOUT_US:-15000000}
-      LIVE_FAILOVER_MAX_SWITCHES: ${LIVE_FAILOVER_MAX_SWITCHES:-12}
-      LIVE_SHARED_REMUX: ${LIVE_SHARED_REMUX:-true}
-      LIVE_SHARED_REMUX_IDLE_MS: ${LIVE_SHARED_REMUX_IDLE_MS:-10000}
-      LIVE_SHARED_SUBSCRIBER_MAX_BYTES: ${LIVE_SHARED_SUBSCRIBER_MAX_BYTES:-4194304}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
-    volumes:
-      - ${RESOLVER_FILES:-/mnt/resolver-files}:/mnt/resolver-files
+      - dlhd-data:/app/data
     ports:
-      - "127.0.0.1:18080:8080"
-    depends_on:
-      - dlhd-proxy
-      - dlhd
-    networks:
-      justone:
-      media_net:
-        aliases:
-          - resolver
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=media_net"
-      - "traefik.http.routers.justone-platform.rule=Host(`resolver.vpn4u.cc`)"
-      - "traefik.http.routers.justone-platform.entrypoints=websecure"
-      - "traefik.http.routers.justone-platform.tls=true"
-      - "traefik.http.routers.justone-platform.tls.certresolver=le"
-      - "traefik.http.routers.justone-platform.priority=10000"
-      - "traefik.http.routers.justone-platform.service=justone-platform"
-      - "traefik.http.services.justone-platform.loadbalancer.server.port=8080"
-      - "traefik.http.services.justone-platform.loadbalancer.responseForwarding.flushInterval=100ms"
+      - "${DLHD_PROXY_PORT:-3000}:3000"
 
   jellyfin-live:
     build:
       context: ./apps/jellyfin-live
-    container_name: justone-jellyfin-live
     restart: unless-stopped
-    env_file:
-      - .env
+    depends_on:
+      - dlhd-proxy
     environment:
-      JELLYFIN_LIVE_PORT: "8090"
-      PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
-      PLATFORM_URL: http://resolver:8080
+      DLHD_PROXY_URL: http://dlhd-proxy:3000
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8090}
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
-      DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
-      EPG_URL: ${EPG_URL:-}
-      JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
-      JELLYFIN_AUTO_EPG: ${JELLYFIN_AUTO_EPG:-true}
-      JELLYFIN_EPG_MAX_SOURCES: ${JELLYFIN_EPG_MAX_SOURCES:-12}
-      JELLYFIN_EPG_CACHE_MIN: ${JELLYFIN_EPG_CACHE_MIN:-60}
+      JELLYFIN_LIVE_PORT: 8090
       JELLYFIN_REFRESH_MIN: ${JELLYFIN_REFRESH_MIN:-10}
+      JELLYFIN_EPG_CACHE_MIN: ${JELLYFIN_EPG_CACHE_MIN:-60}
+      JELLYFIN_EPG_MAX_SOURCES: ${JELLYFIN_EPG_MAX_SOURCES:-12}
+      JELLYFIN_AUTO_EPG: ${JELLYFIN_AUTO_EPG:-true}
       JELLYFIN_EXCLUDE_ADULT: ${JELLYFIN_EXCLUDE_ADULT:-true}
-      JELLYFIN_EVENT_FAILOVER_MAX_SOURCES: ${JELLYFIN_EVENT_FAILOVER_MAX_SOURCES:-8}
-    depends_on:
-      - platform
-    networks:
-      - justone
-      - media_net
-    labels:
-      - "traefik.enable=false"
-
-  jellyfin-image-cache:
-    build:
-      context: ./apps/jellyfin-image-cache
-    container_name: justone-jellyfin-image-cache
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      JELLYFIN_IMAGE_CACHE_PORT: "8091"
-      JELLYFIN_IMAGE_CACHE_UPSTREAM_URL: http://jellyfin-live:8090
-      PUBLIC_URL: ${JELLYFIN_INTERNAL_URL:-http://resolver:8080}
-      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
-      JELLYFIN_IMAGE_CACHE_DIR: /var/cache/justone-images
-      JELLYFIN_IMAGE_CACHE_TTL_MS: ${JELLYFIN_IMAGE_CACHE_TTL_MS:-2592000000}
-      JELLYFIN_IMAGE_CACHE_NEGATIVE_TTL_MS: ${JELLYFIN_IMAGE_CACHE_NEGATIVE_TTL_MS:-21600000}
-      JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS: ${JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS:-10000}
-      JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY: ${JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY:-4}
-      JELLYFIN_IMAGE_CACHE_MAX_BYTES: ${JELLYFIN_IMAGE_CACHE_MAX_BYTES:-8388608}
-      JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS: ${JELLYFIN_IMAGE_CACHE_MISS_WAIT_MS:-250}
-      JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS: ${JELLYFIN_IMAGE_CACHE_HOST_BACKOFF_MS:-900000}
-    volumes:
-      - jellyfin_image_cache:/var/cache/justone-images
-    depends_on:
-      - jellyfin-live
-    networks:
-      - justone
-      - media_net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=media_net"
-      - "traefik.http.routers.justone-jellyfin.rule=Host(`resolver.vpn4u.cc`) && PathPrefix(`/jellyfin`)"
-      - "traefik.http.routers.justone-jellyfin.entrypoints=websecure"
-      - "traefik.http.routers.justone-jellyfin.tls=true"
-      - "traefik.http.routers.justone-jellyfin.tls.certresolver=le"
-      - "traefik.http.routers.justone-jellyfin.priority=11000"
-      - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
-      - "traefik.http.routers.justone-jellyfin.middlewares=justone-jellyfin-compress"
-      - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
-      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8091"
+      JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
+      DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
+      JELLYFIN_STREAM_STALL_MS: ${JELLYFIN_STREAM_STALL_MS:-12000}
+      JELLYFIN_SOURCES_PER_CANDIDATE: ${JELLYFIN_SOURCES_PER_CANDIDATE:-2}
+    ports:
+      - "${JELLYFIN_LIVE_PORT:-8090}:8090"
 
 volumes:
-  dlhd_proxy_data:
-  jellyfin_image_cache:
-
-networks:
-  justone:
-    name: justone_internal
-  media_net:
-    name: ${TRAEFIK_NETWORK:-media_net}
-    external: true
+  dlhd-data:

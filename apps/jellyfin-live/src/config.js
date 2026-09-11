@@ -1,7 +1,7 @@
 export const config = {
   port: Number(process.env.JELLYFIN_LIVE_PORT || 8090),
-  publicUrl: (process.env.PUBLIC_URL || "https://resolver.vpn4u.cc").replace(/\/$/, ""),
-  platformUrl: (process.env.PLATFORM_URL || "http://platform:8080").replace(/\/$/, ""),
+  publicUrl: (process.env.PUBLIC_URL || "http://localhost:8090").replace(/\/$/, ""),
+  dlhdProxyUrl: (process.env.DLHD_PROXY_URL || "http://dlhd-proxy:3000").replace(/\/$/, ""),
   playlistKey: process.env.PLAYLIST_KEY || "",
   dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlstreams.st/",
   refreshMin: Number(process.env.JELLYFIN_REFRESH_MIN || 10),
@@ -21,9 +21,6 @@ export function withKey(url) {
   return `${url}${sep}key=${encodeURIComponent(config.playlistKey)}`;
 }
 
-export function rawPlaylistUrl(refresh = false) {
-  const u = new URL(`${config.platformUrl}/live/playlist.m3u8`);
-  if (config.playlistKey) u.searchParams.set("key", config.playlistKey);
-  if (refresh) u.searchParams.set("refresh", "1");
-  return u.href;
+export function rawPlaylistUrl() {
+  return `${config.dlhdProxyUrl}/playlist.m3u8`;
 }
