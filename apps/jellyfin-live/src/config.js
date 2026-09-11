@@ -9,6 +9,12 @@ export const config = {
   epgMaxSources: Number(process.env.JELLYFIN_EPG_MAX_SOURCES || 12),
   autoEpg: String(process.env.JELLYFIN_AUTO_EPG || "true") !== "false",
   excludeAdult: String(process.env.JELLYFIN_EXCLUDE_ADULT || "true") !== "false",
+  imageCacheDir: process.env.JELLYFIN_IMAGE_CACHE_DIR || "/var/cache/justone-images",
+  imageCacheTtlMs: Math.max(60_000, Number(process.env.JELLYFIN_IMAGE_CACHE_TTL_MS || 30 * 24 * 60 * 60 * 1000)),
+  imageCacheNegativeTtlMs: Math.max(60_000, Number(process.env.JELLYFIN_IMAGE_CACHE_NEGATIVE_TTL_MS || 6 * 60 * 60 * 1000)),
+  imageCacheFetchTimeoutMs: Math.max(1_000, Number(process.env.JELLYFIN_IMAGE_CACHE_FETCH_TIMEOUT_MS || 10_000)),
+  imageCacheFetchConcurrency: Math.max(1, Math.min(16, Number(process.env.JELLYFIN_IMAGE_CACHE_FETCH_CONCURRENCY || 4))),
+  imageCacheMaxBytes: Math.max(64 * 1024, Number(process.env.JELLYFIN_IMAGE_CACHE_MAX_BYTES || 8 * 1024 * 1024)),
   epgSourceUrls: String(process.env.JELLYFIN_EPG_SOURCE_URLS || process.env.EPG_URL || "")
     .split(",")
     .map((s) => s.trim())
