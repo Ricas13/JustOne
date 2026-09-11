@@ -36,6 +36,27 @@ services:
       JELLYFIN_SOURCES_PER_CANDIDATE: ${JELLYFIN_SOURCES_PER_CANDIDATE:-2}
     ports:
       - "${JELLYFIN_LIVE_PORT:-8090}:8090"
+    networks:
+      - default
+      - media_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=media_net"
+      - "traefik.http.routers.justone-jellyfin.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/jellyfin`)"
+      - "traefik.http.routers.justone-jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.justone-jellyfin.tls=true"
+      - "traefik.http.routers.justone-jellyfin.tls.certresolver=le"
+      - "traefik.http.routers.justone-jellyfin.priority=11000"
+      - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
+      - "traefik.http.routers.justone-jellyfin.middlewares=justone-jellyfin-compress"
+      - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
+      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
+      - "traefik.http.services.justone-jellyfin.loadbalancer.responseForwarding.flushInterval=100ms"
 
 volumes:
   dlhd-data:
+
+networks:
+  media_net:
+    name: ${TRAEFIK_NETWORK:-media_net}
+    external: true
