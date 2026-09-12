@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAttempts } from "../src/play.js";
+import { buildAttempts, buildFfmpegArgs } from "../src/play.js";
 
 test("playback attempts are strictly sequential and preserve candidate order", () => {
   const attempts = buildAttempts({
@@ -57,6 +57,18 @@ test("source count is capped at six", () => {
 
   assert.equal(attempts.length, 6);
   assert.deepEqual(attempts.map((row) => row.source), [0, 1, 2, 3, 4, 5]);
+});
+
+test("ffmpeg reconnects transient HTTP/HLS failures before source failover", () => {
+  const args = buildFfmpegArgs("http://dlhd-proxy:3000/stream/10.m3u8?source=0");
+  const valueAfter = (flag) => args[args.indexOf(flag) + 1];
+
+  assert.equal(valueAfter("-reconnect"), "1");
+  assert.equal(valueAfter("-reconnect_streamed"), "1");
+  assert.equal(valueAfter("-reconnect_at_eof"), "1");
+  assert.equal(valueAfter("-reconnect_on_network_error"), "1");
+  assert.equal(valueAfter("-reconnect_on_http_error"), "429,500,502,503,504");
+  assert.equal(valueAfter("-reconnect_delay_max"), "2");
 });
 
 test("invalid candidate URLs are ignored rather than reordered", () => {
