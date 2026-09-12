@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 
 const DEFAULT_STALL_MS = Math.max(4000, Number(process.env.JELLYFIN_STREAM_STALL_MS || 12000));
+const MAX_SOURCES_PER_CANDIDATE = 6;
 const DEFAULT_SOURCES_PER_CANDIDATE = Math.max(
   1,
-  Math.min(6, Number(process.env.JELLYFIN_SOURCES_PER_CANDIDATE || 2)),
+  Math.min(
+    MAX_SOURCES_PER_CANDIDATE,
+    Number(process.env.JELLYFIN_SOURCES_PER_CANDIDATE || MAX_SOURCES_PER_CANDIDATE),
+  ),
 );
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 
@@ -13,9 +17,16 @@ function sourceUrl(rawUrl, source) {
   return url.href;
 }
 
+function normalizeSourcesPerCandidate(value) {
+  return Math.max(
+    1,
+    Math.min(MAX_SOURCES_PER_CANDIDATE, Number(value) || DEFAULT_SOURCES_PER_CANDIDATE),
+  );
+}
+
 export function buildAttempts(channel, sourcesPerCandidate = DEFAULT_SOURCES_PER_CANDIDATE) {
   const attempts = [];
-  const count = Math.max(1, Number(sourcesPerCandidate) || 1);
+  const count = normalizeSourcesPerCandidate(sourcesPerCandidate);
   for (const [candidateIndex, candidate] of (channel?.candidates || []).entries()) {
     if (!/^https?:\/\//i.test(String(candidate?.url || ""))) continue;
     for (let source = 0; source < count; source += 1) {
@@ -110,9 +121,8 @@ function runAttempt(attempt, req, res, { stallMs, log }) {
 
 export async function streamSequentially(req, res, channel, options = {}) {
   const stallMs = Math.max(4000, Number(options.stallMs || DEFAULT_STALL_MS));
-  const sourcesPerCandidate = Math.max(
-    1,
-    Number(options.sourcesPerCandidate || DEFAULT_SOURCES_PER_CANDIDATE),
+  const sourcesPerCandidate = normalizeSourcesPerCandidate(
+    options.sourcesPerCandidate || DEFAULT_SOURCES_PER_CANDIDATE,
   );
   const log = options.log || (() => {});
   const attempts = buildAttempts(channel, sourcesPerCandidate);
