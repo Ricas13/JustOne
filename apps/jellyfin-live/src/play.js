@@ -55,7 +55,6 @@ export function buildFfmpegArgs(url) {
     "-rw_timeout", "10000000",
     "-reconnect", "1",
     "-reconnect_streamed", "1",
-    "-reconnect_at_eof", "1",
     "-reconnect_on_network_error", "1",
     "-reconnect_on_http_error", "429,500,502,503,504",
     "-reconnect_delay_max", "2",
@@ -173,7 +172,11 @@ function runAttempt(attempt, req, res, { stallMs, prebufferMs, gapLogMs, log }) 
       if (!backpressured && Date.now() - lastDataAt >= stallMs) {
         const phase = bytes ? "stalled" : "no-media";
         log(`${phase}: ${attempt.label} stream ${attempt.source + 1}`);
-        finish(phase, `no output for ${stallMs}ms`);
+        const capturedStderr = stderr.trim();
+        finish(
+          phase,
+          `no output for ${stallMs}ms${capturedStderr ? `; ffmpeg: ${capturedStderr}` : ""}`,
+        );
       }
     }, Math.min(1000, Math.max(250, Math.floor(stallMs / 4))));
     watchdog.unref?.();
