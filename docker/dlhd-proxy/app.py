@@ -8,7 +8,8 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from provider import Provider, decode_target, rewrite_hls_playlist
+from cached_provider import CachedProvider
+from provider import decode_target, rewrite_hls_playlist
 from settings import settings
 
 logging.basicConfig(
@@ -17,7 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("justone.dlhd")
 
-provider = Provider()
+provider = CachedProvider()
 client = httpx.AsyncClient(
     http2=True,
     timeout=httpx.Timeout(15.0, read=60.0),
