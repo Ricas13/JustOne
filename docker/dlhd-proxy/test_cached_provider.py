@@ -20,6 +20,10 @@ def player_html(url: str) -> str:
     return f'<script>const player = {{ source: atob("{encoded}") }};</script>'
 
 
+def count_suffix(calls: list[str], suffix: str) -> int:
+    return sum(1 for url in calls if url.endswith(suffix))
+
+
 class FakeCachedProvider(CachedProvider):
     def __init__(self):
         self.channels = []
@@ -64,14 +68,8 @@ class CachedSourceDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         payload = await provider.stream("54", 1)
         self.assertIn("/hls/", payload)
 
-        self.assertEqual(
-            provider.calls.count("https://dlive.sx/stream/stream-54.php"),
-            1,
-        )
-        self.assertEqual(
-            provider.calls.count("https://dlive.sx/watch/stream-54.php"),
-            1,
-        )
+        self.assertEqual(count_suffix(provider.calls, "/stream/stream-54.php"), 1)
+        self.assertEqual(count_suffix(provider.calls, "/watch/stream-54.php"), 1)
         self.assertEqual(provider.calls.count("https://dead.test/player"), 1)
         self.assertEqual(provider.calls.count("https://good1.test/player"), 1)
         self.assertEqual(provider.calls.count("https://dead.test/live.m3u8"), 1)
