@@ -8,7 +8,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from cached_provider import CachedProvider
+from cached_provider import CachedProvider, NoMoreSourcesError
 from provider import decode_target, rewrite_hls_playlist
 from settings import settings
 
@@ -99,6 +99,13 @@ async def playlist():
 async def stream(channel_id: str, source: int = Query(default=0, ge=0, le=20)):
     try:
         body = await provider.stream(channel_id, source)
+    except NoMoreSourcesError as exc:
+        logger.info("Channel %s has no source slot %s: %s", channel_id, source + 1, exc)
+        return JSONResponse(
+            {"error": str(exc), "channel": channel_id, "source": source + 1, "no_more_sources": True},
+            status_code=404,
+            headers={"X-JustOne-No-More-Sources": "1"},
+        )
     except ValueError as exc:
         logger.warning("Channel %s source %s unavailable: %s", channel_id, source + 1, exc)
         return JSONResponse(

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAttempts } from "../src/play.js";
+import { buildAttempts, resultMeansNoMoreSources } from "../src/play.js";
 
 test("playback attempts are strictly sequential and preserve candidate order", () => {
   const attempts = buildAttempts({
@@ -57,6 +57,23 @@ test("source count is capped at six", () => {
 
   assert.equal(attempts.length, 6);
   assert.deepEqual(attempts.map((row) => row.source), [0, 1, 2, 3, 4, 5]);
+});
+
+test("404 before media means this candidate has no additional provider source slots", () => {
+  assert.equal(resultMeansNoMoreSources({
+    bytes: 0,
+    detail: "code=8 signal=none [http @ x] HTTP error 404 Not Found",
+  }), true);
+
+  assert.equal(resultMeansNoMoreSources({
+    bytes: 188,
+    detail: "[http @ x] HTTP error 404 Not Found",
+  }), false);
+
+  assert.equal(resultMeansNoMoreSources({
+    bytes: 0,
+    detail: "[http @ x] HTTP error 502 Bad Gateway",
+  }), false);
 });
 
 test("invalid candidate URLs are ignored rather than reordered", () => {

@@ -41,6 +41,11 @@ export function buildAttempts(channel, sourcesPerCandidate = DEFAULT_SOURCES_PER
   return attempts;
 }
 
+export function resultMeansNoMoreSources(result) {
+  return Number(result?.bytes || 0) === 0
+    && /HTTP error 404 Not Found/i.test(String(result?.detail || ""));
+}
+
 function ffmpegArgs(url) {
   return [
     "-nostdin",
@@ -106,9 +111,6 @@ function runAttempt(attempt, req, res, { stallMs, log }) {
 
     watchdog = setInterval(() => {
       if (res.destroyed || req.aborted) return finish("client-closed");
-      // A slow Jellyfin client can legitimately apply HTTP backpressure. That
-      // is not an upstream stream stall, so do not rotate sources while stdout
-      // is intentionally paused waiting for the response buffer to drain.
       if (!backpressured && Date.now() - lastDataAt >= stallMs) {
         const phase = bytes ? "stalled" : "no-media";
         log(`${phase}: ${attempt.label} stream ${attempt.source + 1}`);
@@ -141,14 +143,22 @@ export async function streamSequentially(req, res, channel, options = {}) {
   res.setHeader("Content-Type", "video/mp2t");
   res.setHeader("Cache-Control", "no-store");
 
+  const exhaustedCandidates = new Set();
+
   for (const [index, attempt] of attempts.entries()) {
     if (clientClosed || res.destroyed) return;
+    if (exhaustedCandidates.has(attempt.candidateIndex)) continue;
 
     log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
     const result = await runAttempt(attempt, req, res, { stallMs, log });
 
     if (result.reason === "client-closed") return;
     log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);
+
+    if (resultMeansNoMoreSources(result)) {
+      exhaustedCandidates.add(attempt.candidateIndex);
+      log(`candidate ${attempt.candidateIndex + 1} has no additional provider sources; skipping remaining configured source slots`);
+    }
   }
 
   if (clientClosed || res.destroyed) return;

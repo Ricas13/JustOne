@@ -11,6 +11,10 @@ SOURCE_DISCOVERY_TTL_SECONDS = 20
 MAX_DISCOVERED_SOURCES = 6
 
 
+class NoMoreSourcesError(ValueError):
+    """The requested ordered source slot cannot exist for this discovery state."""
+
+
 @dataclass
 class SourceCandidate:
     kind: str
@@ -47,6 +51,11 @@ class CachedProvider(Provider):
     as far as needed to discover option 1. If that option fails, source 2
     continues from the next unscanned family instead of starting over. HLS
     playlists themselves are never cached here.
+
+    If a selected source later fails validation, its discovery state is dropped
+    immediately. The following failover request can therefore rediscover fresh
+    provider/player URLs instead of being pinned to a known-dead descriptor for
+    the remainder of the cache TTL.
     """
 
     def __init__(self) -> None:
@@ -177,7 +186,7 @@ class CachedProvider(Provider):
         state = await self._ensure_source(channel_id, source_index)
         if source_index >= len(state.candidates):
             detail = "; ".join(state.failures[-12:]) or "no provider player candidates"
-            raise ValueError(
+            raise NoMoreSourcesError(
                 f"Source {source_index + 1} does not exist or is unavailable "
                 f"({len(state.candidates)} discovered; {detail})"
             )
@@ -195,6 +204,16 @@ class CachedProvider(Provider):
                 )
                 mode = "direct HLS"
         except Exception as exc:
+            # A descriptor that just failed should not survive for another 20s.
+            # Drop the whole discovery state so the next failover/tune can pick
+            # up fresh player URLs/tokens immediately.
+            self._source_cache.pop(channel_id, None)
+            logger.info(
+                "Channel %s invalidated source discovery after source %s failed via %s",
+                channel_id,
+                source_index + 1,
+                selected.label,
+            )
             raise ValueError(
                 f"Source {source_index + 1} via {selected.label} unavailable: {exc}"
             ) from exc
