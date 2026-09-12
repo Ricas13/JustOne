@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py provider.py settings.py utils.py ./
+COPY app.py provider.py cached_provider.py settings.py utils.py ./
 RUN mkdir -p /app/data
 
 EXPOSE 3000
