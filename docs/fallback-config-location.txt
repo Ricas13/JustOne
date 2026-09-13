@@ -1,1 +1,0 @@
-The optional fallback configuration file is /app/data/direct-fallbacks.json inside the dlhd-proxy container.
