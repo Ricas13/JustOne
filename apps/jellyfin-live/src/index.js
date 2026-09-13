@@ -4,6 +4,12 @@ import express from "express";
 
 import { artworkContext, artworkPng } from "./artwork.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
+import {
+  bridgeSecretPersistent,
+  easyProxyHealth,
+  proxyEasyProxyRequest,
+  resolveEasyProxyManifest,
+} from "./easyproxy.js";
 import { countryGuideReserve, discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
 import { buildXmlTv, guideCoverage } from "./guide.js";
@@ -23,7 +29,6 @@ import {
   parseScheduleMetadata,
   parseXmlTv,
 } from "./organizer.js";
-import { streamSequentially } from "./play.js";
 
 const app = express();
 const EPG_CONCURRENCY = Math.max(1, Math.min(4, Number(process.env.JELLYFIN_EPG_CONCURRENCY || 2)));
@@ -67,7 +72,7 @@ function authorised(req) {
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("x-justone", "minimal-dlhd");
+  res.setHeader("x-justone", "metadata-easyproxy");
   if (req.path === "/jellyfin/health") return next();
   if (!req.path.startsWith("/jellyfin/")) return res.status(404).end();
   if (!authorised(req)) return res.status(401).json({ error: "key required" });
@@ -180,8 +185,8 @@ async function refresh(force = false) {
     const filtered = filterJellyfinRows(raw);
     const schedule = scheduleHtml ? parseScheduleMetadata(scheduleHtml) : null;
 
-    // buildLineup is the only merge point: duplicate provider rows become one
-    // logical Jellyfin channel and retain their original URLs as ordered sources.
+    // buildLineup remains the sole channel merge point. The catalogue contains
+    // provider page URLs only; no media is resolved until EasyProxy sees a tune.
     const lineup = organizeLineup(buildLineup(filtered, { schedule, iptvOrg }));
 
     const manualUrls = [...new Set(config.epgSourceUrls)];
@@ -231,7 +236,7 @@ async function refresh(force = false) {
       `merged=${lineup.length}`,
       `epg=${docs.length}/${epgSources.length}`,
       `coverage=${coverage.coveragePercent}%`,
-      "playback=sequential-ffmpeg",
+      "playback=easyproxy-hls",
     );
   } catch (error) {
     cache.error = String(error.message || error);
@@ -252,7 +257,7 @@ app.get("/jellyfin/playlist.m3u8", async (req, res) => {
   }
 });
 
-app.get("/jellyfin/play/:token.ts", async (req, res) => {
+async function serveChannelManifest(req, res) {
   try {
     const state = await refresh(false);
     const id = String(req.params.token || "");
@@ -260,13 +265,27 @@ app.get("/jellyfin/play/:token.ts", async (req, res) => {
     if (!channel) return res.status(404).json({ error: "channel not found" });
 
     const candidates = getCurrentCandidates(channel);
-    return streamSequentially(req, res, { ...channel, candidates }, {
+    const result = await resolveEasyProxyManifest(candidates, {
       log: (message) => log("play", channel.name, message),
     });
+
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-JustOne-Candidate", String(result.candidateIndex + 1));
+    return res.send(result.body);
   } catch (error) {
     if (!res.headersSent) return res.status(502).json({ error: String(error.message || error) });
     res.end();
   }
+}
+
+// New playlists use HLS explicitly. Keep the old .ts route as a compatibility
+// alias so an already-cached Jellyfin tuner URL does not immediately break.
+app.get("/jellyfin/play/:token.m3u8", serveChannelManifest);
+app.get("/jellyfin/play/:token.ts", serveChannelManifest);
+
+app.get("/jellyfin/proxy/:token", async (req, res) => {
+  await proxyEasyProxyRequest(req, res, req.params.token);
 });
 
 app.get("/jellyfin/guide.xml", async (req, res) => {
@@ -291,9 +310,15 @@ app.get("/jellyfin/artwork/:variant/:token.png", (req, res) => {
 app.get("/jellyfin/diagnostics", async (req, res) => {
   try {
     const state = await refresh(req.query.refresh === "1");
+    const engine = await easyProxyHealth({ timeoutMs: 2_000 });
     res.setHeader("Cache-Control", "no-store");
     res.json({
-      playback: "sequential-ffmpeg",
+      playback: "easyproxy-hls",
+      engine: {
+        name: "EasyProxy",
+        ...engine,
+        bridgeSecretPersistent,
+      },
       rawChannels: state.rawCount,
       mergedChannels: state.lineup.length,
       channels: state.lineup.map((channel) => ({
@@ -314,17 +339,21 @@ app.get("/jellyfin/links", async (_req, res) => {
   res.json({
     playlist: withKey(`${config.publicUrl}/jellyfin/playlist.m3u8`),
     guide: withKey(`${config.publicUrl}/jellyfin/guide.xml`),
-    playback: "sequential-ffmpeg",
+    playback: "easyproxy-hls",
     rawChannels: state.rawCount,
     channels: state.lineup.length,
   });
 });
 
-app.get("/jellyfin/health", (_req, res) => {
-  res.json({
+app.get("/jellyfin/health", async (_req, res) => {
+  const engine = await easyProxyHealth({ timeoutMs: 2_000 });
+  const metadataOk = Boolean(cache.lineup.length) && !cache.error;
+  res.status(metadataOk && engine.ok ? 200 : 503).json({
     service: "justone-jellyfin-live",
-    ok: Boolean(cache.lineup.length) && !cache.error,
-    playback: "sequential-ffmpeg",
+    ok: metadataOk && engine.ok,
+    metadataOk,
+    playback: "easyproxy-hls",
+    engine,
     lastRefresh: cache.at ? new Date(cache.at).toISOString() : null,
     rawChannels: cache.rawCount,
     channels: cache.lineup.length,
@@ -336,6 +365,6 @@ const refreshMs = Math.max(1, config.refreshMin) * 60_000;
 setInterval(() => refresh(false).catch(() => {}), refreshMs).unref?.();
 
 app.listen(config.port, "0.0.0.0", () => {
-  log(`JustOne Jellyfin Live on :${config.port}`);
+  log(`JustOne metadata + EasyProxy bridge on :${config.port}`);
   refresh(true).catch((error) => log("initial refresh", String(error.message || error)));
 });
