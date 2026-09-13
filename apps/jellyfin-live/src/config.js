@@ -1,7 +1,10 @@
 export const config = {
   port: Number(process.env.JELLYFIN_LIVE_PORT || 8090),
   publicUrl: (process.env.PUBLIC_URL || "http://localhost:8090").replace(/\/$/, ""),
-  dlhdProxyUrl: (process.env.DLHD_PROXY_URL || "http://dlhd-proxy:3000").replace(/\/$/, ""),
+  dlhdCatalogueUrl: (process.env.DLHD_CATALOGUE_URL || "http://dlhd-catalogue:3000").replace(/\/$/, ""),
+  easyProxyUrl: (process.env.EASYPROXY_URL || "http://easyproxy:7860").replace(/\/$/, ""),
+  easyProxyRequestTimeoutMs: Math.max(3_000, Number(process.env.EASYPROXY_REQUEST_TIMEOUT_MS || 60_000)),
+  easyProxyBridgeSecret: process.env.EASYPROXY_BRIDGE_SECRET || process.env.PLAYLIST_KEY || "",
   playlistKey: process.env.PLAYLIST_KEY || "",
   dlstreamsHome: process.env.DLSTREAMS_HOME || "https://dlstreams.st/",
   refreshMin: Number(process.env.JELLYFIN_REFRESH_MIN || 10),
@@ -22,5 +25,5 @@ export function withKey(url) {
 }
 
 export function rawPlaylistUrl() {
-  return `${config.dlhdProxyUrl}/playlist.m3u8`;
+  return `${config.dlhdCatalogueUrl}/playlist.m3u8`;
 }
