@@ -187,7 +187,7 @@ function copyResponseHeaders(upstream, res) {
   }
 }
 
-function isManifestResponse(target, response) {
+export function isManifestResponse(target, response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("mpegurl")) return true;
 
