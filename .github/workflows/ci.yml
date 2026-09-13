@@ -40,6 +40,10 @@ jobs:
       - name: Validate compose and smoke harness
         run: |
           bash -n scripts/smoke-easyproxy.sh
+          if grep -nE '^[[:space:]]*python([[:space:]]|$)' scripts/smoke-easyproxy.sh; then
+            echo 'smoke harness must not require Python on the deployment host' >&2
+            exit 1
+          fi
           docker compose config
           docker compose -f docker-compose.smoke.yml config
           docker compose config --format json | python -c 'import json,sys; d=json.load(sys.stdin); s=d["services"]; assert s["jellyfin-live"]["depends_on"]["easyproxy"]["condition"] == "service_started"; assert not s["easyproxy"].get("ports"); assert not s["dlhd-catalogue"].get("ports"); print("production compose boundaries ok")'
