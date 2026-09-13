@@ -1,38 +1,64 @@
 services:
-  dlhd-proxy:
+  dlhd-catalogue:
     build:
       context: ./docker/dlhd-proxy
     restart: unless-stopped
     environment:
       DLHD_BASE_URL: ${DLHD_BASE_URL:-https://daddylivestream.com}
-      API_URL: http://dlhd-proxy:3000
+      DLHD_EASYPROXY_BASE_URL: ${DLHD_EASYPROXY_BASE_URL:-https://daddylive.sx}
       SOCKS5: ${SOCKS5:-}
       CHANNEL_REFRESH_SECONDS: ${CHANNEL_REFRESH_SECONDS:-300}
-      DLHD_PROXY_KEY_FILE: /app/data/token.key
-    volumes:
-      - dlhd-data:/app/data
     ports:
-      - "${DLHD_PROXY_PORT:-3000}:3000"
+      - "127.0.0.1:${DLHD_CATALOGUE_PORT:-3000}:3000"
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3)); sys.exit(0 if data.get('ok') else 1)"
+        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3)); sys.exit(0 if data.get('ok') and data.get('mode') == 'catalogue-only' else 1)"
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 5s
+
+  easyproxy:
+    build:
+      context: ./docker/easyproxy
+      args:
+        EASYPROXY_REPO: ${EASYPROXY_REPO:-https://github.com/domainus/EasyProxy-English.git}
+        EASYPROXY_REF: ${EASYPROXY_REF:-8a326aea8d24331182fe0d6012ac15237e780b30}
+    restart: unless-stopped
+    environment:
+      GLOBAL_PROXY: ${GLOBAL_PROXY:-}
+      VAVOO_PROXY: ${VAVOO_PROXY:-}
+      DLHD_PROXY: ${DLHD_PROXY:-}
+    ports:
+      - "127.0.0.1:${EASYPROXY_PORT:-7860}:7860"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); sys.exit(0 if data.get('status') else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
 
   jellyfin-live:
     build:
       context: ./apps/jellyfin-live
     restart: unless-stopped
     depends_on:
-      dlhd-proxy:
+      dlhd-catalogue:
+        condition: service_healthy
+      easyproxy:
         condition: service_healthy
     environment:
-      DLHD_PROXY_URL: http://dlhd-proxy:3000
+      DLHD_CATALOGUE_URL: http://dlhd-catalogue:3000
+      EASYPROXY_URL: http://easyproxy:7860
+      EASYPROXY_REQUEST_TIMEOUT_MS: ${EASYPROXY_REQUEST_TIMEOUT_MS:-60000}
+      EASYPROXY_BRIDGE_SECRET: ${EASYPROXY_BRIDGE_SECRET:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8090}
       PLAYLIST_KEY: ${PLAYLIST_KEY:-}
       JELLYFIN_LIVE_PORT: 8090
@@ -43,8 +69,6 @@ services:
       JELLYFIN_EXCLUDE_ADULT: ${JELLYFIN_EXCLUDE_ADULT:-true}
       JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
       DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
-      JELLYFIN_STREAM_STALL_MS: ${JELLYFIN_STREAM_STALL_MS:-12000}
-      JELLYFIN_SOURCES_PER_CANDIDATE: ${JELLYFIN_SOURCES_PER_CANDIDATE:-2}
     ports:
       - "${JELLYFIN_LIVE_PORT:-8090}:8090"
     networks:
@@ -63,9 +87,6 @@ services:
       - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
       - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
       - "traefik.http.services.justone-jellyfin.loadbalancer.responseForwarding.flushInterval=100ms"
-
-volumes:
-  dlhd-data:
 
 networks:
   media_net:
