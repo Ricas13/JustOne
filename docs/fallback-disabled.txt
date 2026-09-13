@@ -1,0 +1,1 @@
+If no fallback configuration file exists, playback behavior remains unchanged after the normal source attempts.
