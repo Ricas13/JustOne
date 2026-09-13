@@ -9,6 +9,7 @@ import {
   easyProxyHealth,
   proxyEasyProxyRequest,
   resolveEasyProxyManifest,
+  rewriteJustOnePlaylistForEasyProxy,
 } from "./easyproxy.js";
 import { countryGuideReserve, discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
@@ -251,7 +252,7 @@ app.get("/jellyfin/playlist.m3u8", async (req, res) => {
     const state = await refresh(req.query.refresh === "1");
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-cache");
-    res.send(buildM3u(state.lineup));
+    res.send(rewriteJustOnePlaylistForEasyProxy(buildM3u(state.lineup)));
   } catch (error) {
     res.status(502).send(String(error.message || error));
   }
