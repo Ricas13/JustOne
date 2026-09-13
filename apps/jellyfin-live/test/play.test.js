@@ -7,6 +7,7 @@ import {
   encodeBridgeTarget,
   resolveEasyProxyManifest,
   rewriteEasyProxyManifest,
+  rewriteJustOnePlaylistForEasyProxy,
 } from "../src/easyproxy.js";
 
 test("EasyProxy manifest URL carries the original provider page", () => {
@@ -16,6 +17,22 @@ test("EasyProxy manifest URL carries the original provider page", () => {
   assert.equal(url.origin, "http://easyproxy:7860");
   assert.equal(url.pathname, "/proxy/manifest.m3u8");
   assert.equal(url.searchParams.get("url"), source);
+});
+
+test("Jellyfin playlist advertises HLS rather than the removed MPEG-TS engine", () => {
+  const input = [
+    "#EXTM3U",
+    "#EXTINF:-1,Example",
+    "https://resolver.example/jellyfin/play/channel.abc.ts?key=secret",
+    "#EXTINF:-1,Other",
+    "https://resolver.example/jellyfin/play/channel.def.ts",
+    "",
+  ].join("\n");
+
+  const output = rewriteJustOnePlaylistForEasyProxy(input);
+  assert.match(output, /channel\.abc\.m3u8\?key=secret/);
+  assert.match(output, /channel\.def\.m3u8/);
+  assert.doesNotMatch(output, /\/jellyfin\/play\/[^\n]+\.ts(?:\?|$)/);
 });
 
 test("bridge tokens are signed and cannot be tampered with", () => {
