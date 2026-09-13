@@ -37,8 +37,9 @@ jobs:
           python -m unittest discover -s . -p 'test_*.py'
           python -c "import app; print('dlhd catalogue import ok')"
 
-      - name: Validate compose files
+      - name: Validate compose and smoke harness
         run: |
+          bash -n scripts/smoke-easyproxy.sh
           docker compose config
           docker compose -f docker-compose.smoke.yml config
           docker compose config --format json | python -c 'import json,sys; d=json.load(sys.stdin); s=d["services"]; assert s["jellyfin-live"]["depends_on"]["easyproxy"]["condition"] == "service_started"; assert not s["easyproxy"].get("ports"); assert not s["dlhd-catalogue"].get("ports"); print("production compose boundaries ok")'
