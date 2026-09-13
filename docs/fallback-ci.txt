@@ -1,0 +1,1 @@
+CI should validate Node tests, Python tests, compose, and container builds.
