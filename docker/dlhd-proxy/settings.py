@@ -17,6 +17,20 @@ def _float_env(name: str, default: float, minimum: float, maximum: float) -> flo
     return max(minimum, min(maximum, value))
 
 
+def _host_map_env(name: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in os.getenv(name, "").split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        host, extractor = item.split("=", 1)
+        host = host.strip().lower().rstrip(".")
+        extractor = extractor.strip()
+        if host and extractor:
+            out[host] = extractor
+    return out
+
+
 class Settings:
     def __init__(self) -> None:
         self.base_url = os.getenv("DLHD_BASE_URL", "https://daddylivestream.com").rstrip("/")
@@ -35,6 +49,19 @@ class Settings:
         # enough to smooth a short 5xx burst without blocking startup.
         self.source_retry_attempts = _int_env("DLHD_SOURCE_RETRY_ATTEMPTS", 2, 1, 3)
         self.source_retry_base_seconds = _float_env("DLHD_SOURCE_RETRY_BASE_SECONDS", 0.5, 0.1, 5.0)
+
+        # Optional external extractor. This is deliberately opt-in: JustOne only
+        # delegates pages whose hostname is explicitly mapped by the operator.
+        # Format: host=Extractor,*.example.org=OtherExtractor
+        self.external_extractor_url = os.getenv("EXTERNAL_EXTRACTOR_URL", "").strip().rstrip("/")
+        self.external_extractor_api_password = os.getenv("EXTERNAL_EXTRACTOR_API_PASSWORD", "").strip()
+        self.external_extractor_host_map = _host_map_env("EXTERNAL_EXTRACTOR_HOST_MAP")
+        self.external_extractor_timeout_seconds = _float_env("EXTERNAL_EXTRACTOR_TIMEOUT_SECONDS", 6.0, 1.0, 15.0)
+        self.external_extractor_cache_ttl_seconds = _float_env("EXTERNAL_EXTRACTOR_CACHE_TTL_SECONDS", 45.0, 5.0, 300.0)
+        self.external_extractor_user_agent = os.getenv(
+            "EXTERNAL_EXTRACTOR_USER_AGENT",
+            "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        ).strip()
 
         # HLS resilience. The live offset and real segment prefetch/cache replace
         # the old artificial FFmpeg-output delay as the primary buffer.
