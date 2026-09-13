@@ -11,7 +11,7 @@ const DEFAULT_SOURCE_REFRESH_BASE_MS = Math.max(
   100,
   Number(process.env.JELLYFIN_SOURCE_REFRESH_BASE_MS ?? 1000),
 );
-const MAX_SOURCES_PER_CANDIDATE = 6;
+const MAX_SOURCES_PER_CANDIDATE = 7;
 const DEFAULT_SOURCES_PER_CANDIDATE = Math.max(
   1,
   Math.min(

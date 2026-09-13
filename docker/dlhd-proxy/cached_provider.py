@@ -4,15 +4,20 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
-from provider import PLAYER_FOLDERS, Provider, extract_direct_hls_sources, logger
+from provider import Provider, extract_direct_hls_sources, logger
 from settings import settings
 
 SOURCE_DISCOVERY_TTL_SECONDS = 20
-MAX_DISCOVERED_SOURCES = 6
+# These slots mirror the current Player 1..7 buttons on /watch.php in site order.
+# Keep slot numbers stable even when an individual player is unsupported or down;
+# Jellyfin failover must still be able to reach later provider players.
+PLAYER_FOLDERS = ("stream", "cast", "watch", "plus", "casting", "player", "hub")
+MAX_IFRAME_DEPTH = 3
+MAX_PLAYER_PAGES_PER_SLOT = 8
 
 
 class NoMoreSourcesError(ValueError):
-    """The requested ordered source slot cannot exist for this discovery state."""
+    """The requested source index is beyond the provider's known player slots."""
 
 
 @dataclass
@@ -25,23 +30,19 @@ class SourceCandidate:
 
 
 @dataclass
-class DiscoveryState:
-    expires_at: float
+class SlotDiscovery:
     candidates: list[SourceCandidate] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
-    seen_sources: set[str] = field(default_factory=set)
-    next_folder_index: int = 0
 
-    @property
-    def complete(self) -> bool:
-        return (
-            self.next_folder_index >= len(PLAYER_FOLDERS)
-            or len(self.candidates) >= MAX_DISCOVERED_SOURCES
-        )
+
+@dataclass
+class DiscoveryState:
+    expires_at: float
+    slots: dict[int, SlotDiscovery] = field(default_factory=dict)
 
 
 class CachedProvider(Provider):
-    """Progressively discover ordered provider alternatives and reuse them."""
+    """Cache provider discovery while preserving the website's Player 1..7 slots."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,13 +58,107 @@ class CachedProvider(Provider):
             expires_at=time.monotonic() + SOURCE_DISCOVERY_TTL_SECONDS,
         )
 
-    async def _scan_next_folder(self, channel_id: str, state: DiscoveryState) -> None:
-        if state.complete:
-            return
+    @staticmethod
+    def _iframe_urls(response_url: str, response_text: str) -> list[str]:
+        out: list[str] = []
+        for value in re.findall(
+            r'<iframe[^>]+src=["\']([^"\']+)["\']',
+            response_text,
+            re.IGNORECASE,
+        ):
+            candidate = urljoin(response_url, value)
+            if candidate not in out:
+                out.append(candidate)
+        return out
 
-        folder = PLAYER_FOLDERS[state.next_folder_index]
-        state.next_folder_index += 1
+    async def _discover_slot(self, channel_id: str, source_index: int) -> SlotDiscovery:
+        folder = PLAYER_FOLDERS[source_index]
         page_url = f"{settings.base_url}/{folder}/stream-{channel_id}.php"
+        slot = SlotDiscovery()
+        visited: set[str] = set()
+        seen_sources: set[str] = set()
+
+        async def visit(
+            url: str,
+            *,
+            referer: str | None,
+            label: str,
+            depth: int,
+            response=None,
+        ) -> None:
+            if url in visited:
+                return
+            if len(visited) >= MAX_PLAYER_PAGES_PER_SLOT:
+                slot.failures.append(f"{label}: player page limit reached")
+                return
+            visited.add(url)
+
+            try:
+                player = response or await self._get(
+                    url,
+                    headers=self.headers(referer),
+                    timeout=settings.source_request_timeout_seconds,
+                )
+            except Exception as exc:
+                slot.failures.append(f"{label}: player {type(exc).__name__}")
+                return
+
+            if player.status_code >= 400:
+                slot.failures.append(f"{label}: player HTTP {player.status_code}")
+                return
+
+            effective_url = str(getattr(player, "url", None) or url)
+            player_text = player.text
+            found_here = False
+
+            legacy_keys = re.findall(r'const\s+CHANNEL_KEY\s*=\s*"(.*?)";', player_text)
+            if legacy_keys:
+                source_key = f"legacy:{legacy_keys[-1]}"
+                if source_key not in seen_sources:
+                    seen_sources.add(source_key)
+                    slot.candidates.append(SourceCandidate(
+                        kind="legacy",
+                        label=label,
+                        player_url=effective_url,
+                        player_text=player_text,
+                    ))
+                    found_here = True
+
+            direct_sources = extract_direct_hls_sources(player_text)
+            for direct_index, direct_url in enumerate(direct_sources):
+                source_key = f"direct:{direct_url}"
+                if source_key in seen_sources:
+                    continue
+                seen_sources.add(source_key)
+                direct_label = (
+                    f"{label}/source#{direct_index + 1}"
+                    if len(direct_sources) > 1
+                    else label
+                )
+                slot.candidates.append(SourceCandidate(
+                    kind="direct",
+                    label=direct_label,
+                    player_url=effective_url,
+                    direct_url=direct_url,
+                ))
+                found_here = True
+
+            iframe_urls = self._iframe_urls(effective_url, player_text)
+            if iframe_urls and depth < MAX_IFRAME_DEPTH:
+                for iframe_index, iframe_url in enumerate(iframe_urls, start=1):
+                    await visit(
+                        iframe_url,
+                        referer=effective_url,
+                        label=f"{label}>iframe#{iframe_index}",
+                        depth=depth + 1,
+                    )
+            elif iframe_urls:
+                slot.failures.append(f"{label}: iframe depth limit reached")
+            elif not found_here:
+                if "window._econfig" in player_text:
+                    slot.failures.append(f"{label}: dynamic player unsupported")
+                else:
+                    slot.failures.append(f"{label}: unsupported player")
 
         try:
             page = await self._get(
@@ -72,86 +167,30 @@ class CachedProvider(Provider):
                 timeout=settings.source_request_timeout_seconds,
             )
         except Exception as exc:
-            state.failures.append(f"{folder}: page {type(exc).__name__}")
-            return
+            slot.failures.append(f"{folder}: page {type(exc).__name__}")
+            return slot
 
         if page.status_code >= 400:
-            state.failures.append(f"{folder}: page HTTP {page.status_code}")
-            return
+            slot.failures.append(f"{folder}: page HTTP {page.status_code}")
+            return slot
 
-        iframe_paths = re.findall(
-            r'<iframe[^>]+src=["\']([^"\']+)["\']',
-            page.text,
-            re.IGNORECASE,
+        await visit(
+            page_url,
+            referer=settings.base_url,
+            label=folder,
+            depth=0,
+            response=page,
         )
-        player_urls: list[str] = []
-        for value in iframe_paths:
-            candidate = urljoin(page_url, value)
-            if candidate not in player_urls:
-                player_urls.append(candidate)
+        return slot
 
-        if not player_urls:
-            player_urls = [page_url]
+    async def _ensure_slot(self, channel_id: str, source_index: int) -> SlotDiscovery:
+        if source_index >= len(PLAYER_FOLDERS):
+            raise NoMoreSourcesError(
+                f"Source {source_index + 1} does not exist "
+                f"(provider exposes {len(PLAYER_FOLDERS)} player slots)"
+            )
 
-        for embed_index, player_url in enumerate(player_urls):
-            if len(state.candidates) >= MAX_DISCOVERED_SOURCES:
-                break
-
-            label = f"{folder}#{embed_index + 1}" if len(player_urls) > 1 else folder
-            try:
-                player = page if player_url == page_url else await self._get(
-                    player_url,
-                    headers=self.headers(page_url),
-                    timeout=settings.source_request_timeout_seconds,
-                )
-            except Exception as exc:
-                state.failures.append(f"{label}: player {type(exc).__name__}")
-                continue
-
-            if player.status_code >= 400:
-                state.failures.append(f"{label}: player HTTP {player.status_code}")
-                continue
-
-            legacy_keys = re.findall(r'const\s+CHANNEL_KEY\s*=\s*"(.*?)";', player.text)
-            if legacy_keys:
-                source_key = f"legacy:{legacy_keys[-1]}"
-                if source_key in state.seen_sources:
-                    continue
-                state.seen_sources.add(source_key)
-                state.candidates.append(SourceCandidate(
-                    kind="legacy",
-                    label=label,
-                    player_url=player_url,
-                    player_text=player.text,
-                ))
-                continue
-
-            direct_sources = extract_direct_hls_sources(player.text)
-            if not direct_sources:
-                state.failures.append(f"{label}: unsupported player")
-                continue
-
-            for direct_index, direct_url in enumerate(direct_sources):
-                if len(state.candidates) >= MAX_DISCOVERED_SOURCES:
-                    break
-
-                source_key = f"direct:{direct_url}"
-                if source_key in state.seen_sources:
-                    continue
-                state.seen_sources.add(source_key)
-                direct_label = (
-                    f"{label}/source#{direct_index + 1}"
-                    if len(direct_sources) > 1
-                    else label
-                )
-                state.candidates.append(SourceCandidate(
-                    kind="direct",
-                    label=direct_label,
-                    player_url=player_url,
-                    direct_url=direct_url,
-                ))
-
-    async def _ensure_source(self, channel_id: str, source_index: int) -> DiscoveryState:
+        channel_id = str(channel_id)
         lock = self._source_locks.setdefault(channel_id, asyncio.Lock())
         async with lock:
             now = time.monotonic()
@@ -160,59 +199,62 @@ class CachedProvider(Provider):
                 state = self._fresh_state()
                 self._source_cache[channel_id] = state
 
-            while len(state.candidates) <= source_index and not state.complete:
-                await self._scan_next_folder(channel_id, state)
+            slot = state.slots.get(source_index)
+            if slot is None:
+                slot = await self._discover_slot(channel_id, source_index)
+                state.slots[source_index] = slot
 
             logger.info(
-                "Channel %s discovery has %s ordered source option(s), scanned %s/%s family/families",
+                "Channel %s source slot %s/%s (%s) discovered %s candidate(s)",
                 channel_id,
-                len(state.candidates),
-                state.next_folder_index,
+                source_index + 1,
                 len(PLAYER_FOLDERS),
+                PLAYER_FOLDERS[source_index],
+                len(slot.candidates),
             )
-            return state
+            return slot
 
     async def stream(self, channel_id: str, source_index: int = 0) -> str:
         if source_index < 0:
             raise ValueError("source must be >= 0")
 
-        state = await self._ensure_source(channel_id, source_index)
-        if source_index >= len(state.candidates):
-            detail = "; ".join(state.failures[-12:]) or "no provider player candidates"
-            raise NoMoreSourcesError(
-                f"Source {source_index + 1} does not exist or is unavailable "
-                f"({len(state.candidates)} discovered; {detail})"
+        slot = await self._ensure_slot(channel_id, source_index)
+        folder = PLAYER_FOLDERS[source_index]
+        if not slot.candidates:
+            detail = "; ".join(slot.failures[-12:]) or "no supported player candidate"
+            raise ValueError(
+                f"Source {source_index + 1} via {folder} unavailable: {detail}"
             )
 
-        selected = state.candidates[source_index]
-        try:
-            if selected.kind == "legacy":
-                payload = await self._legacy_stream(selected.player_url, selected.player_text)
-                mode = "legacy authenticated"
-            else:
-                payload = await self._direct_stream(
-                    selected.direct_url,
-                    selected.player_url,
-                    source_index + 1,
-                )
-                mode = "direct HLS"
-        except Exception as exc:
-            self.invalidate(channel_id)
+        runtime_failures: list[str] = []
+        for selected in slot.candidates:
+            try:
+                if selected.kind == "legacy":
+                    payload = await self._legacy_stream(selected.player_url, selected.player_text)
+                    mode = "legacy authenticated"
+                else:
+                    payload = await self._direct_stream(
+                        selected.direct_url,
+                        selected.player_url,
+                        source_index + 1,
+                    )
+                    mode = "direct HLS"
+            except Exception as exc:
+                runtime_failures.append(f"{selected.label}: {exc}")
+                continue
+
             logger.info(
-                "Channel %s invalidated source discovery after source %s failed via %s",
+                "Channel %s selected source slot %s/%s via %s (%s)",
                 channel_id,
                 source_index + 1,
+                len(PLAYER_FOLDERS),
                 selected.label,
+                mode,
             )
-            raise ValueError(
-                f"Source {source_index + 1} via {selected.label} unavailable: {exc}"
-            ) from exc
+            return payload
 
-        logger.info(
-            "Channel %s selected source %s via %s (%s)",
-            channel_id,
-            source_index + 1,
-            selected.label,
-            mode,
+        detail_parts = slot.failures[-8:] + runtime_failures[-4:]
+        detail = "; ".join(detail_parts) or "all candidates failed"
+        raise ValueError(
+            f"Source {source_index + 1} via {folder} unavailable: {detail}"
         )
-        return payload
