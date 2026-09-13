@@ -29,6 +29,16 @@ function sourceUrl(rawUrl, source, refresh = false) {
   return url.href;
 }
 
+export function fallbackUrl(rawUrl) {
+  const url = new URL(String(rawUrl));
+  const match = /^(.*)\/stream\/([^/]+)\.m3u8$/i.exec(url.pathname);
+  if (!match) return "";
+  url.pathname = `${match[1]}/fallback/${match[2]}.m3u8`;
+  url.searchParams.delete("source");
+  url.searchParams.delete("refresh");
+  return url.href;
+}
+
 export function refreshAttemptUrl(rawUrl) {
   const url = new URL(String(rawUrl));
   url.searchParams.set("refresh", "1");
@@ -56,17 +66,34 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function attemptName(attempt) {
+  return attempt.fallback ? "direct fallback" : `stream ${attempt.source + 1}`;
+}
+
 export function buildAttempts(channel, sourcesPerCandidate = DEFAULT_SOURCES_PER_CANDIDATE) {
   const attempts = [];
   const count = normalizeSourcesPerCandidate(sourcesPerCandidate);
   for (const [candidateIndex, candidate] of (channel?.candidates || []).entries()) {
     if (!/^https?:\/\//i.test(String(candidate?.url || ""))) continue;
+    const label = String(candidate.label || channel?.name || `source ${candidateIndex + 1}`);
     for (let source = 0; source < count; source += 1) {
       attempts.push({
         candidateIndex,
         source,
         url: sourceUrl(candidate.url, source),
-        label: String(candidate.label || channel?.name || `source ${candidateIndex + 1}`),
+        label,
+        fallback: false,
+      });
+    }
+
+    const backup = fallbackUrl(candidate.url);
+    if (backup) {
+      attempts.push({
+        candidateIndex,
+        source: count,
+        url: backup,
+        label,
+        fallback: true,
       });
     }
   }
@@ -223,7 +250,7 @@ function runAttempt(attempt, req, res, { stallMs, prebufferMs, log }) {
         if (res.destroyed || req.aborted) return finish("client-closed");
         if (!backpressured && Date.now() - lastDataAt >= stallMs) {
           const phase = bytes ? "stalled" : "no-media";
-          log(`${phase}: ${attempt.label} stream ${attempt.source + 1}`);
+          log(`${phase}: ${attempt.label} ${attemptName(attempt)}`);
           finish(phase, `no output for ${stallMs}ms`);
         }
       }, Math.min(1000, Math.max(250, Math.floor(stallMs / 4))));
@@ -277,15 +304,15 @@ export async function streamSequentially(req, res, channel, options = {}) {
         : { ...attempt, url: refreshAttemptUrl(attempt.url) };
 
       if (recovery === 0) {
-        log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
+        log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} ${attemptName(attempt)}`);
       } else {
-        log(`refresh retry ${recovery}/${sourceRefreshRetries}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
+        log(`refresh retry ${recovery}/${sourceRefreshRetries}: ${attempt.label} candidate ${attempt.candidateIndex + 1} ${attemptName(attempt)}`);
       }
 
       result = await runAttempt(activeAttempt, req, res, { stallMs, prebufferMs, log });
       if (result.reason === "client-closed") return;
 
-      log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);
+      log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} ${attemptName(attempt)}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);
 
       if (recovery < sourceRefreshRetries && resultShouldRefreshSource(result)) {
         const delay = sourceRefreshBaseMs * (2 ** recovery);

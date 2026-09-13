@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildAttempts,
+  fallbackUrl,
   ffmpegArgs,
   refreshAttemptUrl,
   resultMeansNoMoreSources,
@@ -27,7 +28,17 @@ test("ffmpeg read timeout leaves enough room for bounded proxy recovery", () => 
   assert.ok(Number(args[index + 1]) >= 20_000_000);
 });
 
-test("playback attempts are strictly sequential and preserve candidate order", () => {
+test("fallback URL preserves candidate host and unrelated query parameters", () => {
+  const url = fallbackUrl("http://dlhd-proxy:3000/stream/49.m3u8?token=x&source=3&refresh=1");
+  const parsed = new URL(url);
+  assert.equal(parsed.pathname, "/fallback/49.m3u8");
+  assert.equal(parsed.searchParams.get("token"), "x");
+  assert.equal(parsed.searchParams.has("source"), false);
+  assert.equal(parsed.searchParams.has("refresh"), false);
+  assert.equal(fallbackUrl("https://example.test/live.m3u8"), "");
+});
+
+test("playback attempts are sequential and append direct fallback after each provider candidate", () => {
   const attempts = buildAttempts({
     name: "Example",
     candidates: [
@@ -37,18 +48,27 @@ test("playback attempts are strictly sequential and preserve candidate order", (
   }, 2);
 
   assert.deepEqual(
-    attempts.map((row) => [row.candidateIndex, row.source, new URL(row.url).pathname, new URL(row.url).searchParams.get("source")]),
+    attempts.map((row) => [
+      row.candidateIndex,
+      row.source,
+      row.fallback,
+      new URL(row.url).pathname,
+      new URL(row.url).searchParams.get("source"),
+    ]),
     [
-      [0, 0, "/stream/10.m3u8", "0"],
-      [0, 1, "/stream/10.m3u8", "1"],
-      [1, 0, "/stream/11.m3u8", "0"],
-      [1, 1, "/stream/11.m3u8", "1"],
+      [0, 0, false, "/stream/10.m3u8", "0"],
+      [0, 1, false, "/stream/10.m3u8", "1"],
+      [0, 2, true, "/fallback/10.m3u8", null],
+      [1, 0, false, "/stream/11.m3u8", "0"],
+      [1, 1, false, "/stream/11.m3u8", "1"],
+      [1, 2, true, "/fallback/11.m3u8", null],
     ],
   );
-  assert.equal(new URL(attempts[2].url).searchParams.get("token"), "x");
+  assert.equal(new URL(attempts[3].url).searchParams.get("token"), "x");
+  assert.equal(new URL(attempts[5].url).searchParams.get("token"), "x");
 });
 
-test("default playback exhausts seven ordered provider sources before the next candidate", () => {
+test("default playback exhausts seven provider sources then direct fallback before the next candidate", () => {
   const attempts = buildAttempts({
     name: "Example",
     candidates: [
@@ -57,18 +77,19 @@ test("default playback exhausts seven ordered provider sources before the next c
     ],
   });
 
-  assert.equal(attempts.length, 14);
+  assert.equal(attempts.length, 16);
   assert.deepEqual(
-    attempts.slice(0, 8).map((row) => [row.candidateIndex, row.source]),
+    attempts.slice(0, 9).map((row) => [row.candidateIndex, row.source, row.fallback]),
     [
-      [0, 0],
-      [0, 1],
-      [0, 2],
-      [0, 3],
-      [0, 4],
-      [0, 5],
-      [0, 6],
-      [1, 0],
+      [0, 0, false],
+      [0, 1, false],
+      [0, 2, false],
+      [0, 3, false],
+      [0, 4, false],
+      [0, 5, false],
+      [0, 6, false],
+      [0, 7, true],
+      [1, 0, false],
     ],
   );
 });
