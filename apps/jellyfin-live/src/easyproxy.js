@@ -24,6 +24,13 @@ function signature(payload) {
   return crypto.createHmac("sha256", bridgeSecret).update(payload).digest("base64url");
 }
 
+export function rewriteJustOnePlaylistForEasyProxy(body) {
+  return String(body || "").replace(
+    /(\/jellyfin\/play\/[^?\r\n]+)\.ts(?=[?\r\n]|$)/g,
+    "$1.m3u8",
+  );
+}
+
 export function easyProxyManifestUrl(sourceUrl) {
   const source = new URL(String(sourceUrl));
   if (!/^https?:$/.test(source.protocol)) throw new Error("EasyProxy source must be HTTP(S)");
