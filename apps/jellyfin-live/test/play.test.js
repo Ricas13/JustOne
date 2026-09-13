@@ -35,3 +35,26 @@ test("invalid candidate URLs are ignored rather than reordered", () => {
   assert.equal(attempts[0].candidateIndex, 1);
   assert.equal(attempts[0].source, 0);
 });
+
+test("fixed candidates are attempted once without a DLHD source parameter", () => {
+  const url = "http://mediaflow-proxy:8888/proxy/acestream/stream?infohash=abc";
+  const attempts = buildAttempts({
+    id: "channel.example",
+    candidates: [
+      {
+        label: "AceStream example",
+        url,
+        provider: "acestream",
+        sourceMode: "fixed",
+        sourceCount: 1,
+        infohash: "abc",
+      },
+    ],
+  }, 2);
+
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].url, url);
+  assert.equal(attempts[0].provider, "acestream");
+  assert.equal(attempts[0].channelId, "channel.example");
+  assert.equal(new URL(attempts[0].url).searchParams.has("source"), false);
+});

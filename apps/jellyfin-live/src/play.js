@@ -18,12 +18,20 @@ export function buildAttempts(channel, sourcesPerCandidate = DEFAULT_SOURCES_PER
   const count = Math.max(1, Number(sourcesPerCandidate) || 1);
   for (const [candidateIndex, candidate] of (channel?.candidates || []).entries()) {
     if (!/^https?:\/\//i.test(String(candidate?.url || ""))) continue;
-    for (let source = 0; source < count; source += 1) {
+    const fixed = candidate?.sourceMode === "fixed";
+    const candidateCount = fixed
+      ? 1
+      : Math.max(1, Math.min(6, Number(candidate?.sourceCount || count)));
+    for (let source = 0; source < candidateCount; source += 1) {
       attempts.push({
         candidateIndex,
         source,
-        url: sourceUrl(candidate.url, source),
+        url: fixed ? String(candidate.url) : sourceUrl(candidate.url, source),
         label: String(candidate.label || channel?.name || `source ${candidateIndex + 1}`),
+        provider: String(candidate.provider || "dlhd"),
+        channelId: candidate.channelId || channel?.id || "",
+        infohash: candidate.infohash || "",
+        aceChannelId: candidate.aceChannelId || "",
       });
     }
   }
@@ -115,6 +123,7 @@ export async function streamSequentially(req, res, channel, options = {}) {
     Number(options.sourcesPerCandidate || DEFAULT_SOURCES_PER_CANDIDATE),
   );
   const log = options.log || (() => {});
+  const onAttemptResult = options.onAttemptResult || (() => {});
   const attempts = buildAttempts(channel, sourcesPerCandidate);
 
   if (!attempts.length) {
@@ -136,6 +145,12 @@ export async function streamSequentially(req, res, channel, options = {}) {
 
     log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
     const result = await runAttempt(attempt, req, res, { stallMs, log });
+    try {
+      const pending = onAttemptResult(attempt, result);
+      Promise.resolve(pending).catch(() => {});
+    } catch {
+      // Source accounting must never interfere with playback failover.
+    }
 
     if (result.reason === "client-closed") return;
     log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);

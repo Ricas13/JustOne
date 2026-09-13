@@ -3,6 +3,7 @@ import zlib from "node:zlib";
 import express from "express";
 
 import { artworkContext, artworkPng } from "./artwork.js";
+import { AceStreamRegistry, combinePlaybackCandidates } from "./acestream.js";
 import { config, rawPlaylistUrl, withKey } from "./config.js";
 import { countryGuideReserve, discoverEpgShareUrls } from "./epg-sources.js";
 import { filterJellyfinRows } from "./filter.js";
@@ -49,9 +50,46 @@ let iptvCache = {
   missing: [],
 };
 const xmlCache = new Map();
+let aceDiscovery = null;
 
 function log(...values) {
   process.stdout.write(`${values.map(String).join(" ")}\n`);
+}
+
+const aceRegistry = new AceStreamRegistry({
+  enabled: config.acestreamEnabled,
+  searchUrl: config.acestreamSearchUrl,
+  mediaflowUrl: config.acestreamMediaflowUrl,
+  mediaflowPassword: config.acestreamMediaflowApiKey,
+  stateFile: config.acestreamStateFile,
+  discoveryBatch: config.acestreamDiscoveryBatch,
+  pageSize: config.acestreamPageSize,
+  maxCandidates: config.acestreamMaxCandidates,
+  minAvailability: config.acestreamMinAvailability,
+  autoVerifyMetadata: config.acestreamAutoVerifyMetadata,
+  priority: config.acestreamPriority,
+}, {
+  log: (...values) => log("acestream", ...values),
+});
+
+function runAceDiscovery(lineup, forceAll = false) {
+  if (!config.acestreamEnabled) {
+    return Promise.resolve({ enabled: false, scanned: 0, found: 0 });
+  }
+  if (aceDiscovery) return aceDiscovery;
+  aceDiscovery = aceRegistry.discover(lineup, { forceAll })
+    .then((result) => {
+      log("acestream discovery", `scanned=${result.scanned}`, `found=${result.found}`);
+      return result;
+    })
+    .catch((error) => {
+      log("acestream discovery fail", String(error.message || error));
+      return { enabled: true, scanned: 0, found: 0, error: String(error.message || error) };
+    })
+    .finally(() => {
+      aceDiscovery = null;
+    });
+  return aceDiscovery;
 }
 
 function safeEqual(a, b) {
@@ -180,8 +218,9 @@ async function refresh(force = false) {
     const filtered = filterJellyfinRows(raw);
     const schedule = scheduleHtml ? parseScheduleMetadata(scheduleHtml) : null;
 
-    // buildLineup is the only merge point: duplicate provider rows become one
-    // logical Jellyfin channel and retain their original URLs as ordered sources.
+    // buildLineup is the only DLHD merge point: duplicate provider rows become
+    // one logical Jellyfin channel and retain their original URLs in order.
+    // AceStream discovery is deliberately downstream of this canonical list.
     const lineup = organizeLineup(buildLineup(filtered, { schedule, iptvOrg }));
 
     const manualUrls = [...new Set(config.epgSourceUrls)];
@@ -224,6 +263,8 @@ async function refresh(force = false) {
       error: null,
     };
 
+    if (config.acestreamEnabled) void runAceDiscovery(lineup, false);
+
     log(
       "refresh",
       `raw=${raw.length}`,
@@ -259,9 +300,12 @@ app.get("/jellyfin/play/:token.ts", async (req, res) => {
     const channel = state.lineup.find((row) => row.id === id);
     if (!channel) return res.status(404).json({ error: "channel not found" });
 
-    const candidates = getCurrentCandidates(channel);
+    const dlhdCandidates = getCurrentCandidates(channel);
+    const aceCandidates = await aceRegistry.playbackCandidates(channel);
+    const candidates = combinePlaybackCandidates(dlhdCandidates, aceCandidates, config.acestreamPriority);
     return streamSequentially(req, res, { ...channel, candidates }, {
       log: (message) => log("play", channel.name, message),
+      onAttemptResult: (attempt, result) => aceRegistry.recordPlayback(attempt, result),
     });
   } catch (error) {
     if (!res.headersSent) return res.status(502).json({ error: String(error.message || error) });
@@ -291,21 +335,73 @@ app.get("/jellyfin/artwork/:variant/:token.png", (req, res) => {
 app.get("/jellyfin/diagnostics", async (req, res) => {
   try {
     const state = await refresh(req.query.refresh === "1");
+    const ace = await aceRegistry.diagnostics(state.lineup);
+    const verifiedAceByChannel = new Map(
+      ace.channels.map((row) => [row.id, row.candidates.filter((candidate) => candidate.verification === "verified").length]),
+    );
     res.setHeader("Cache-Control", "no-store");
     res.json({
       playback: "sequential-ffmpeg",
       rawChannels: state.rawCount,
       mergedChannels: state.lineup.length,
-      channels: state.lineup.map((channel) => ({
-        id: channel.id,
-        name: channel.name,
-        sources: getCurrentCandidates(channel).length,
-      })),
+      channels: state.lineup.map((channel) => {
+        const dlhdSources = getCurrentCandidates(channel).length;
+        const aceSources = verifiedAceByChannel.get(channel.id) || 0;
+        return {
+          id: channel.id,
+          name: channel.name,
+          sources: dlhdSources + aceSources,
+          dlhdSources,
+          aceSources,
+        };
+      }),
+      acestream: ace,
       epg: state.epgStats,
       epgSources: state.epgSources,
     });
   } catch (error) {
     res.status(502).json({ error: String(error.message || error) });
+  }
+});
+
+app.get("/jellyfin/acestream", async (_req, res) => {
+  try {
+    const state = await refresh(false);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await aceRegistry.diagnostics(state.lineup));
+  } catch (error) {
+    res.status(502).json({ error: String(error.message || error) });
+  }
+});
+
+app.post("/jellyfin/acestream/discover", async (req, res) => {
+  if (!config.acestreamEnabled) return res.status(409).json({ error: "AceStream is disabled" });
+  try {
+    const state = await refresh(false);
+    const result = await runAceDiscovery(state.lineup, req.query.all === "1");
+    res.json({ result, acestream: await aceRegistry.diagnostics(state.lineup) });
+  } catch (error) {
+    res.status(502).json({ error: String(error.message || error) });
+  }
+});
+
+app.post("/jellyfin/acestream/:channelId/:infohash/verify", async (req, res) => {
+  if (!config.acestreamEnabled) return res.status(409).json({ error: "AceStream is disabled" });
+  try {
+    const candidate = await aceRegistry.verify(req.params.channelId, req.params.infohash);
+    res.json({ ok: true, candidate });
+  } catch (error) {
+    res.status(404).json({ error: String(error.message || error) });
+  }
+});
+
+app.post("/jellyfin/acestream/:channelId/:infohash/reject", async (req, res) => {
+  if (!config.acestreamEnabled) return res.status(409).json({ error: "AceStream is disabled" });
+  try {
+    const candidate = await aceRegistry.reject(req.params.channelId, req.params.infohash);
+    res.json({ ok: true, candidate });
+  } catch (error) {
+    res.status(404).json({ error: String(error.message || error) });
   }
 });
 
@@ -317,6 +413,7 @@ app.get("/jellyfin/links", async (_req, res) => {
     playback: "sequential-ffmpeg",
     rawChannels: state.rawCount,
     channels: state.lineup.length,
+    acestream: config.acestreamEnabled,
   });
 });
 
@@ -328,6 +425,7 @@ app.get("/jellyfin/health", (_req, res) => {
     lastRefresh: cache.at ? new Date(cache.at).toISOString() : null,
     rawChannels: cache.rawCount,
     channels: cache.lineup.length,
+    acestream: config.acestreamEnabled,
     error: cache.error,
   });
 });
@@ -337,5 +435,6 @@ setInterval(() => refresh(false).catch(() => {}), refreshMs).unref?.();
 
 app.listen(config.port, "0.0.0.0", () => {
   log(`JustOne Jellyfin Live on :${config.port}`);
+  aceRegistry.init().catch((error) => log("acestream init", String(error.message || error)));
   refresh(true).catch((error) => log("initial refresh", String(error.message || error)));
 });
