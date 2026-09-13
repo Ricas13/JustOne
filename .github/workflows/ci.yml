@@ -15,26 +15,76 @@ jobs:
         with:
           node-version: 22
 
-      - name: Test Jellyfin Live
+      - name: Test Jellyfin metadata and EasyProxy bridge
         working-directory: apps/jellyfin-live
         run: |
           npm install
+          npm audit --omit=dev --audit-level=high
+          node --check src/index.js
+          node --check src/easyproxy.js
           npm test
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Validate DLHD resolver
+      - name: Validate DLHD catalogue
         working-directory: docker/dlhd-proxy
         run: |
           python -m pip install -r requirements.txt
-          python -m py_compile app.py provider.py settings.py utils.py
+          python -m pip check
+          python -m py_compile app.py provider.py settings.py
           python -m unittest discover -s . -p 'test_*.py'
-          python -c "import app; print('dlhd resolver import ok')"
+          python -c "import app; print('dlhd catalogue import ok')"
 
-      - name: Validate compose
-        run: docker compose config
+      - name: Validate compose and smoke harness
+        run: |
+          bash -n scripts/smoke-easyproxy.sh
+          if grep -nE '^[[:space:]]*python([[:space:]]|$)' scripts/smoke-easyproxy.sh; then
+            echo 'smoke harness must not require Python on the deployment host' >&2
+            exit 1
+          fi
+          docker compose config
+          docker compose -f docker-compose.smoke.yml config
+          docker compose config --format json | python -c 'import json,sys; d=json.load(sys.stdin); s=d["services"]; assert s["jellyfin-live"]["depends_on"]["easyproxy"]["condition"] == "service_started"; assert not s["easyproxy"].get("ports"); assert not s["dlhd-catalogue"].get("ports"); print("production compose boundaries ok")'
+          docker compose -f docker-compose.smoke.yml config --format json | python -c 'import json,sys; d=json.load(sys.stdin); j=d["services"]["jellyfin-live"]; assert not j.get("labels"); assert set(j.get("networks", {})) == {"default"}; print("smoke compose isolation ok")'
 
       - name: Build containers
         run: docker compose build
+
+      - name: Verify patched EasyProxy image
+        run: |
+          docker compose run --rm --no-deps --entrypoint python easyproxy -c "from pathlib import Path; a=Path('/app/app.py').read_text(); d=Path('/app/dlhd_extractor.py').read_text(); assert 'os._exit(1)' not in a; assert 'EASYPROXY_CACHE_FILE' in d; print('EasyProxy safety patch verified')"
+          docker compose run --rm --no-deps --entrypoint python easyproxy -c "import app, dlhd_extractor, vavoo_extractor; print('EasyProxy imports ok')"
+
+      - name: Start EasyProxy container smoke test
+        run: |
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml up -d easyproxy
+          for i in $(seq 1 20); do
+            if docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); assert d.get('status') and d.get('modules',{}).get('dlhd_extractor') is True"; then
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              docker compose -p justone-ci-smoke -f docker-compose.smoke.yml logs easyproxy
+              exit 1
+            fi
+            sleep 1
+          done
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python - <<'PY'
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          url = "http://127.0.0.1:7860/proxy/manifest.m3u8?" + urllib.parse.urlencode({
+              "url": "https://daddylive.sx/watch.php?id=notnumeric",
+          })
+          try:
+              urllib.request.urlopen(url, timeout=10)
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 502, exc.code
+          else:
+              raise AssertionError("invalid extractor request must return 502")
+          PY
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); assert d.get('modules',{}).get('dlhd_extractor') is True; print('request-local extractor failure verified')"
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml ps
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml down -v

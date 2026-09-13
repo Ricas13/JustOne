@@ -1,74 +1,83 @@
-import base64
 import unittest
 
-from provider import Provider
+from provider import Channel, Provider, parse_channels
+from settings import settings
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, text="", url="https://example.test/"):
+    def __init__(self, status_code=200, text=""):
         self.status_code = status_code
         self.text = text
-        self.url = url
-        self.content = text.encode()
-
-    def json(self):
-        return {}
 
 
-def player_html(url: str) -> str:
-    encoded = base64.b64encode(url.encode()).decode()
-    return f'<script>const player = {{ source: atob("{encoded}") }};</script>'
-
-
-class FakeProvider(Provider):
-    def __init__(self):
-        self.channels = []
+class FakeSession:
+    def __init__(self, response):
+        self.response = response
         self.calls = []
 
-    async def _get(self, url: str, **kwargs):
-        self.calls.append(url)
-
-        if url.endswith("/stream/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://dead.test/player"></iframe>', url)
-        if url == "https://dead.test/player":
-            return FakeResponse(200, player_html("https://dead.test/live.m3u8"), url)
-        if url == "https://dead.test/live.m3u8":
-            return FakeResponse(503, "unavailable", url)
-
-        if url.endswith("/watch/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://good1.test/player"></iframe>', url)
-        if url == "https://good1.test/player":
-            return FakeResponse(200, player_html("https://good1.test/live.m3u8"), url)
-        if url == "https://good1.test/live.m3u8":
-            return FakeResponse(200, "#EXTM3U\nhttps://good1.test/seg.ts\n", url)
-
-        if url.endswith("/cast/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://good2.test/player"></iframe>', url)
-        if url == "https://good2.test/player":
-            return FakeResponse(200, player_html("https://good2.test/live.m3u8"), url)
-        if url == "https://good2.test/live.m3u8":
-            return FakeResponse(200, "#EXTM3U\nhttps://good2.test/seg.ts\n", url)
-
-        return FakeResponse(404, "", url)
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
 
 
-class PlayerFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_source_zero_skips_dead_primary_family(self):
-        provider = FakeProvider()
-        payload = await provider.stream("54", 0)
+class CatalogueTests(unittest.TestCase):
+    def test_parses_unique_channels_and_preserves_duplicate_names(self):
+        html = """
+        <a href="/watch.php?id=54"><div class="card__title">BBC One UK</div></a>
+        <a href="/watch.php?id=55"><div class="card__title">BBC One UK</div></a>
+        <a href="/watch.php?id=54"><div class="card__title">Duplicate row</div></a>
+        <a href='/watch.php?id=70'><div class='card__title'>RTP 1 # Portugal</div></a>
+        """
 
-        self.assertIn("/hls/", payload)
-        self.assertIn("https://dead.test/live.m3u8", provider.calls)
-        self.assertIn("https://good1.test/live.m3u8", provider.calls)
-        self.assertNotIn("https://good2.test/live.m3u8", provider.calls)
+        channels = parse_channels(html)
+        self.assertEqual([channel.id for channel in channels], ["54", "55", "70"])
+        self.assertEqual([channel.name for channel in channels], ["BBC One UK", "BBC One UK", "RTP 1 Portugal"])
 
-    async def test_source_one_returns_second_resolvable_family(self):
-        provider = FakeProvider()
-        payload = await provider.stream("54", 1)
+    def test_parser_decodes_entities_nested_markup_and_whitespace(self):
+        html = """
+        <a href="/watch.php?id=81">
+          <div class="featured card__title active">Sport &amp; News <span>HD</span></div>
+        </a>
+        <a href='/watch.php?id=82'><div class='card__title'>  RTP&nbsp;2   Portugal  </div></a>
+        """
+        channels = parse_channels(html)
+        self.assertEqual(
+            [(channel.id, channel.name) for channel in channels],
+            [("81", "Sport & News HD"), ("82", "RTP 2 Portugal")],
+        )
 
-        self.assertIn("/hls/", payload)
-        self.assertIn("https://good1.test/live.m3u8", provider.calls)
-        self.assertIn("https://good2.test/live.m3u8", provider.calls)
+    def test_parser_returns_empty_for_unrecognised_markup(self):
+        self.assertEqual(parse_channels("<html><body>maintenance</body></html>"), [])
+
+    def test_playback_url_is_exact_provider_page_for_easyproxy(self):
+        provider = Provider.__new__(Provider)
+        url = provider.playback_url(Channel(id="123", name="Example"))
+
+        self.assertEqual(url, f"{settings.playback_base_url}/watch.php?id=123")
+        self.assertNotIn("/stream/123", url)
+        self.assertNotIn("localhost", url)
+
+
+class CatalogueRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_provider_page_is_rejected_instead_of_clearing_catalogue(self):
+        provider = Provider.__new__(Provider)
+        provider._session = FakeSession(FakeResponse(200, "<html>maintenance</html>"))
+        provider.channels = [Channel(id="1", name="Last good")]
+
+        with self.assertRaisesRegex(ValueError, "no supported rows"):
+            await provider.load_channels()
+
+        self.assertEqual(provider.channels, [Channel(id="1", name="Last good")])
+
+    async def test_http_failure_is_rejected_without_replacing_last_good_catalogue(self):
+        provider = Provider.__new__(Provider)
+        provider._session = FakeSession(FakeResponse(503, "unavailable"))
+        provider.channels = [Channel(id="1", name="Last good")]
+
+        with self.assertRaisesRegex(ValueError, "HTTP 503"):
+            await provider.load_channels()
+
+        self.assertEqual(provider.channels, [Channel(id="1", name="Last good")])
 
 
 if __name__ == "__main__":
