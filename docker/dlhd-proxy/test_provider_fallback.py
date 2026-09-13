@@ -43,7 +43,7 @@ class CatalogueTests(unittest.TestCase):
         channels = parse_channels(html)
         self.assertEqual(
             [(channel.id, channel.name) for channel in channels],
-            [("81", "Sport & News HD"), ("82", "RTP\xa02 Portugal")],
+            [("81", "Sport & News HD"), ("82", "RTP 2 Portugal")],
         )
 
     def test_parser_returns_empty_for_unrecognised_markup(self):
