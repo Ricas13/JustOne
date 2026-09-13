@@ -7,6 +7,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, Response
 
 from cached_provider import CachedProvider, NoMoreSourcesError
+from direct_fallbacks import DirectFallbacks, NoDirectFallbackError
 from hls_resilience import (
     HLSResilience,
     UpstreamObjectError,
@@ -23,6 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger("justone.dlhd")
 
 provider = CachedProvider()
+direct_fallbacks = DirectFallbacks(provider)
 client = httpx.AsyncClient(
     http2=True,
     timeout=httpx.Timeout(15.0, read=60.0),
@@ -122,6 +124,7 @@ async def health():
         "channels": len(provider.channels),
         "mode": "ordered-sources-resilient-hls",
         "hls": hls_resilience.stats(),
+        "direct_fallbacks": direct_fallbacks.summary(),
     }
 
 
@@ -188,6 +191,49 @@ async def stream(
         logger.exception("Channel %s source %s failed", channel_id, source + 1)
         return JSONResponse(
             {"error": str(exc), "channel": channel_id, "source": source + 1},
+            status_code=502,
+        )
+
+    return Response(
+        content=body,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/fallback/{channel_id}.m3u8")
+async def fallback_stream(
+    channel_id: str,
+    refresh: bool = Query(default=False),
+):
+    try:
+        body = await asyncio.wait_for(
+            direct_fallbacks.stream(channel_id, refresh=refresh),
+            timeout=settings.source_resolve_timeout_seconds,
+        )
+    except NoDirectFallbackError as exc:
+        return JSONResponse(
+            {"error": str(exc), "channel": channel_id, "configured": False},
+            status_code=404,
+            headers={"X-JustOne-No-Direct-Fallback": "1"},
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Channel %s direct fallback resolution timed out", channel_id)
+        return JSONResponse(
+            {"error": "direct fallback resolution timed out", "channel": channel_id, "retryable": True},
+            status_code=504,
+            headers={"Retry-After": "1", "X-JustOne-Retryable": "1"},
+        )
+    except ValueError as exc:
+        logger.warning("Channel %s direct fallback unavailable: %s", channel_id, exc)
+        return JSONResponse(
+            {"error": str(exc), "channel": channel_id},
+            status_code=502,
+        )
+    except Exception as exc:
+        logger.exception("Channel %s direct fallback failed", channel_id)
+        return JSONResponse(
+            {"error": str(exc), "channel": channel_id},
             status_code=502,
         )
 
