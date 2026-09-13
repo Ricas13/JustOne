@@ -24,10 +24,17 @@ class Settings:
         self.socks5 = os.getenv("SOCKS5", "").strip()
         self.refresh_seconds = max(60, int(os.getenv("CHANNEL_REFRESH_SECONDS", "300")))
 
-        # Resolver retries are deliberately bounded. They are useful for the short
-        # 5xx bursts DLHD exhibits, but we never keep hammering a dead source.
-        self.source_retry_attempts = _int_env("DLHD_SOURCE_RETRY_ATTEMPTS", 3, 1, 5)
-        self.source_retry_base_seconds = _float_env("DLHD_SOURCE_RETRY_BASE_SECONDS", 1.0, 0.1, 10.0)
+        # Tune-time resolver work must finish before Jellyfin Live's FFmpeg input
+        # timeout. Keep individual provider requests short and enforce a hard
+        # end-to-end resolver deadline in app.py.
+        self.source_request_timeout_seconds = _float_env("DLHD_SOURCE_REQUEST_TIMEOUT_SECONDS", 5.0, 1.0, 10.0)
+        self.source_resolve_timeout_seconds = _float_env("DLHD_SOURCE_RESOLVE_TIMEOUT_SECONDS", 12.0, 3.0, 18.0)
+
+        # Resolver retries are deliberately bounded. Jellyfin Live already
+        # performs same-source re-resolution, so two tune-stage attempts are
+        # enough to smooth a short 5xx burst without blocking startup.
+        self.source_retry_attempts = _int_env("DLHD_SOURCE_RETRY_ATTEMPTS", 2, 1, 3)
+        self.source_retry_base_seconds = _float_env("DLHD_SOURCE_RETRY_BASE_SECONDS", 0.5, 0.1, 5.0)
 
         # HLS resilience. The live offset and real segment prefetch/cache replace
         # the old artificial FFmpeg-output delay as the primary buffer.
