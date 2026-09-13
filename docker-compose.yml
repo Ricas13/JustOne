@@ -8,8 +8,6 @@ services:
       DLHD_EASYPROXY_BASE_URL: ${DLHD_EASYPROXY_BASE_URL:-https://daddylive.sx}
       SOCKS5: ${SOCKS5:-}
       CHANNEL_REFRESH_SECONDS: ${CHANNEL_REFRESH_SECONDS:-300}
-    ports:
-      - "127.0.0.1:${DLHD_CATALOGUE_PORT:-3000}:3000"
     healthcheck:
       test:
         - CMD
@@ -32,8 +30,6 @@ services:
       GLOBAL_PROXY: ${GLOBAL_PROXY:-}
       VAVOO_PROXY: ${VAVOO_PROXY:-}
       DLHD_PROXY: ${DLHD_PROXY:-}
-    ports:
-      - "127.0.0.1:${EASYPROXY_PORT:-7860}:7860"
     healthcheck:
       test:
         - CMD
