@@ -14,7 +14,7 @@ class CatalogueTests(unittest.TestCase):
 
         channels = parse_channels(html)
         self.assertEqual([channel.id for channel in channels], ["54", "55", "70"])
-        self.assertEqual([channel.name for channel in channels], ["BBC One UK", "BBC One UK", "RTP 1  Portugal"])
+        self.assertEqual([channel.name for channel in channels], ["BBC One UK", "BBC One UK", "RTP 1 Portugal"])
 
     def test_playback_url_is_provider_page_for_easyproxy(self):
         provider = Provider.__new__(Provider)
