@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Query
@@ -75,6 +76,27 @@ app = FastAPI(title="JustOne DLHD", lifespan=lifespan)
 
 def m3u_escape(value: str) -> str:
     return str(value or "").replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _origin_from_referer(referer: str) -> str:
+    """Return the normal HTTP Origin corresponding to a proxied Referer."""
+    try:
+        parsed = urlparse(str(referer or ""))
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _empty_media_playlist(payload: str) -> bool:
+    """Detect media playlists that advertise segments but provide no segment URIs."""
+    lines = [line.strip() for line in str(payload or "").splitlines() if line.strip()]
+    if any(line.upper().startswith("#EXT-X-STREAM-INF") for line in lines):
+        return False
+    has_extinf = any(line.upper().startswith("#EXTINF:") for line in lines)
+    has_media_uri = any(not line.startswith("#") for line in lines)
+    return has_extinf and not has_media_uri
 
 
 async def _resolve_stream(channel_id: str, source: int, refresh: bool) -> str:
@@ -251,7 +273,8 @@ async def hls(path: str):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    headers = provider.headers(referer, origin or None)
+    effective_origin = origin or _origin_from_referer(referer)
+    headers = provider.headers(referer, effective_origin or None)
     is_playlist = path.lower().endswith(".m3u8")
 
     if is_playlist:
@@ -279,6 +302,19 @@ async def hls(path: str):
             return JSONResponse({"error": "invalid upstream HLS playlist"}, status_code=502)
 
         prepared = prepare_hls_playlist(body)
+        if _empty_media_playlist(prepared):
+            logger.warning(
+                "Empty HLS media playlist url=%s referer=%s origin=%s",
+                fetched.effective_url,
+                referer,
+                effective_origin,
+            )
+            return JSONResponse(
+                {"error": "upstream HLS playlist contains segment durations but no media URIs"},
+                status_code=502,
+                headers={"X-JustOne-Retryable": "1"},
+            )
+
         segments = extract_media_segment_urls(prepared, fetched.effective_url)
         if segments:
             hls_resilience.register_playlist(fetched.effective_url, segments, headers)
