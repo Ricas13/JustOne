@@ -1,7 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAttempts, resultMeansNoMoreSources } from "../src/play.js";
+import { buildAttempts, ffmpegArgs, resultMeansNoMoreSources } from "../src/play.js";
+
+test("ffmpeg maps only the primary video and audio streams", () => {
+  const args = ffmpegArgs("http://dlhd-proxy:3000/stream/49.m3u8?source=0");
+  const maps = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "-map") maps.push(args[index + 1]);
+  }
+
+  assert.deepEqual(maps, ["0:v:0?", "0:a:0?"]);
+});
 
 test("playback attempts are strictly sequential and preserve candidate order", () => {
   const attempts = buildAttempts({
