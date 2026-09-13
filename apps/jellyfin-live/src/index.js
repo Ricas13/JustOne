@@ -32,6 +32,10 @@ import {
 } from "./organizer.js";
 
 const app = express();
+// We only need scalar query parameters (key/refresh). Keep Express on Node's
+// simple parser rather than its optional extended `qs` parser surface.
+app.set("query parser", "simple");
+app.disable("x-powered-by");
 const EPG_CONCURRENCY = Math.max(1, Math.min(4, Number(process.env.JELLYFIN_EPG_CONCURRENCY || 2)));
 const IPTV_ORG_CACHE_MS = 12 * 60 * 60 * 1000;
 const IPTV_ORG_RETRY_MS = Math.max(60_000, Number(process.env.JELLYFIN_IPTV_ORG_RETRY_MS || 300_000));
