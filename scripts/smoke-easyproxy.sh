@@ -49,7 +49,7 @@ assert x.get("playback") == "easyproxy-hls", x
 engine = x.get("engine") or {}
 assert engine.get("ok") is True, x
 assert engine.get("dlhdExtractorLoaded") is True, x
-print(f"health_ok channels={x.get(chr(99)+chr(104)+chr(97)+chr(110)+chr(110)+chr(101)+chr(108)+chr(115))} raw={x.get(chr(114)+chr(97)+chr(119)+chr(67)+chr(104)+chr(97)+chr(110)+chr(110)+chr(101)+chr(108)+chr(115))}")
+print("health_ok channels=%s raw=%s" % (x.get("channels"), x.get("rawChannels")))
 '
 }
 
