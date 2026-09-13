@@ -38,7 +38,7 @@ services:
         - CMD
         - python
         - -c
-        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); sys.exit(0 if data.get('status') else 1)"
+        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); sys.exit(0 if data.get('status') and data.get('modules',{}).get('dlhd_extractor') is True else 1)"
       interval: 5s
       timeout: 5s
       retries: 20
