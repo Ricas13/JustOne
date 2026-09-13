@@ -89,7 +89,19 @@ async def _resolve_stream(channel_id: str, source: int, refresh: bool) -> str:
                 stream_inflight.pop(request_key, None)
 
         task.add_done_callback(clear)
-    return await asyncio.shield(task)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.source_resolve_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        if stream_inflight.get(key) is task:
+            stream_inflight.pop(key, None)
+        if not task.done():
+            task.cancel()
+        provider.invalidate(channel_id)
+        raise
 
 
 def _upstream_error_response(exc: UpstreamObjectError) -> JSONResponse:
@@ -142,6 +154,23 @@ async def stream(
 ):
     try:
         body = await _resolve_stream(channel_id, source, refresh)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Channel %s source %s resolution timed out after %.1fs",
+            channel_id,
+            source + 1,
+            settings.source_resolve_timeout_seconds,
+        )
+        return JSONResponse(
+            {
+                "error": "source resolution timed out",
+                "channel": channel_id,
+                "source": source + 1,
+                "retryable": True,
+            },
+            status_code=504,
+            headers={"Retry-After": "1", "X-JustOne-Retryable": "1"},
+        )
     except NoMoreSourcesError as exc:
         logger.info("Channel %s has no source slot %s: %s", channel_id, source + 1, exc)
         return JSONResponse(
