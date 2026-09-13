@@ -65,7 +65,21 @@ jobs:
             fi
             sleep 1
           done
-          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python -c "import urllib.error,urllib.parse,urllib.request; u='http://127.0.0.1:7860/proxy/manifest.m3u8?'+urllib.parse.urlencode({'url':'https://daddylive.sx/watch.php?id=notnumeric'}); ok=False;\ntry:\n urllib.request.urlopen(u,timeout=10)\nexcept urllib.error.HTTPError as e:\n ok=e.code==502\nassert ok, 'invalid extractor request must return 502'"
+          docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python - <<'PY'
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          url = "http://127.0.0.1:7860/proxy/manifest.m3u8?" + urllib.parse.urlencode({
+              "url": "https://daddylive.sx/watch.php?id=notnumeric",
+          })
+          try:
+              urllib.request.urlopen(url, timeout=10)
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 502, exc.code
+          else:
+              raise AssertionError("invalid extractor request must return 502")
+          PY
           docker compose -p justone-ci-smoke -f docker-compose.smoke.yml exec -T easyproxy python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:7860/api/info', timeout=3)); assert d.get('modules',{}).get('dlhd_extractor') is True; print('request-local extractor failure verified')"
           docker compose -p justone-ci-smoke -f docker-compose.smoke.yml ps
           docker compose -p justone-ci-smoke -f docker-compose.smoke.yml down -v
