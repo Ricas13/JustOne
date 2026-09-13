@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from hls_resilience import prepare_hls_playlist
+from provider import rewrite_hls_playlist
+
 logger = logging.getLogger(__name__)
 
 FALLBACKS_PATH = Path("/app/data/direct-fallbacks.json")
@@ -116,6 +119,26 @@ class DirectFallbacks:
         self._reload_if_changed()
         return str(channel_id) in self._sources
 
+    async def _proxy_source(self, source: DirectFallbackSource, label: str) -> str:
+        referer = source.referer or source.url
+        headers = self.provider.headers(referer, source.origin or None)
+        response = await self.provider._get_hls_with_retry(
+            source.url,
+            headers=headers,
+            timeout=12,
+        )
+        if response.status_code >= 400:
+            raise ValueError(f"{label} playlist HTTP {response.status_code}")
+        if not response.text.lstrip().startswith("#EXTM3U"):
+            raise ValueError(f"{label} returned invalid HLS")
+
+        prepared = prepare_hls_playlist(response.text)
+        return rewrite_hls_playlist(
+            prepared,
+            str(response.url),
+            referer,
+        )
+
     async def _resolve(self, channel_id: str) -> str:
         self._reload_if_changed()
         sources = self._sources.get(str(channel_id), [])
@@ -124,17 +147,13 @@ class DirectFallbacks:
 
         failures: list[str] = []
         for index, source in enumerate(sources, start=1):
+            label = f"fallback {index}"
             try:
-                payload = await self.provider.proxy_direct_hls(
-                    source.url,
-                    referer=source.referer,
-                    origin=source.origin,
-                    source_label=f"fallback {index}",
-                )
+                payload = await self._proxy_source(source, label)
                 logger.info("Channel %s selected direct fallback %s/%s", channel_id, index, len(sources))
                 return payload
             except Exception as exc:
-                failures.append(f"fallback {index}: {exc}")
+                failures.append(f"{label}: {exc}")
 
         detail = "; ".join(failures[-4:]) or "all configured fallbacks failed"
         raise ValueError(f"Direct fallback unavailable for channel {channel_id}: {detail}")
