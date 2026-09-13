@@ -20,4 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 7860
 
-CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "4", "--worker-class", "aiohttp.worker.GunicornWebWorker", "app:app"]
+# EasyProxy's DLHD cache is process-local and file-backed. One async worker
+# avoids multiple Gunicorn workers racing the same cache file while still
+# allowing aiohttp to serve many concurrent HLS requests.
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "1", "--worker-class", "aiohttp.worker.GunicornWebWorker", "app:app"]
