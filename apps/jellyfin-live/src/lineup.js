@@ -54,6 +54,7 @@ export function normalizeCountryCode(code, name = "") {
   const title = String(name || "").trim();
   if (/^5\s*USA$/i.test(title)) return "GB";
   if (/^BBC\s+America\b/i.test(title)) return "US";
+  if (/^Sky\s+Sports\s+Main\s+Event\b/i.test(title)) return "GB";
   return normalizeIdentityCountryCode(code);
 }
 
