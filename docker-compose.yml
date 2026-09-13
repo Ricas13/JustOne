@@ -30,6 +30,9 @@ services:
       GLOBAL_PROXY: ${GLOBAL_PROXY:-}
       VAVOO_PROXY: ${VAVOO_PROXY:-}
       DLHD_PROXY: ${DLHD_PROXY:-}
+      EASYPROXY_CACHE_FILE: /app/data/.dlhd_cache
+    volumes:
+      - easyproxy-data:/app/data
     healthcheck:
       test:
         - CMD
@@ -49,7 +52,7 @@ services:
       dlhd-catalogue:
         condition: service_healthy
       easyproxy:
-        condition: service_healthy
+        condition: service_started
     environment:
       DLHD_CATALOGUE_URL: http://dlhd-catalogue:3000
       EASYPROXY_URL: http://easyproxy:7860
@@ -83,6 +86,9 @@ services:
       - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
       - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
       - "traefik.http.services.justone-jellyfin.loadbalancer.responseForwarding.flushInterval=100ms"
+
+volumes:
+  easyproxy-data:
 
 networks:
   media_net:
