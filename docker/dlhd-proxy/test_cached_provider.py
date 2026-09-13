@@ -2,6 +2,7 @@ import base64
 import unittest
 
 from cached_provider import CachedProvider, NoMoreSourcesError
+from settings import settings
 
 
 class FakeResponse:
@@ -59,6 +60,13 @@ class FakeCachedProvider(CachedProvider):
 
 
 class CachedSourceDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._source_retry_base_seconds = settings.source_retry_base_seconds
+        settings.source_retry_base_seconds = 0
+
+    async def asyncTearDown(self):
+        settings.source_retry_base_seconds = self._source_retry_base_seconds
+
     async def test_failed_selected_source_invalidates_discovery_before_failover(self):
         provider = FakeCachedProvider()
 
@@ -75,7 +83,10 @@ class CachedSourceDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count_suffix(provider.calls, "/watch/stream-54.php"), 1)
         self.assertEqual(provider.calls.count("https://dead.test/player"), 2)
         self.assertEqual(provider.calls.count("https://good1.test/player"), 1)
-        self.assertEqual(provider.calls.count("https://dead.test/live.m3u8"), 1)
+        self.assertEqual(
+            provider.calls.count("https://dead.test/live.m3u8"),
+            settings.source_retry_attempts,
+        )
         self.assertEqual(provider.calls.count("https://good1.test/live.m3u8"), 1)
 
     async def test_source_index_beyond_discovered_options_is_no_more_sources(self):

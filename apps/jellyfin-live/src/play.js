@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
 
-const DEFAULT_STALL_MS = Math.max(0, Number(process.env.JELLYFIN_STREAM_STALL_MS ?? 12000));
-const DEFAULT_PREBUFFER_MS = Math.max(0, Number(process.env.JELLYFIN_PREBUFFER_MS ?? 2000));
+const DEFAULT_STALL_MS = Math.max(0, Number(process.env.JELLYFIN_STREAM_STALL_MS ?? 0));
+const DEFAULT_PREBUFFER_MS = Math.max(0, Number(process.env.JELLYFIN_PREBUFFER_MS ?? 0));
+const DEFAULT_FFMPEG_RW_TIMEOUT_MS = Math.max(1000, Number(process.env.JELLYFIN_FFMPEG_RW_TIMEOUT_MS ?? 20000));
+const DEFAULT_SOURCE_REFRESH_RETRIES = Math.max(
+  0,
+  Math.min(4, Number(process.env.JELLYFIN_SOURCE_REFRESH_RETRIES ?? 2)),
+);
+const DEFAULT_SOURCE_REFRESH_BASE_MS = Math.max(
+  100,
+  Number(process.env.JELLYFIN_SOURCE_REFRESH_BASE_MS ?? 1000),
+);
 const MAX_SOURCES_PER_CANDIDATE = 6;
 const DEFAULT_SOURCES_PER_CANDIDATE = Math.max(
   1,
@@ -12,9 +21,17 @@ const DEFAULT_SOURCES_PER_CANDIDATE = Math.max(
 );
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 
-function sourceUrl(rawUrl, source) {
+function sourceUrl(rawUrl, source, refresh = false) {
   const url = new URL(String(rawUrl));
   url.searchParams.set("source", String(source));
+  if (refresh) url.searchParams.set("refresh", "1");
+  else url.searchParams.delete("refresh");
+  return url.href;
+}
+
+export function refreshAttemptUrl(rawUrl) {
+  const url = new URL(String(rawUrl));
+  url.searchParams.set("refresh", "1");
   return url.href;
 }
 
@@ -28,6 +45,15 @@ function normalizeSourcesPerCandidate(value) {
 function normalizeDelayMs(value, fallback) {
   const parsed = Number(value ?? fallback);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+
+function normalizeRetryCount(value, fallback) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(4, Math.floor(parsed))) : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function buildAttempts(channel, sourcesPerCandidate = DEFAULT_SOURCES_PER_CANDIDATE) {
@@ -52,12 +78,20 @@ export function resultMeansNoMoreSources(result) {
     && /HTTP error 404 Not Found/i.test(String(result?.detail || ""));
 }
 
+export function resultShouldRefreshSource(result) {
+  if (!result || result.reason === "client-closed" || resultMeansNoMoreSources(result)) return false;
+  if (Number(result.bytes || 0) > 0) return true;
+
+  const detail = String(result.detail || "");
+  return /(?:HTTP error (?:400|401|403|408|409|425|429|500|502|503|504)|End of file|Operation timed out|timed out|Failed to reload playlist|Server returned 5XX|Connection (?:reset|refused)|Input\/output error)/i.test(detail);
+}
+
 export function ffmpegArgs(url) {
   return [
     "-nostdin",
     "-hide_banner",
     "-loglevel", "warning",
-    "-rw_timeout", "10000000",
+    "-rw_timeout", String(Math.round(DEFAULT_FFMPEG_RW_TIMEOUT_MS * 1000)),
     "-i", url,
     "-map", "0:v:0?",
     "-map", "0:a:0?",
@@ -204,6 +238,14 @@ export async function streamSequentially(req, res, channel, options = {}) {
   const sourcesPerCandidate = normalizeSourcesPerCandidate(
     options.sourcesPerCandidate || DEFAULT_SOURCES_PER_CANDIDATE,
   );
+  const sourceRefreshRetries = normalizeRetryCount(
+    options.sourceRefreshRetries,
+    DEFAULT_SOURCE_REFRESH_RETRIES,
+  );
+  const sourceRefreshBaseMs = normalizeDelayMs(
+    options.sourceRefreshBaseMs,
+    DEFAULT_SOURCE_REFRESH_BASE_MS,
+  );
   const log = options.log || (() => {});
   const attempts = buildAttempts(channel, sourcesPerCandidate);
 
@@ -227,11 +269,32 @@ export async function streamSequentially(req, res, channel, options = {}) {
     if (clientClosed || res.destroyed) return;
     if (exhaustedCandidates.has(attempt.candidateIndex)) continue;
 
-    log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
-    const result = await runAttempt(attempt, req, res, { stallMs, prebufferMs, log });
+    let result = null;
+    for (let recovery = 0; recovery <= sourceRefreshRetries; recovery += 1) {
+      if (clientClosed || res.destroyed) return;
+      const activeAttempt = recovery === 0
+        ? attempt
+        : { ...attempt, url: refreshAttemptUrl(attempt.url) };
 
-    if (result.reason === "client-closed") return;
-    log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);
+      if (recovery === 0) {
+        log(`try ${index + 1}/${attempts.length}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
+      } else {
+        log(`refresh retry ${recovery}/${sourceRefreshRetries}: ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}`);
+      }
+
+      result = await runAttempt(activeAttempt, req, res, { stallMs, prebufferMs, log });
+      if (result.reason === "client-closed") return;
+
+      log(`failed ${attempt.label} candidate ${attempt.candidateIndex + 1} stream ${attempt.source + 1}: ${result.reason}${result.detail ? ` (${result.detail})` : ""}`);
+
+      if (recovery < sourceRefreshRetries && resultShouldRefreshSource(result)) {
+        const delay = sourceRefreshBaseMs * (2 ** recovery);
+        log(`re-resolving same source in ${delay}ms before failover`);
+        await sleep(delay);
+        continue;
+      }
+      break;
+    }
 
     if (resultMeansNoMoreSources(result)) {
       exhaustedCandidates.add(attempt.candidateIndex);

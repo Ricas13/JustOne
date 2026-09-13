@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAttempts, ffmpegArgs, resultMeansNoMoreSources } from "../src/play.js";
+import {
+  buildAttempts,
+  ffmpegArgs,
+  refreshAttemptUrl,
+  resultMeansNoMoreSources,
+  resultShouldRefreshSource,
+} from "../src/play.js";
 
 test("ffmpeg maps only the primary video and audio streams", () => {
   const args = ffmpegArgs("http://dlhd-proxy:3000/stream/49.m3u8?source=0");
@@ -12,6 +18,13 @@ test("ffmpeg maps only the primary video and audio streams", () => {
   }
 
   assert.deepEqual(maps, ["0:v:0?", "0:a:0?"]);
+});
+
+test("ffmpeg read timeout leaves enough room for bounded proxy recovery", () => {
+  const args = ffmpegArgs("http://dlhd-proxy:3000/stream/49.m3u8?source=0");
+  const index = args.indexOf("-rw_timeout");
+  assert.notEqual(index, -1);
+  assert.ok(Number(args[index + 1]) >= 20_000_000);
 });
 
 test("playback attempts are strictly sequential and preserve candidate order", () => {
@@ -85,6 +98,37 @@ test("404 before media means this candidate has no additional provider source sl
     bytes: 0,
     detail: "[http @ x] HTTP error 502 Bad Gateway",
   }), false);
+});
+
+test("transient failures refresh the same source before failover", () => {
+  assert.equal(resultShouldRefreshSource({
+    bytes: 0,
+    reason: "ffmpeg-exit",
+    detail: "HTTP error 503 Service Unavailable",
+  }), true);
+  assert.equal(resultShouldRefreshSource({
+    bytes: 0,
+    reason: "ffmpeg-exit",
+    detail: "Operation timed out when parsing playlist",
+  }), true);
+  assert.equal(resultShouldRefreshSource({
+    bytes: 1024,
+    reason: "ffmpeg-exit",
+    detail: "code=0 signal=none",
+  }), true);
+  assert.equal(resultShouldRefreshSource({
+    bytes: 0,
+    reason: "ffmpeg-exit",
+    detail: "HTTP error 404 Not Found",
+  }), false);
+});
+
+test("refresh retry preserves source selection while forcing resolver refresh", () => {
+  const url = refreshAttemptUrl("http://dlhd-proxy:3000/stream/35.m3u8?source=0&token=x");
+  const parsed = new URL(url);
+  assert.equal(parsed.searchParams.get("source"), "0");
+  assert.equal(parsed.searchParams.get("token"), "x");
+  assert.equal(parsed.searchParams.get("refresh"), "1");
 });
 
 test("invalid candidate URLs are ignored rather than reordered", () => {
