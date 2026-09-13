@@ -1,74 +1,28 @@
-import base64
 import unittest
 
-from provider import Provider
+from provider import Channel, Provider, parse_channels
 
 
-class FakeResponse:
-    def __init__(self, status_code=200, text="", url="https://example.test/"):
-        self.status_code = status_code
-        self.text = text
-        self.url = url
-        self.content = text.encode()
+class CatalogueTests(unittest.TestCase):
+    def test_parses_unique_channels_and_preserves_duplicate_names(self):
+        html = """
+        <a href="/watch.php?id=54"><div class="card__title">BBC One UK</div></a>
+        <a href="/watch.php?id=55"><div class="card__title">BBC One UK</div></a>
+        <a href="/watch.php?id=54"><div class="card__title">Duplicate row</div></a>
+        <a href='/watch.php?id=70'><div class='card__title'>RTP 1 # Portugal</div></a>
+        """
 
-    def json(self):
-        return {}
+        channels = parse_channels(html)
+        self.assertEqual([channel.id for channel in channels], ["54", "55", "70"])
+        self.assertEqual([channel.name for channel in channels], ["BBC One UK", "BBC One UK", "RTP 1  Portugal"])
 
+    def test_playback_url_is_provider_page_for_easyproxy(self):
+        provider = Provider.__new__(Provider)
+        url = provider.playback_url(Channel(id="123", name="Example"))
 
-def player_html(url: str) -> str:
-    encoded = base64.b64encode(url.encode()).decode()
-    return f'<script>const player = {{ source: atob("{encoded}") }};</script>'
-
-
-class FakeProvider(Provider):
-    def __init__(self):
-        self.channels = []
-        self.calls = []
-
-    async def _get(self, url: str, **kwargs):
-        self.calls.append(url)
-
-        if url.endswith("/stream/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://dead.test/player"></iframe>', url)
-        if url == "https://dead.test/player":
-            return FakeResponse(200, player_html("https://dead.test/live.m3u8"), url)
-        if url == "https://dead.test/live.m3u8":
-            return FakeResponse(503, "unavailable", url)
-
-        if url.endswith("/watch/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://good1.test/player"></iframe>', url)
-        if url == "https://good1.test/player":
-            return FakeResponse(200, player_html("https://good1.test/live.m3u8"), url)
-        if url == "https://good1.test/live.m3u8":
-            return FakeResponse(200, "#EXTM3U\nhttps://good1.test/seg.ts\n", url)
-
-        if url.endswith("/cast/stream-54.php"):
-            return FakeResponse(200, '<iframe src="https://good2.test/player"></iframe>', url)
-        if url == "https://good2.test/player":
-            return FakeResponse(200, player_html("https://good2.test/live.m3u8"), url)
-        if url == "https://good2.test/live.m3u8":
-            return FakeResponse(200, "#EXTM3U\nhttps://good2.test/seg.ts\n", url)
-
-        return FakeResponse(404, "", url)
-
-
-class PlayerFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_source_zero_skips_dead_primary_family(self):
-        provider = FakeProvider()
-        payload = await provider.stream("54", 0)
-
-        self.assertIn("/hls/", payload)
-        self.assertIn("https://dead.test/live.m3u8", provider.calls)
-        self.assertIn("https://good1.test/live.m3u8", provider.calls)
-        self.assertNotIn("https://good2.test/live.m3u8", provider.calls)
-
-    async def test_source_one_returns_second_resolvable_family(self):
-        provider = FakeProvider()
-        payload = await provider.stream("54", 1)
-
-        self.assertIn("/hls/", payload)
-        self.assertIn("https://good1.test/live.m3u8", provider.calls)
-        self.assertIn("https://good2.test/live.m3u8", provider.calls)
+        self.assertIn("watch.php?id=123", url)
+        self.assertNotIn("/stream/123", url)
+        self.assertNotIn("localhost", url)
 
 
 if __name__ == "__main__":
