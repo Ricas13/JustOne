@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import html
 import json
@@ -9,6 +10,7 @@ from urllib.parse import quote, urljoin, urlparse
 
 from curl_cffi import AsyncSession
 
+from hls_resilience import prepare_hls_playlist
 from settings import settings
 from utils import decode_bundle, decrypt, encrypt
 
@@ -185,6 +187,39 @@ class Provider:
     async def _get(self, url: str, **kwargs):
         return await self._session.get(url, **kwargs)
 
+    async def _get_hls_with_retry(self, url: str, headers: dict[str, str], timeout: int = 12):
+        """Retry only transient HLS validation failures with bounded backoff."""
+        last_response = None
+        last_error: Exception | None = None
+
+        for attempt in range(settings.source_retry_attempts):
+            try:
+                response = await self._get(url, headers=headers, timeout=timeout)
+                last_response = response
+                if response.status_code < 500 or response.status_code not in {500, 502, 503, 504}:
+                    return response
+                last_error = ValueError(f"playlist HTTP {response.status_code}")
+            except Exception as exc:
+                last_error = exc
+
+            if attempt >= settings.source_retry_attempts - 1:
+                break
+            delay = settings.source_retry_base_seconds * (2 ** attempt)
+            logger.warning(
+                "Transient HLS validation failure for %s; retry %s/%s in %.2fs: %s",
+                url,
+                attempt + 2,
+                settings.source_retry_attempts,
+                delay,
+                last_error,
+            )
+            await asyncio.sleep(delay)
+
+        if last_response is not None:
+            return last_response
+        assert last_error is not None
+        raise last_error
+
     async def load_channels(self) -> None:
         url = f"{settings.base_url}/24-7-channels.php"
         response = await self._get(url, headers=self.headers(), timeout=20)
@@ -205,8 +240,6 @@ class Provider:
             name = html.unescape(channel_name.strip()).replace("#", "")
             channels.append(Channel(id=channel_id, name=name))
 
-        # Duplicate names stay duplicate here. The Jellyfin layer owns merging,
-        # and preserves these rows in provider order as candidate 1, 2, 3...
         self.channels = channels
         logger.info("Loaded %d raw DLHD channels", len(channels))
 
@@ -243,16 +276,19 @@ class Provider:
         else:
             stream_url = f"https://{server_key}new.newkso.ru/{server_key}/{channel_key}/mono.m3u8"
 
-        response = await self._get(stream_url, headers=self.headers(quote(str(source_url))), timeout=12)
+        response = await self._get_hls_with_retry(
+            stream_url,
+            headers=self.headers(quote(str(source_url))),
+            timeout=12,
+        )
         if response.status_code >= 400:
             raise ValueError(f"Legacy playlist HTTP {response.status_code}")
         if not response.text.lstrip().startswith("#EXTM3U"):
             raise ValueError("Legacy source did not return HLS")
 
-        # Legacy keys require the player host as both the Referer basis and
-        # Origin. Ordinary media stays on the simple HLS proxy path.
+        prepared = prepare_hls_playlist(response.text)
         return rewrite_hls_playlist(
-            response.text,
+            prepared,
             stream_url,
             source_url,
             key_referer_url=f"{parsed_source.netloc}/",
@@ -260,20 +296,20 @@ class Provider:
         )
 
     async def _direct_stream(self, direct_url: str, source_url: str, source_number: int) -> str:
-        response = await self._get(direct_url, headers=self.headers(source_url), timeout=12)
+        response = await self._get_hls_with_retry(
+            direct_url,
+            headers=self.headers(source_url),
+            timeout=12,
+        )
         if response.status_code >= 400:
             raise ValueError(f"Source {source_number} playlist HTTP {response.status_code}")
         if not response.text.lstrip().startswith("#EXTM3U"):
             raise ValueError(f"Source {source_number} returned invalid HLS")
-        return rewrite_hls_playlist(response.text, str(response.url), source_url)
+        prepared = prepare_hls_playlist(response.text)
+        return rewrite_hls_playlist(prepared, str(response.url), source_url)
 
     async def stream(self, channel_id: str, source_index: int = 0) -> str:
-        """Return the Nth currently resolvable DLHD provider source.
-
-        Player families are checked in a fixed order. Dead pages/playlists are
-        skipped during this one tune only; there is deliberately no cache,
-        scoring, learning, warm standby, or background monitoring.
-        """
+        """Return the Nth currently resolvable DLHD provider source."""
         if source_index < 0:
             raise ValueError("source must be >= 0")
 
@@ -304,8 +340,6 @@ class Provider:
                 if candidate not in player_urls:
                     player_urls.append(candidate)
 
-            # Some provider variants embed the player directly in the family
-            # page. Treat that page as a candidate only when no iframe exists.
             if not player_urls:
                 player_urls = [page_url]
 
@@ -325,8 +359,6 @@ class Provider:
                     failures.append(f"{label}: player HTTP {player.status_code}")
                     continue
 
-                # Authenticated players take precedence and are not mixed with
-                # base64 direct-HLS fallbacks from the same player page.
                 legacy_keys = re.findall(r'const\s+CHANNEL_KEY\s*=\s*"(.*?)";', player.text)
                 if legacy_keys:
                     source_key = f"legacy:{legacy_keys[-1]}"

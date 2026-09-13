@@ -41,27 +41,16 @@ class DiscoveryState:
 
 
 class CachedProvider(Provider):
-    """Progressively discover ordered provider alternatives and reuse them.
-
-    Provider.stream() rescans player families from the beginning for every
-    source=N request. Jellyfin can issue source=0..5 in quick succession when
-    failing over, multiplying provider page/player traffic.
-
-    This wrapper keeps a short per-channel discovery state. Source 1 scans only
-    as far as needed to discover option 1. If that option fails, source 2
-    continues from the next unscanned family instead of starting over. HLS
-    playlists themselves are never cached here.
-
-    If a selected source later fails validation, its discovery state is dropped
-    immediately. The following failover request can therefore rediscover fresh
-    provider/player URLs instead of being pinned to a known-dead descriptor for
-    the remainder of the cache TTL.
-    """
+    """Progressively discover ordered provider alternatives and reuse them."""
 
     def __init__(self) -> None:
         super().__init__()
         self._source_cache: dict[str, DiscoveryState] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
+
+    def invalidate(self, channel_id: str) -> None:
+        if self._source_cache.pop(str(channel_id), None) is not None:
+            logger.info("Channel %s source discovery explicitly invalidated", channel_id)
 
     def _fresh_state(self) -> DiscoveryState:
         return DiscoveryState(
@@ -204,10 +193,7 @@ class CachedProvider(Provider):
                 )
                 mode = "direct HLS"
         except Exception as exc:
-            # A descriptor that just failed should not survive for another 20s.
-            # Drop the whole discovery state so the next failover/tune can pick
-            # up fresh player URLs/tokens immediately.
-            self._source_cache.pop(channel_id, None)
+            self.invalidate(channel_id)
             logger.info(
                 "Channel %s invalidated source discovery after source %s failed via %s",
                 channel_id,
