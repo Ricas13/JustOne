@@ -18,6 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("justone.dlhd")
 
+PLAYLIST_TIMEOUT_SECONDS = 8.0
+PLAYLIST_CACHE_SECONDS = 1.0
+
 provider = CachedProvider()
 client = httpx.AsyncClient(
     http2=True,
@@ -26,6 +29,15 @@ client = httpx.AsyncClient(
     verify=False,
 )
 refresh_task: asyncio.Task | None = None
+playlist_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
+playlist_inflight: dict[tuple[str, str, str], asyncio.Task] = {}
+
+
+class UpstreamPlaylistError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
 
 
 async def refresh_channels_forever() -> None:
@@ -54,6 +66,10 @@ async def lifespan(_app: FastAPI):
             refresh_task.cancel()
             with suppress(asyncio.CancelledError):
                 await refresh_task
+        for task in list(playlist_inflight.values()):
+            task.cancel()
+        playlist_inflight.clear()
+        playlist_cache.clear()
         await client.aclose()
         await provider.close()
 
@@ -63,6 +79,106 @@ app = FastAPI(title="JustOne DLHD", lifespan=lifespan)
 
 def m3u_escape(value: str) -> str:
     return str(value or "").replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _playlist_key(url: str, referer: str, origin: str) -> tuple[str, str, str]:
+    return (url, referer or "", origin or "")
+
+
+async def _load_playlist(url: str, referer: str, origin: str) -> str:
+    response = None
+    try:
+        response = await client.send(
+            client.build_request(
+                "GET",
+                url,
+                headers=provider.headers(referer, origin or None),
+                timeout=httpx.Timeout(PLAYLIST_TIMEOUT_SECONDS),
+            ),
+            stream=True,
+        )
+    except httpx.RequestError as exc:
+        logger.warning("HLS playlist request failed %s: %s", url, exc)
+        raise UpstreamPlaylistError(502, "upstream HLS playlist unavailable") from exc
+
+    try:
+        if response.status_code >= 400:
+            logger.warning(
+                "HLS playlist upstream error status=%s url=%s retry_after=%r server=%r cf_ray=%r",
+                response.status_code,
+                url,
+                response.headers.get("retry-after"),
+                response.headers.get("server"),
+                response.headers.get("cf-ray"),
+            )
+            raise UpstreamPlaylistError(response.status_code, "upstream HLS error")
+
+        effective_url = str(response.url)
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        try:
+            raw = await response.aread()
+        except httpx.RequestError as exc:
+            logger.warning("HLS playlist body read failed %s: %s", effective_url, exc)
+            raise UpstreamPlaylistError(502, "upstream HLS playlist read failed") from exc
+
+        body = raw.decode("utf-8", errors="replace")
+        if not body.lstrip().startswith("#EXTM3U"):
+            preview = body[:500].replace("\n", " ").replace("\r", " ")
+            logger.warning(
+                "INVALID HLS PLAYLIST status=%s content_type=%r effective_url=%s "
+                "content_length=%r server=%r cf_ray=%r body_preview=%r",
+                response.status_code,
+                content_type,
+                effective_url,
+                response.headers.get("content-length"),
+                response.headers.get("server"),
+                response.headers.get("cf-ray"),
+                preview,
+            )
+            raise UpstreamPlaylistError(502, "invalid upstream HLS playlist")
+
+        return rewrite_hls_playlist(body, effective_url, referer)
+    finally:
+        with suppress(Exception):
+            await response.aclose()
+
+
+async def _load_and_cache_playlist(
+    key: tuple[str, str, str],
+    url: str,
+    referer: str,
+    origin: str,
+) -> str:
+    body = await _load_playlist(url, referer, origin)
+    playlist_cache[key] = (
+        asyncio.get_running_loop().time() + PLAYLIST_CACHE_SECONDS,
+        body,
+    )
+    return body
+
+
+async def get_playlist(url: str, referer: str, origin: str) -> str:
+    loop = asyncio.get_running_loop()
+    key = _playlist_key(url, referer, origin)
+    cached = playlist_cache.get(key)
+    if cached:
+        expires_at, body = cached
+        if expires_at > loop.time():
+            return body
+        playlist_cache.pop(key, None)
+
+    task = playlist_inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(_load_and_cache_playlist(key, url, referer, origin))
+        playlist_inflight[key] = task
+
+        def clear_inflight(done: asyncio.Task, request_key=key) -> None:
+            if playlist_inflight.get(request_key) is done:
+                playlist_inflight.pop(request_key, None)
+
+        task.add_done_callback(clear_inflight)
+
+    return await asyncio.shield(task)
 
 
 @app.get("/health")
@@ -133,6 +249,20 @@ async def hls(path: str):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    if urlparse(url).path.lower().endswith(".m3u8"):
+        try:
+            body = await get_playlist(url, referer, origin)
+        except UpstreamPlaylistError as exc:
+            return JSONResponse(
+                {"error": exc.message, "status": exc.status_code},
+                status_code=exc.status_code,
+            )
+        return Response(
+            content=body,
+            media_type="application/vnd.apple.mpegurl",
+            headers={"Cache-Control": "no-store"},
+        )
+
     try:
         response = await client.send(
             client.build_request(
@@ -156,14 +286,15 @@ async def hls(path: str):
 
     effective_url = str(response.url)
     content_type = response.headers.get("content-type", "application/octet-stream")
-    is_playlist = (
-        "mpegurl" in content_type.lower()
-        or "m3u8" in content_type.lower()
-        or urlparse(effective_url).path.lower().endswith(".m3u8")
-    )
+    is_playlist = "mpegurl" in content_type.lower()
 
     if is_playlist:
-        body = (await response.aread()).decode("utf-8", errors="replace")
+        try:
+            body = (await response.aread()).decode("utf-8", errors="replace")
+        except httpx.RequestError as exc:
+            await response.aclose()
+            logger.warning("HLS playlist body read failed %s: %s", effective_url, exc)
+            return JSONResponse({"error": "upstream HLS playlist read failed"}, status_code=502)
         await response.aclose()
         if not body.lstrip().startswith("#EXTM3U"):
             return JSONResponse({"error": "invalid upstream HLS playlist"}, status_code=502)
