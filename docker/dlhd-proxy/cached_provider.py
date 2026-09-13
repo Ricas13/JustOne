@@ -66,7 +66,11 @@ class CachedProvider(Provider):
         page_url = f"{settings.base_url}/{folder}/stream-{channel_id}.php"
 
         try:
-            page = await self._get(page_url, headers=self.headers(), timeout=12)
+            page = await self._get(
+                page_url,
+                headers=self.headers(),
+                timeout=settings.source_request_timeout_seconds,
+            )
         except Exception as exc:
             state.failures.append(f"{folder}: page {type(exc).__name__}")
             return
@@ -98,7 +102,7 @@ class CachedProvider(Provider):
                 player = page if player_url == page_url else await self._get(
                     player_url,
                     headers=self.headers(page_url),
-                    timeout=12,
+                    timeout=settings.source_request_timeout_seconds,
                 )
             except Exception as exc:
                 state.failures.append(f"{label}: player {type(exc).__name__}")
