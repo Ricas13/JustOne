@@ -1,37 +1,68 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAttempts } from "../src/play.js";
+import {
+  decodeBridgeTarget,
+  easyProxyManifestUrl,
+  encodeBridgeTarget,
+  resolveEasyProxyManifest,
+  rewriteEasyProxyManifest,
+} from "../src/easyproxy.js";
 
-test("playback attempts are strictly sequential and preserve candidate order", () => {
-  const attempts = buildAttempts({
-    name: "Example",
-    candidates: [
-      { label: "first", url: "http://dlhd-proxy:3000/stream/10.m3u8" },
-      { label: "second", url: "http://dlhd-proxy:3000/stream/11.m3u8?token=x" },
-    ],
-  }, 2);
+test("EasyProxy manifest URL carries the original provider page", () => {
+  const source = "https://daddylive.sx/watch.php?id=123&foo=bar";
+  const url = new URL(easyProxyManifestUrl(source));
 
-  assert.deepEqual(
-    attempts.map((row) => [row.candidateIndex, row.source, new URL(row.url).pathname, new URL(row.url).searchParams.get("source")]),
-    [
-      [0, 0, "/stream/10.m3u8", "0"],
-      [0, 1, "/stream/10.m3u8", "1"],
-      [1, 0, "/stream/11.m3u8", "0"],
-      [1, 1, "/stream/11.m3u8", "1"],
-    ],
-  );
-  assert.equal(new URL(attempts[2].url).searchParams.get("token"), "x");
+  assert.equal(url.origin, "http://easyproxy:7860");
+  assert.equal(url.pathname, "/proxy/manifest.m3u8");
+  assert.equal(url.searchParams.get("url"), source);
 });
 
-test("invalid candidate URLs are ignored rather than reordered", () => {
-  const attempts = buildAttempts({
-    candidates: [
-      { label: "bad", url: "" },
-      { label: "good", url: "https://example.test/live.m3u8" },
-    ],
-  }, 1);
-  assert.equal(attempts.length, 1);
-  assert.equal(attempts[0].candidateIndex, 1);
-  assert.equal(attempts[0].source, 0);
+test("bridge tokens are signed and cannot be tampered with", () => {
+  const target = "http://easyproxy:7860/key?key_url=https%3A%2F%2Fexample.test%2Fkey.bin";
+  const token = encodeBridgeTarget(target);
+
+  assert.equal(decodeBridgeTarget(token).href, target);
+  assert.throws(() => decodeBridgeTarget(`${token}x`), /signature|token/);
+});
+
+test("EasyProxy manifest URLs are rewritten through the authenticated JustOne bridge", () => {
+  const body = [
+    "#EXTM3U",
+    '#EXT-X-KEY:METHOD=AES-128,URI="http://easyproxy:7860/key?key_url=https%3A%2F%2Fkeys.test%2Fone"',
+    "http://easyproxy:7860/proxy/manifest.m3u8?url=https%3A%2F%2Fmedia.test%2Fseg.ts",
+    "",
+  ].join("\n");
+
+  const rewritten = rewriteEasyProxyManifest(body);
+  assert.match(rewritten, /http:\/\/localhost:8090\/jellyfin\/proxy\//);
+  assert.doesNotMatch(rewritten, /http:\/\/easyproxy:7860\/key/);
+  assert.doesNotMatch(rewritten, /http:\/\/easyproxy:7860\/proxy/);
+});
+
+test("candidate fallback remains ordered but EasyProxy owns each media attempt", async () => {
+  const requested = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    requested.push(parsed.searchParams.get("url"));
+    if (requested.length === 1) {
+      return new Response("extractor failed", { status: 502, headers: { "content-type": "text/plain" } });
+    }
+    return new Response(
+      "#EXTM3U\nhttp://easyproxy:7860/proxy/manifest.m3u8?url=https%3A%2F%2Fmedia.test%2Fseg.ts\n",
+      { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } },
+    );
+  };
+
+  const result = await resolveEasyProxyManifest([
+    { label: "first", url: "https://daddylive.sx/watch.php?id=10" },
+    { label: "second", url: "https://daddylive.sx/watch.php?id=11" },
+  ], { fetchImpl, timeoutMs: 5_000 });
+
+  assert.deepEqual(requested, [
+    "https://daddylive.sx/watch.php?id=10",
+    "https://daddylive.sx/watch.php?id=11",
+  ]);
+  assert.equal(result.candidateIndex, 1);
+  assert.match(result.body, /\/jellyfin\/proxy\//);
 });
