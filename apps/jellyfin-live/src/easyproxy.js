@@ -151,11 +151,13 @@ export async function easyProxyHealth(options = {}) {
     });
     if (!response.ok) return { ok: false, status: response.status };
     const info = await response.json();
+    const dlhdExtractorLoaded = info?.modules?.dlhd_extractor === true;
     return {
-      ok: true,
+      ok: Boolean(info?.status) && dlhdExtractorLoaded,
       status: response.status,
       version: info?.version || null,
       proxy: info?.proxy || "EasyProxy",
+      dlhdExtractorLoaded,
     };
   } catch (error) {
     return { ok: false, error: String(error?.message || error) };
