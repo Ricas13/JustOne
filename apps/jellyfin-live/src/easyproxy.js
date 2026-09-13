@@ -182,7 +182,23 @@ function copyResponseHeaders(upstream, res) {
 
 function isManifestResponse(target, response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  return contentType.includes("mpegurl") || target.pathname.toLowerCase().endsWith(".m3u8");
+  if (contentType.includes("mpegurl")) return true;
+
+  // EasyProxy intentionally uses /proxy/manifest.m3u8 for both manifests and
+  // media segments, so the bridge must not infer type from that route path.
+  // A text response whose proxied source itself ends in .m3u8 is the only
+  // fallback classification we need for badly labelled upstream manifests.
+  if (contentType.startsWith("text/")) {
+    const raw = target.searchParams.get("url");
+    if (raw) {
+      try {
+        return new URL(raw).pathname.toLowerCase().endsWith(".m3u8");
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
 }
 
 export async function proxyEasyProxyRequest(req, res, token, options = {}) {
