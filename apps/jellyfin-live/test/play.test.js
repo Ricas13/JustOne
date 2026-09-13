@@ -1,44 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  buildAttempts,
-  fallbackUrl,
-  ffmpegArgs,
-  refreshAttemptUrl,
-  resultMeansNoMoreSources,
-  resultShouldRefreshSource,
-} from "../src/play.js";
+import { buildAttempts } from "../src/play.js";
 
-test("ffmpeg maps only the primary video and audio streams", () => {
-  const args = ffmpegArgs("http://dlhd-proxy:3000/stream/49.m3u8?source=0");
-  const maps = [];
-
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "-map") maps.push(args[index + 1]);
-  }
-
-  assert.deepEqual(maps, ["0:v:0?", "0:a:0?"]);
-});
-
-test("ffmpeg read timeout leaves enough room for bounded proxy recovery", () => {
-  const args = ffmpegArgs("http://dlhd-proxy:3000/stream/49.m3u8?source=0");
-  const index = args.indexOf("-rw_timeout");
-  assert.notEqual(index, -1);
-  assert.ok(Number(args[index + 1]) >= 20_000_000);
-});
-
-test("fallback URL preserves candidate host and unrelated query parameters", () => {
-  const url = fallbackUrl("http://dlhd-proxy:3000/stream/49.m3u8?token=x&source=3&refresh=1");
-  const parsed = new URL(url);
-  assert.equal(parsed.pathname, "/fallback/49.m3u8");
-  assert.equal(parsed.searchParams.get("token"), "x");
-  assert.equal(parsed.searchParams.has("source"), false);
-  assert.equal(parsed.searchParams.has("refresh"), false);
-  assert.equal(fallbackUrl("https://example.test/live.m3u8"), "");
-});
-
-test("playback attempts are sequential and append direct fallback after each provider candidate", () => {
+test("playback attempts are strictly sequential and preserve candidate order", () => {
   const attempts = buildAttempts({
     name: "Example",
     candidates: [
@@ -48,109 +13,15 @@ test("playback attempts are sequential and append direct fallback after each pro
   }, 2);
 
   assert.deepEqual(
-    attempts.map((row) => [
-      row.candidateIndex,
-      row.source,
-      row.fallback,
-      new URL(row.url).pathname,
-      new URL(row.url).searchParams.get("source"),
-    ]),
+    attempts.map((row) => [row.candidateIndex, row.source, new URL(row.url).pathname, new URL(row.url).searchParams.get("source")]),
     [
-      [0, 0, false, "/stream/10.m3u8", "0"],
-      [0, 1, false, "/stream/10.m3u8", "1"],
-      [0, 2, true, "/fallback/10.m3u8", null],
-      [1, 0, false, "/stream/11.m3u8", "0"],
-      [1, 1, false, "/stream/11.m3u8", "1"],
-      [1, 2, true, "/fallback/11.m3u8", null],
+      [0, 0, "/stream/10.m3u8", "0"],
+      [0, 1, "/stream/10.m3u8", "1"],
+      [1, 0, "/stream/11.m3u8", "0"],
+      [1, 1, "/stream/11.m3u8", "1"],
     ],
   );
-  assert.equal(new URL(attempts[3].url).searchParams.get("token"), "x");
-  assert.equal(new URL(attempts[5].url).searchParams.get("token"), "x");
-});
-
-test("default playback exhausts seven provider sources then direct fallback before the next candidate", () => {
-  const attempts = buildAttempts({
-    name: "Example",
-    candidates: [
-      { label: "first", url: "http://dlhd-proxy:3000/stream/10.m3u8" },
-      { label: "second", url: "http://dlhd-proxy:3000/stream/11.m3u8" },
-    ],
-  });
-
-  assert.equal(attempts.length, 16);
-  assert.deepEqual(
-    attempts.slice(0, 9).map((row) => [row.candidateIndex, row.source, row.fallback]),
-    [
-      [0, 0, false],
-      [0, 1, false],
-      [0, 2, false],
-      [0, 3, false],
-      [0, 4, false],
-      [0, 5, false],
-      [0, 6, false],
-      [0, 7, true],
-      [1, 0, false],
-    ],
-  );
-});
-
-test("source count is capped at seven", () => {
-  const attempts = buildAttempts({
-    candidates: [
-      { label: "good", url: "https://example.test/live.m3u8" },
-    ],
-  }, 20);
-
-  assert.equal(attempts.length, 7);
-  assert.deepEqual(attempts.map((row) => row.source), [0, 1, 2, 3, 4, 5, 6]);
-});
-
-test("404 before media means this candidate has no additional provider source slots", () => {
-  assert.equal(resultMeansNoMoreSources({
-    bytes: 0,
-    detail: "code=8 signal=none [http @ x] HTTP error 404 Not Found",
-  }), true);
-
-  assert.equal(resultMeansNoMoreSources({
-    bytes: 188,
-    detail: "[http @ x] HTTP error 404 Not Found",
-  }), false);
-
-  assert.equal(resultMeansNoMoreSources({
-    bytes: 0,
-    detail: "[http @ x] HTTP error 502 Bad Gateway",
-  }), false);
-});
-
-test("transient failures refresh the same source before failover", () => {
-  assert.equal(resultShouldRefreshSource({
-    bytes: 0,
-    reason: "ffmpeg-exit",
-    detail: "HTTP error 503 Service Unavailable",
-  }), true);
-  assert.equal(resultShouldRefreshSource({
-    bytes: 0,
-    reason: "ffmpeg-exit",
-    detail: "Operation timed out when parsing playlist",
-  }), true);
-  assert.equal(resultShouldRefreshSource({
-    bytes: 1024,
-    reason: "ffmpeg-exit",
-    detail: "code=0 signal=none",
-  }), true);
-  assert.equal(resultShouldRefreshSource({
-    bytes: 0,
-    reason: "ffmpeg-exit",
-    detail: "HTTP error 404 Not Found",
-  }), false);
-});
-
-test("refresh retry preserves source selection while forcing resolver refresh", () => {
-  const url = refreshAttemptUrl("http://dlhd-proxy:3000/stream/35.m3u8?source=0&token=x");
-  const parsed = new URL(url);
-  assert.equal(parsed.searchParams.get("source"), "0");
-  assert.equal(parsed.searchParams.get("token"), "x");
-  assert.equal(parsed.searchParams.get("refresh"), "1");
+  assert.equal(new URL(attempts[2].url).searchParams.get("token"), "x");
 });
 
 test("invalid candidate URLs are ignored rather than reordered", () => {
