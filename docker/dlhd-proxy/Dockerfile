@@ -5,8 +5,9 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py provider.py cached_provider.py settings.py utils.py ./
+COPY app.py provider.py cached_provider.py hls_resilience.py settings.py utils.py ./
 RUN mkdir -p /app/data
+RUN python -c "import app; print('dlhd proxy import ok')"
 
 EXPOSE 3000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3000"]
