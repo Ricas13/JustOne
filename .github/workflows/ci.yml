@@ -15,23 +15,25 @@ jobs:
         with:
           node-version: 22
 
-      - name: Test Jellyfin Live
+      - name: Test Jellyfin metadata and EasyProxy bridge
         working-directory: apps/jellyfin-live
         run: |
           npm install
+          node --check src/index.js
+          node --check src/easyproxy.js
           npm test
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Validate DLHD resolver
+      - name: Validate DLHD catalogue
         working-directory: docker/dlhd-proxy
         run: |
           python -m pip install -r requirements.txt
-          python -m py_compile app.py provider.py settings.py utils.py
+          python -m py_compile app.py provider.py settings.py
           python -m unittest discover -s . -p 'test_*.py'
-          python -c "import app; print('dlhd resolver import ok')"
+          python -c "import app; print('dlhd catalogue import ok')"
 
       - name: Validate compose
         run: docker compose config
