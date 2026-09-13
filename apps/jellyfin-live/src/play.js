@@ -52,15 +52,15 @@ export function resultMeansNoMoreSources(result) {
     && /HTTP error 404 Not Found/i.test(String(result?.detail || ""));
 }
 
-function ffmpegArgs(url) {
+export function ffmpegArgs(url) {
   return [
     "-nostdin",
     "-hide_banner",
     "-loglevel", "warning",
     "-rw_timeout", "10000000",
     "-i", url,
-    "-map", "0:v?",
-    "-map", "0:a?",
+    "-map", "0:v:0?",
+    "-map", "0:a:0?",
     "-c", "copy",
     "-f", "mpegts",
     "-mpegts_flags", "+resend_headers+initial_discontinuity",
