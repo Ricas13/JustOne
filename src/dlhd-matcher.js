@@ -1,4 +1,4 @@
-import { strippedChannelName } from "./identity.js";
+import { countryOf, strippedChannelName } from "./identity.js";
 import { normalize } from "./util.js";
 
 const COUNTRY_WORDS = new Set([
@@ -21,14 +21,16 @@ const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|\bx\b|@|\bppv\b|\bevents?\b|\b(?:final
 const EVENT_GROUP_RE = /(?:\blive\s*events?\b|\bppv\b|\bespn\s*plus\b|\bdazn\b|\bflo\b|\bfanatiz\b|\bmax\s*ppv\b|\bncaa\b|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b|\bmls\b)/i;
 const DECORATION_BRACKET_RE = /^(?:event\s*only|ppv|live|bk|backup|alt|hd|fhd|uhd|sd|km|bg)$/i;
 
-// These are deliberate brand/callsign equivalents, not broad fuzzy synonyms.
-// They only generate extra exact keys. They never make the fuzzy threshold looser.
+// Deliberate brand/callsign equivalents only. These add exact lookup keys and
+// never loosen fuzzy matching. Static matches are also country-checked below,
+// which makes aliases such as DAZN 1 <-> Eleven Sports 1 safe across GB/PT.
 const STATIC_ALIAS_GROUPS = [
+  ["bbc four", "bbc 4"],
   ["benfica tv", "btv", "benfica tv 1", "btv 1"],
-  ["tnt sports 1", "bt sport 1"],
-  ["tnt sports 2", "bt sport 2"],
-  ["tnt sports 3", "bt sport 3"],
-  ["tnt sports 4", "bt sport 4"],
+  ["tnt sports 1", "tnt sport 1", "tnt sports 01", "tnt sport 01", "bt sport 1", "bt sports 1"],
+  ["tnt sports 2", "tnt sport 2", "tnt sports 02", "tnt sport 02", "bt sport 2", "bt sports 2"],
+  ["tnt sports 3", "tnt sport 3", "tnt sports 03", "tnt sport 03", "bt sport 3", "bt sports 3"],
+  ["tnt sports 4", "tnt sport 4", "tnt sports 04", "tnt sport 04", "bt sport 4", "bt sports 4"],
   ["viaplay sports 1", "premier sports 1"],
   ["viaplay sports 2", "premier sports 2"],
   ["big ten network", "big 10 network", "big ten network btn", "big 10 network btn", "btn"],
@@ -45,11 +47,11 @@ const STATIC_ALIAS_GROUPS = [
   ["tmc channel", "the movie channel", "tmc"],
   ["heroes and icons", "heroes and icons h and i", "h and i"],
   ["investigation discovery", "investigation discovery id", "discovery id"],
-  ["eleven sports 1", "dazn eleven 1"],
-  ["eleven sports 2", "dazn eleven 2"],
-  ["eleven sports 3", "dazn eleven 3"],
-  ["eleven sports 4", "dazn eleven 4"],
-  ["eleven sports 5", "dazn eleven 5"],
+  ["eleven sports 1", "dazn eleven 1", "dazn 1", "dazn 01"],
+  ["eleven sports 2", "dazn eleven 2", "dazn 2", "dazn 02"],
+  ["eleven sports 3", "dazn eleven 3", "dazn 3", "dazn 03"],
+  ["eleven sports 4", "dazn eleven 4", "dazn 4", "dazn 04"],
+  ["eleven sports 5", "dazn eleven 5", "dazn 5", "dazn 05"],
   ["cw", "cw network", "the cw"],
   ["cbs", "cbs network"],
 ];
@@ -80,9 +82,7 @@ function meaningfulBracket(value) {
   for (const match of source.matchAll(/\[([^\]]+)\]/g)) {
     const inner = String(match[1] || "").trim();
     if (!inner || DECORATION_BRACKET_RE.test(inner)) continue;
-    if (EVENT_LIKE_RE.test(inner) || /\d{4}-\d{2}-\d{2}/.test(inner) || /\b(?:cricket|hockey|football|soccer|basketball|baseball|wrestling|mma|boxing|tennis|golf)\b/i.test(inner)) {
-      return inner;
-    }
+    if (EVENT_LIKE_RE.test(inner) || /\d{4}-\d{2}-\d{2}/.test(inner) || /\b(?:cricket|hockey|football|soccer|basketball|baseball|wrestling|mma|boxing|tennis|golf)\b/i.test(inner)) return inner;
   }
   return "";
 }
@@ -110,8 +110,6 @@ function canonicalToken(token) {
 
 function normalizedBase(value) {
   let base = normalize(strippedChannelName(cleanEventDecorations(value)));
-  // One DLHD label is currently mojibaked as Galavisi贸n; normalize() turns it
-  // into "galavisi n". Repair only this known broken token boundary.
   base = base.replace(/\bgalavisi n\b/g, "galavision");
   if (!base) return "";
   let tokens = base.split(" ").filter(Boolean);
@@ -123,12 +121,9 @@ function normalizedBase(value) {
 function keyVariants(value) {
   const base = normalizedBase(value);
   if (!base) return [];
-
   const bases = new Set([base]);
   for (const alias of STATIC_ALIAS_INDEX.get(base) || []) bases.add(alias);
 
-  // A few DLHD labels carry explanatory text after the core channel name.
-  // Add the known core form without treating arbitrary parentheticals as aliases.
   const knownCorePatterns = [
     [/^mgm(?: plus)? .* epix$/, "mgm"],
     [/^showtime 2 .* sho2.*$/, "showtime 2"],
@@ -139,10 +134,9 @@ function keyVariants(value) {
     [/^investigation discovery .* id.*$/, "investigation discovery"],
   ];
   for (const [re, replacement] of knownCorePatterns) {
-    if (re.test(base)) {
-      bases.add(replacement);
-      for (const alias of STATIC_ALIAS_INDEX.get(replacement) || []) bases.add(alias);
-    }
+    if (!re.test(base)) continue;
+    bases.add(replacement);
+    for (const alias of STATIC_ALIAS_INDEX.get(replacement) || []) bases.add(alias);
   }
 
   const out = new Set();
@@ -153,7 +147,6 @@ function keyVariants(value) {
     out.add(joined.replace(/\s+/g, ""));
     if (joined.endsWith(" tv")) out.add(joined.slice(0, -3).trim());
   };
-
   for (const candidate of bases) {
     const tokens = candidate.split(" ").filter(Boolean).map(canonicalToken);
     add(tokens);
@@ -174,8 +167,7 @@ function tokenScore(a, b) {
   for (const token of a) if (b.has(token)) common += 1;
   const shortCoverage = common / Math.min(a.size, b.size);
   const refCoverage = common / b.size;
-  const score = 0.72 * shortCoverage + 0.28 * refCoverage;
-  return { score, common, shortCoverage, refCoverage };
+  return { score: 0.72 * shortCoverage + 0.28 * refCoverage, common, shortCoverage, refCoverage };
 }
 
 function fuzzyTokenMatch(a, b) {
@@ -194,6 +186,12 @@ function addIndex(map, values, row) {
   }
 }
 
+function staticCountryCompatible(row, ref) {
+  const rowCountry = countryOf(row);
+  const refCountry = countryOf({ name: ref?.name || "", group: ref?.group || "" });
+  return !rowCountry || !refCountry || rowCountry === refCountry;
+}
+
 export function isEventLikeRow(row) {
   const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
   return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value) || Boolean(meaningfulBracket(value));
@@ -208,15 +206,12 @@ export function createDlhdMatcher(reference, aliases = {}) {
   const refTokens = new Map();
   const refs = [...(reference?.channels || []), ...(reference?.events || [])];
 
-  for (const ref of reference?.channels || []) {
-    addIndex(staticIndex, [ref.name, ...(ref.aliases || [])], ref);
-  }
+  for (const ref of reference?.channels || []) addIndex(staticIndex, [ref.name, ...(ref.aliases || [])], ref);
   for (const ref of reference?.events || []) {
     addIndex(eventTitleIndex, [ref.name], ref);
     addIndex(eventAliasIndex, (ref.aliases || []).slice(1), ref);
     fuzzyEvents.push({ ref, tokens: significantTokens(ref.name) });
   }
-
   for (const ref of refs) {
     const tokens = significantTokens(ref.name);
     refTokens.set(ref.id, tokens);
@@ -239,7 +234,11 @@ export function createDlhdMatcher(reference, aliases = {}) {
     const matches = new Map();
     for (const value of rawNames) {
       for (const key of keyVariants(value)) {
-        for (const ref of staticIndex.get(key) || []) matches.set(ref.id, ref);
+        for (const ref of staticIndex.get(key) || []) {
+          if (staticCountryCompatible(row, ref)) matches.set(ref.id, ref);
+        }
+        // Event aliases intentionally do not country-filter because one event
+        // may legitimately be carried by a channel from any territory.
         for (const ref of eventTitleIndex.get(key) || []) matches.set(ref.id, ref);
         for (const ref of eventAliasIndex.get(key) || []) matches.set(ref.id, ref);
       }
@@ -268,6 +267,7 @@ export function createDlhdMatcher(reference, aliases = {}) {
       for (const token of tokens) {
         for (const ref of tokenIndex.get(token) || []) {
           if (kind && ref.kind !== kind) continue;
+          if (ref.kind === "channel" && !staticCountryCompatible(row, ref)) continue;
           candidates.set(ref.id, ref);
         }
       }
