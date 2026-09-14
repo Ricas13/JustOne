@@ -17,6 +17,20 @@ function providerLabel(parsed) {
   return parsed.hostname.replace(/^www\./i, "") || "IPTV";
 }
 
+export function deriveXtreamXmltvUrl(value) {
+  let parsed;
+  try { parsed = safeUrl(value); } catch { return ""; }
+  if (!/\/(?:get|playlist)\.php$/i.test(parsed.pathname)) return "";
+  const username = parsed.searchParams.get("username");
+  const password = parsed.searchParams.get("password");
+  if (!username || !password) return "";
+  const dir = parsed.pathname.replace(/[^/]+$/, "");
+  const epg = new URL(`${dir}xmltv.php`, parsed.origin);
+  epg.searchParams.set("username", username);
+  epg.searchParams.set("password", password);
+  return epg.toString();
+}
+
 export function normaliseSourceInput(input = {}, existing = []) {
   const parsed = safeUrl(input.url);
   const autoProvider = providerLabel(parsed);
@@ -29,6 +43,7 @@ export function normaliseSourceInput(input = {}, existing = []) {
   const maxStreams = Number.isFinite(maxStreamsRaw) && maxStreamsRaw > 0 ? Math.floor(maxStreamsRaw) : 1;
   const priorityRaw = Number(input.priority);
   const priority = Number.isFinite(priorityRaw) ? priorityRaw : (existing.length + 1) * 10;
+  const detectedEpgUrl = text(input.detectedEpgUrl) || deriveXtreamXmltvUrl(parsed.toString());
 
   return {
     ...input,
@@ -38,6 +53,7 @@ export function normaliseSourceInput(input = {}, existing = []) {
     maxStreams,
     priority,
     url: parsed.toString(),
+    detectedEpgUrl,
     enabled: input.enabled !== false,
   };
 }
