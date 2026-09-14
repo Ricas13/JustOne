@@ -165,6 +165,10 @@ export function createAdminServer() {
         if (index < 0) return json(res, 404, { error: "not found" });
         if (req.method === "DELETE") {
           const [removed] = state[collection].splice(index, 1);
+          if (collection === "guides" && removed.auto === true && removed.sourceId) {
+            const source = state.sources.find((row) => row.id === removed.sourceId);
+            if (source) source.epgDisabled = true;
+          }
           await saveState(state);
           return json(res, 200, removed);
         }
