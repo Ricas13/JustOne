@@ -4,27 +4,37 @@ function intEnv(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
-
 function boolEnv(name, fallback = false) {
   const value = process.env[name];
   if (value == null || value === "") return fallback;
   return /^(1|true|yes|on)$/i.test(value);
 }
-
 function cleanUrl(value, fallback = "") {
   return String(value || fallback).replace(/\/+$/, "");
 }
 
 export const config = {
   port: intEnv("PORT", 8090),
-  publicUrl: cleanUrl(process.env.PUBLIC_URL, "http://localhost:8090"),
+  bindAddress: String(process.env.BIND_ADDRESS || "0.0.0.0"),
+  internalPort: intEnv("INTERNAL_PORT", 8091),
+  internalBindAddress: String(process.env.INTERNAL_BIND_ADDRESS || "0.0.0.0"),
+  internalBaseUrl: cleanUrl(process.env.INTERNAL_BASE_URL, "http://justone-catalog:8091"),
+  internalKey: String(process.env.INTERNAL_KEY || ""),
   dataDir: path.resolve(process.env.DATA_DIR || "./data"),
   adminKey: String(process.env.ADMIN_KEY || ""),
-  publicKey: String(process.env.PUBLIC_KEY || ""),
   refreshMinutes: intEnv("REFRESH_MINUTES", 30),
   fetchTimeoutMs: intEnv("FETCH_TIMEOUT_MS", 30000),
   qualityOrder: String(process.env.DEFAULT_QUALITY_ORDER || "HD,FHD,UHD,SD,UNKNOWN")
     .split(",").map((x) => x.trim().toUpperCase()).filter(Boolean),
+  dlhd: {
+    enabled: boolEnv("DLHD_FILTER_ENABLED", true),
+    baseUrl: cleanUrl(process.env.DLHD_BASE_URL, "https://dlive.sx"),
+    apiKey: String(process.env.DLHD_API_KEY || ""),
+    include247: boolEnv("DLHD_INCLUDE_247", true),
+    includeSchedule: boolEnv("DLHD_INCLUDE_SCHEDULE", true),
+    includeUpcoming: boolEnv("DLHD_INCLUDE_UPCOMING", true),
+    failClosed: boolEnv("DLHD_FAIL_CLOSED", true),
+  },
   dispatcharr: {
     url: cleanUrl(process.env.DISPATCHARR_URL),
     apiKey: String(process.env.DISPATCHARR_API_KEY || ""),
@@ -35,9 +45,9 @@ export const config = {
   },
 };
 
-export function withPublicKey(url) {
-  if (!config.publicKey) return url;
+export function withInternalKey(url) {
+  if (!config.internalKey) return url;
   const u = new URL(url);
-  u.searchParams.set("key", config.publicKey);
+  u.searchParams.set("key", config.internalKey);
   return u.toString();
 }
