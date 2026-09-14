@@ -36,6 +36,46 @@ export function parseXmlTv(body) {
   return { channels, names, programmes };
 }
 
+export function parseXmlTvTime(value) {
+  const raw = String(value || "").trim();
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?(?:\s*([+-])(\d{2})(\d{2}))?/.exec(raw);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second = "00", sign, offHour = "00", offMinute = "00"] = match;
+  let ms = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  if (sign) {
+    const offset = (Number(offHour) * 60 + Number(offMinute)) * 60 * 1000;
+    ms += sign === "+" ? -offset : offset;
+  }
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export function programmeHint(programme) {
+  const full = String(programme || "");
+  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(full);
+  const subTitleMatch = /<sub-title\b[^>]*>([\s\S]*?)<\/sub-title>/i.exec(full);
+  const startMatch = /\bstart=(?:"([^"]+)"|'([^']+)')/i.exec(full);
+  const stopMatch = /\bstop=(?:"([^"]+)"|'([^']+)')/i.exec(full);
+  const title = stripTags(titleMatch?.[1] || "");
+  const subTitle = stripTags(subTitleMatch?.[1] || "");
+  return {
+    title,
+    subTitle,
+    start: parseXmlTvTime(startMatch?.[1] ?? startMatch?.[2] ?? ""),
+    stop: parseXmlTvTime(stopMatch?.[1] ?? stopMatch?.[2] ?? ""),
+  };
+}
+
+export function epgHintsForChannelId(parsed, channelId) {
+  const id = String(channelId || "");
+  if (!id || !parsed) return { displayNames: [], programmes: [] };
+  const meta = parsed.channels?.get(id);
+  const displayNames = [...new Set((meta?.display || []).filter(Boolean))];
+  const programmes = (parsed.programmes?.get(id) || [])
+    .map(programmeHint)
+    .filter((row) => row.title || row.subTitle);
+  return { displayNames, programmes };
+}
+
 function findHit(channel, docs) {
   const ids = new Set((channel.variants || []).map((v) => v.originalTvgId).filter(Boolean));
   for (const doc of docs) {
