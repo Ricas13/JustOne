@@ -31,14 +31,14 @@ const STATIC_ALIAS_GROUPS = [
   ["tnt sports 4", "bt sport 4"],
   ["viaplay sports 1", "premier sports 1"],
   ["viaplay sports 2", "premier sports 2"],
-  ["big ten network", "big ten network btn", "btn"],
+  ["big ten network", "big 10 network", "big ten network btn", "big 10 network btn", "btn"],
   ["abc ny", "wabc", "abc 7 ny", "abc 7 new york", "wabc 7"],
   ["cbsny", "cbs ny", "wcbs", "cbs 2 ny", "cbs 2 new york", "wcbs 2"],
   ["nbcny", "nbc ny", "wnbc", "nbc 4 ny", "nbc 4 new york", "wnbc 4"],
   ["foxny", "fox ny", "wnyw", "fox 5 ny", "fox 5 new york", "wnyw 5"],
   ["cw pix 11", "pix 11", "pix11", "wpix", "wpix 11"],
   ["my9tv", "my 9", "my9", "wwor", "wwor 9"],
-  ["mgm plus", "mgm plus usa epix", "epix"],
+  ["mgm", "mgm usa epix", "mgm plus", "mgm plus usa epix", "epix"],
   ["showtime 2", "showtime 2 sho2", "sho2"],
   ["showtime family zone", "showtime family zone sho family zone", "sho family zone"],
   ["showtime next", "showtime next sho next", "sho next"],
@@ -130,11 +130,11 @@ function keyVariants(value) {
   // A few DLHD labels carry explanatory text after the core channel name.
   // Add the known core form without treating arbitrary parentheticals as aliases.
   const knownCorePatterns = [
-    [/^mgm plus .* epix$/, "mgm plus"],
+    [/^mgm(?: plus)? .* epix$/, "mgm"],
     [/^showtime 2 .* sho2.*$/, "showtime 2"],
     [/^showtime family zone .* sho family zone.*$/, "showtime family zone"],
     [/^showtime next .* sho next.*$/, "showtime next"],
-    [/^big ten network .* btn.*$/, "big ten network"],
+    [/^big (?:ten|10) network .* btn.*$/, "big 10 network"],
     [/^heroes and icons .* h and i.*$/, "heroes and icons"],
     [/^investigation discovery .* id.*$/, "investigation discovery"],
   ];
