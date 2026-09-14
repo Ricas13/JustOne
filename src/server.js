@@ -4,6 +4,7 @@ import { refreshCatalog } from "./catalog.js";
 import { buildM3u } from "./m3u.js";
 import { reconcileDispatcharr } from "./dispatcharr.js";
 import { loadGuide, loadSnapshot, loadState, newId, saveState } from "./store.js";
+import { duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "./sources.js";
 import { json, readJsonBody, text } from "./util.js";
 import { ADMIN_HTML } from "./ui.js";
 
@@ -28,6 +29,56 @@ async function updateCollection(req, res, collection, idPrefix) {
   state[collection].push(row);
   await saveState(state);
   json(res, 201, row);
+}
+
+async function addSource(req, res) {
+  const state = await loadState();
+  const body = await readJsonBody(req);
+  let source;
+  try {
+    source = normaliseSourceInput(body, state.sources || []);
+  } catch (error) {
+    return json(res, 400, { error: error.message });
+  }
+  const duplicate = duplicateSourceByUrl(state.sources || [], source.url);
+  if (duplicate) return json(res, 409, { error: "playlist already exists", existing: duplicate });
+  const row = { ...source, id: text(body.id || newId("src")) };
+  state.sources.push(row);
+  await saveState(state);
+  return json(res, 201, row);
+}
+
+async function addSourcesBulk(req, res) {
+  const state = await loadState();
+  const body = await readJsonBody(req);
+  const requested = Array.isArray(body.sources) ? body.sources : parseBulkPlaylistText(body.text || "");
+  const added = [];
+  const skipped = [];
+
+  for (const input of requested) {
+    if (input?.invalid) {
+      skipped.push({ input: input.invalid, reason: "not a URL or 'Name | URL' row" });
+      continue;
+    }
+    let source;
+    try {
+      source = normaliseSourceInput(input, state.sources || []);
+    } catch (error) {
+      skipped.push({ input: input?.url || input?.name || "", reason: error.message });
+      continue;
+    }
+    const duplicate = duplicateSourceByUrl(state.sources || [], source.url);
+    if (duplicate) {
+      skipped.push({ input: source.url, reason: `already exists as ${duplicate.name}`, id: duplicate.id });
+      continue;
+    }
+    const row = { ...source, id: newId("src") };
+    state.sources.push(row);
+    added.push(row);
+  }
+
+  if (added.length) await saveState(state);
+  return json(res, 200, { added, skipped, counts: { added: added.length, skipped: skipped.length } });
 }
 
 export function createAdminServer() {
@@ -78,7 +129,8 @@ export function createAdminServer() {
       if (req.method === "POST" && path === "/api/refresh") return json(res, 200, await refreshCatalog());
 
       if (req.method === "GET" && path === "/api/sources") return json(res, 200, (await loadState()).sources);
-      if (req.method === "POST" && path === "/api/sources") return await updateCollection(req, res, "sources", "src");
+      if (req.method === "POST" && path === "/api/sources") return await addSource(req, res);
+      if (req.method === "POST" && path === "/api/sources/bulk") return await addSourcesBulk(req, res);
       if (req.method === "GET" && path === "/api/guides") return json(res, 200, (await loadState()).guides);
       if (req.method === "POST" && path === "/api/guides") return await updateCollection(req, res, "guides", "epg");
 
@@ -95,7 +147,19 @@ export function createAdminServer() {
           return json(res, 200, removed);
         }
         const body = await readJsonBody(req);
-        state[collection][index] = { ...state[collection][index], ...body, id };
+        if (collection === "sources") {
+          try {
+            const existingOther = state.sources.filter((row) => row.id !== id);
+            const merged = normaliseSourceInput({ ...state.sources[index], ...body }, existingOther);
+            const duplicate = duplicateSourceByUrl(existingOther, merged.url);
+            if (duplicate) return json(res, 409, { error: "playlist URL already belongs to another source", existing: duplicate });
+            state.sources[index] = { ...merged, id };
+          } catch (error) {
+            return json(res, 400, { error: error.message });
+          }
+        } else {
+          state[collection][index] = { ...state[collection][index], ...body, id };
+        }
         await saveState(state);
         return json(res, 200, state[collection][index]);
       }
