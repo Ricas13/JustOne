@@ -1,4 +1,4 @@
-import { strippedChannelName } from "./identity.js";
+import { countryOf, strippedChannelName } from "./identity.js";
 import { hash, normalize, slug, stripTags, text } from "./util.js";
 
 const COUNTRY_WORDS = new Set([
@@ -12,6 +12,7 @@ const NUMBER_WORDS = new Map([
   ["six","6"],["seven","7"],["eight","8"],["nine","9"],["ten","10"],
 ]);
 const GENERIC_EVENT_ALIAS_RE = /^(?:event(?:\s+(?:sd|hd|fhd))?\s+(?:stream|feed)|event\s+ppv|channel\s+not\s+listed|bb\s+cam\s+live|multifeed)$/i;
+const GENERIC_CHANNEL_LINK_RE = /^(?:watch|watch now|play|play now|live|live now|open|open channel)$/i;
 
 function htmlText(value) {
   return stripTags(String(value || "").replace(/&nbsp;/gi, " ").replace(/&#039;/g, "'"));
@@ -28,34 +29,72 @@ function channelIdFromHref(href) {
 function cardTitle(value) {
   return htmlText(/card__title[^>]*>([\s\S]*?)<\//i.exec(String(value || ""))?.[1] || "");
 }
+function nearestCardTitle(source, start, end, anchorCenter) {
+  const segment = source.slice(start, end);
+  const re = /card__title[^>]*>([\s\S]*?)<\//gi;
+  const candidates = [];
+  let match;
+  while ((match = re.exec(segment))) {
+    const name = htmlText(match[1]);
+    if (!name) continue;
+    const absolute = start + match.index;
+    candidates.push({ name, distance: Math.abs(absolute - anchorCenter) });
+  }
+  candidates.sort((a, b) => a.distance - b.distance);
+  return candidates[0]?.name || "";
+}
+function nearestImage(source, start, end, anchorCenter) {
+  const segment = source.slice(start, end);
+  const re = /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/gi;
+  const candidates = [];
+  let match;
+  while ((match = re.exec(segment))) {
+    const absolute = start + match.index;
+    candidates.push({ value: match[1], distance: Math.abs(absolute - anchorCenter) });
+  }
+  candidates.sort((a, b) => a.distance - b.distance);
+  return candidates[0]?.value || "";
+}
 export function parse247Html(html, baseUrl = "https://dlive.sx") {
   const source = String(html || "");
   const out = [];
   const seen = new Set();
+  const anchors = [];
   const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = anchorRe.exec(source))) {
     const id = channelIdFromHref(match[1]);
-    if (!id || seen.has(id)) continue;
+    if (!id) continue;
+    anchors.push({ id, href: match[1], body: match[2], index: match.index, end: anchorRe.lastIndex });
+  }
 
-    // DLHD has changed its 24/7 card markup more than once. The clickable
-    // anchor can contain generic text such as "Watch Now", while the real
-    // channel name lives in card__title either inside or immediately after it.
-    // Always prefer card__title so we don't successfully parse hundreds of
-    // channel IDs whose names are all effectively useless for matching.
-    const around = source.slice(match.index, Math.min(source.length, anchorRe.lastIndex + 900));
-    let name = cardTitle(match[2]) || cardTitle(around);
-    if (!name) name = htmlText(match[2]);
-    if (/^(?:watch|watch now|play|play now|live|live now|open|open channel)$/i.test(name)) {
-      name = cardTitle(around);
-    }
+  for (let i = 0; i < anchors.length; i++) {
+    const anchor = anchors[i];
+    if (seen.has(anchor.id)) continue;
+
+    // DLHD has moved card__title both inside, before and after the clickable
+    // channel link over time. Search the local neighbourhood bounded by the
+    // midpoints to the previous/next channel links rather than blindly looking
+    // forward, which can accidentally assign the next card's title to this ID.
+    const previous = anchors[i - 1];
+    const next = anchors[i + 1];
+    const start = previous
+      ? Math.max(0, Math.floor((previous.end + anchor.index) / 2))
+      : Math.max(0, anchor.index - 1200);
+    const end = next
+      ? Math.min(source.length, Math.ceil((anchor.end + next.index) / 2))
+      : Math.min(source.length, anchor.end + 1200);
+    const center = Math.floor((anchor.index + anchor.end) / 2);
+
+    let name = cardTitle(anchor.body) || nearestCardTitle(source, start, end, center);
+    const linkText = htmlText(anchor.body);
+    if (!name && linkText && !GENERIC_CHANNEL_LINK_RE.test(linkText)) name = linkText;
     if (!name) continue;
 
-    seen.add(id);
-    const logo = /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(match[2])?.[1]
-      || /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(around)?.[1]
-      || "";
-    out.push({ id, name, logo: logoUrl(baseUrl, logo) });
+    seen.add(anchor.id);
+    const embeddedLogo = /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(anchor.body)?.[1] || "";
+    const logo = embeddedLogo || nearestImage(source, start, end, center);
+    out.push({ id: anchor.id, name, logo: logoUrl(baseUrl, logo) });
   }
 
   const legacyRe = /href=["'][^"']*watch\.php\?id=(\d+)[^"']*["'][^>]*>[\s\S]{0,600}?card__title[^>]*>([\s\S]*?)<\//gi;
@@ -208,10 +247,15 @@ function referenceIdentity(kind, name, seed) {
   return { key, id:`${kind}-${short}-${suffix}`, tvgId:`justone.${kind}.${short}.${suffix}` };
 }
 export function buildDlhdReference({ channels = [], schedule = { events:[] }, mode = "html" } = {}) {
-  const staticRows = channels.map((ch)=>({
-    kind:"channel", dlhdId:text(ch.id), name:text(ch.name), logo:text(ch.logo), aliases:[text(ch.name)],
-    ...referenceIdentity("channel", ch.name, ch.id || ch.name),
-  })).filter((row)=>row.name);
+  const staticRows = channels.map((ch)=>{
+    const name = text(ch.name);
+    const country = countryOf({ name });
+    const group = country === "GB" ? "TV | UK" : country === "PT" ? "TV | PT" : country === "US" ? "TV | USA" : "";
+    return {
+      kind:"channel", dlhdId:text(ch.id), name, logo:text(ch.logo), aliases:[name], country, group,
+      ...referenceIdentity("channel", name, ch.id || name),
+    };
+  }).filter((row)=>row.name);
   const eventRows = (schedule.events || []).map((evt)=>{
     const specificAliases = (evt.channels||[]).map((ch)=>text(ch.name)).filter((name)=>name && !GENERIC_EVENT_ALIAS_RE.test(normalize(name)));
     const identity = referenceIdentity("event", evt.title, `${evt.id}|${evt.start||evt.time||""}`);
