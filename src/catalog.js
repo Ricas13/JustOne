@@ -15,10 +15,13 @@ import {
 } from "./store.js";
 import { parseM3uStream } from "./m3u.js";
 import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, variantRank } from "./identity.js";
-import { enrichAndBuildGuide, guideSummary, parseXmlTv } from "./epg.js";
+import { enrichAndBuildGuide, epgHintsForChannelId, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
-import { createDlhdMatcher } from "./dlhd-matcher.js";
+import { createDlhdMatcher, isEventLikeRow } from "./dlhd-matcher.js";
 import { text, timeoutSignal } from "./util.js";
+
+const MAX_EPG_CANDIDATES_PER_SOURCE = 50000;
+const EVENT_TIME_SLOP_MS = 4 * 60 * 60 * 1000;
 
 function elapsedSeconds(started) {
   return Number(((Date.now() - started) / 1000).toFixed(1));
@@ -28,9 +31,9 @@ function report(onProgress, payload) {
   try { onProgress?.(payload); } catch (error) { console.warn("Refresh progress callback failed:", error.message); }
 }
 
-async function fetchText(url) {
+async function fetchText(url, timeoutMs = config.fetchTimeoutMs) {
   const response = await fetch(url, {
-    signal: timeoutSignal(config.fetchTimeoutMs),
+    signal: timeoutSignal(timeoutMs),
     redirect: "follow",
     headers: { "user-agent": "Mozilla/5.0 JustOne Catalog", accept: "*/*" },
   });
@@ -293,8 +296,16 @@ async function cacheState(source) {
   return { exists, meta, urlMatches, fresh };
 }
 
+function shouldKeepEpgCandidate(row, allowedCountries) {
+  if (!row?.tvgId) return false;
+  if (isEventLikeRow(row)) return true;
+  const cc = countryOf(row);
+  return !allowedCountries.size || (cc && allowedCountries.has(cc));
+}
+
 async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto") {
   const kept = [];
+  const epgCandidates = [];
   const matchedRefs = new Set();
   let matchedInputRows = 0;
   const cache = await cacheState(source);
@@ -345,13 +356,21 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
         }
         const refs = matcher.match(row);
         let accepted = 0;
+        let acceptedEvent = false;
         for (const ref of refs) {
           if (!mappingAllowedForCountries(row, ref, allowedCountries)) continue;
-          kept.push({ source, row, reference: ref });
+          kept.push({ source, row, reference: ref, matchReason: "m3u" });
           matchedRefs.add(ref.id);
           accepted += 1;
+          if (ref.kind === "event") acceptedEvent = true;
         }
         if (accepted) matchedInputRows += 1;
+
+        const needsEpg = shouldKeepEpgCandidate(row, allowedCountries)
+          && (!accepted || (isEventLikeRow(row) && !acceptedEvent));
+        if (needsEpg && epgCandidates.length < MAX_EPG_CANDIDATES_PER_SOURCE) {
+          epgCandidates.push({ source, row, directMatched: accepted > 0 });
+        }
       },
       onProgress: ({ rows, bytes }) => {
         report(onProgress, {
@@ -364,6 +383,7 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
           megabytes: Number((bytes / 1024 / 1024).toFixed(1)),
           matchedInputRows,
           outputMappings: kept.length,
+          epgCandidates: epgCandidates.length,
         });
       },
     });
@@ -394,11 +414,131 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
   return {
     ...stats,
     kept,
+    epgCandidates,
     matchedInputRows,
     matchedRefs,
     input,
     cachedAt: input === "provider" ? new Date().toISOString() : cache.meta?.cachedAt || null,
   };
+}
+
+function hostOf(value) {
+  try { return new URL(value).host.toLowerCase(); } catch { return ""; }
+}
+
+function guideDocsForSource(source, docs) {
+  const sourceHost = hostOf(source.url);
+  const preferred = docs.filter((doc) => doc.sourceId === source.id || (sourceHost && hostOf(doc.url) === sourceHost));
+  if (preferred.length) return preferred;
+  return docs.filter((doc) => doc.auto !== true);
+}
+
+function eventTimeCompatible(ref, programme) {
+  const eventStart = Number(ref?.start);
+  const programmeStart = Number(programme?.start);
+  if (!Number.isFinite(eventStart) || !Number.isFinite(programmeStart)) return true;
+  const eventEnd = Number.isFinite(Number(ref?.end)) ? Number(ref.end) : eventStart + 4 * 60 * 60 * 1000;
+  const programmeEnd = Number.isFinite(Number(programme?.stop)) ? Number(programme.stop) : programmeStart + 4 * 60 * 60 * 1000;
+  return programmeStart <= eventEnd + EVENT_TIME_SLOP_MS && programmeEnd >= eventStart - EVENT_TIME_SLOP_MS;
+}
+
+function mappingKey(source, row, ref) {
+  return `${source.id}|${row.url}|${ref.id}`;
+}
+
+function resolveWithEpg({ candidates, guideDocs, matcher, allowedCountries, existingRows }) {
+  if (!matcher || !guideDocs.length || !candidates.length) {
+    return { rows: [], refIds: new Set(), newlyMatchedRows: 0, mappingsBySource: new Map(), events: 0, statics: 0 };
+  }
+
+  const existing = new Set(existingRows.map((item) => mappingKey(item.source, item.row, item.reference)));
+  const rows = [];
+  const refIds = new Set();
+  const matchedCandidateKeys = new Set();
+  const mappingsBySource = new Map();
+  let events = 0;
+  let statics = 0;
+
+  function add(item, ref, reason) {
+    if (!mappingAllowedForCountries(item.row, ref, allowedCountries)) return false;
+    const key = mappingKey(item.source, item.row, ref);
+    if (existing.has(key)) return false;
+    existing.add(key);
+    rows.push({ source: item.source, row: item.row, reference: ref, matchReason: reason });
+    refIds.add(ref.id);
+    const current = mappingsBySource.get(item.source.id) || { mappings: 0, newlyMatchedRows: 0, rowKeys: new Set() };
+    current.mappings += 1;
+    const rowKey = `${item.source.id}|${item.row.url}`;
+    if (!item.directMatched && !current.rowKeys.has(rowKey)) {
+      current.rowKeys.add(rowKey);
+      current.newlyMatchedRows += 1;
+      matchedCandidateKeys.add(rowKey);
+    }
+    mappingsBySource.set(item.source.id, current);
+    if (ref.kind === "event") events += 1;
+    else statics += 1;
+    return true;
+  }
+
+  for (const item of candidates) {
+    const docs = guideDocsForSource(item.source, guideDocs);
+    if (!docs.length) continue;
+    for (const doc of docs) {
+      const hints = epgHintsForChannelId(doc.parsed, item.row.tvgId);
+      if (!hints.displayNames.length && !hints.programmes.length) continue;
+
+      for (const displayName of hints.displayNames) {
+        const refs = matcher.match({ ...item.row, name: displayName, tvgName: displayName });
+        for (const ref of refs) {
+          if (ref.kind !== "channel") continue;
+          add(item, ref, "epg-channel-name");
+        }
+      }
+
+      for (const programme of hints.programmes) {
+        const names = [programme.title, programme.subTitle, `${programme.title || ""} ${programme.subTitle || ""}`.trim()]
+          .filter(Boolean);
+        for (const name of names) {
+          const refs = matcher.match({ ...item.row, name, tvgName: name, group: "EPG Live Event" });
+          for (const ref of refs) {
+            if (ref.kind !== "event" || !eventTimeCompatible(ref, programme)) continue;
+            add(item, ref, "epg-programme-title");
+          }
+        }
+      }
+    }
+  }
+
+  for (const value of mappingsBySource.values()) delete value.rowKeys;
+  return { rows, refIds, newlyMatchedRows: matchedCandidateKeys.size, mappingsBySource, events, statics };
+}
+
+async function loadGuideDocs(state) {
+  const guideDocs = [];
+  const guideStatus = [];
+  for (const guide of [...(state.guides || [])]
+    .filter((g) => g.enabled !== false)
+    .sort((a, b) => Number(a.priority || 100) - Number(b.priority || 100))) {
+    try {
+      const timeout = guide.auto ? config.playlistFetchTimeoutMs : config.fetchTimeoutMs;
+      const body = await fetchText(guide.url, timeout);
+      const parsed = parseXmlTv(body);
+      guideDocs.push({ ...guide, parsed });
+      guideStatus.push({ id: guide.id, name: guide.name, ok: true, channels: parsed.channels.size, auto: guide.auto === true });
+      console.log(`Guide ${guide.name}: ${parsed.channels.size} channels${guide.auto ? " (auto)" : ""}`);
+    } catch (error) {
+      guideStatus.push({ id: guide.id, name: guide.name, ok: false, error: error.message, auto: guide.auto === true });
+      console.error(`Guide ${guide.name} failed: ${error.message}`);
+    }
+  }
+  if (guideStatus.some((row) => !row.ok)) {
+    try {
+      const previousGuide = parseXmlTv(await loadGuide());
+      guideDocs.push({ id: "__previous__", name: "Last known good guide", parsed: previousGuide });
+      console.warn("Using last-known-good generated guide because at least one XMLTV source failed");
+    } catch {}
+  }
+  return { guideDocs, guideStatus };
 }
 
 export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
@@ -407,6 +547,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   const previous = await loadSnapshot();
   const sourceStatus = [];
   const sourceRows = [];
+  const epgCandidates = [];
   const matchedRefIds = new Set();
   let rawSourceRows = 0;
   let matchedInputRows = 0;
@@ -451,6 +592,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
       rawSourceRows += scanned.rows;
       matchedInputRows += scanned.matchedInputRows;
       sourceRows.push(...scanned.kept);
+      epgCandidates.push(...scanned.epgCandidates);
       for (const id of scanned.matchedRefs) matchedRefIds.add(id);
       const status = {
         id: source.id,
@@ -461,12 +603,13 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
         rows: scanned.rows,
         matched: scanned.matchedInputRows,
         outputMappings: scanned.kept.length,
+        epgCandidates: scanned.epgCandidates.length,
         bytes: scanned.bytes,
         megabytes: Number((scanned.bytes / 1024 / 1024).toFixed(1)),
         seconds: elapsedSeconds(sourceStarted),
       };
       sourceStatus.push(status);
-      console.log(`Source ${source.name}: ${status.input}; ${status.rows.toLocaleString()} rows / ${status.megabytes} MB; ${status.matched.toLocaleString()} input rows matched; ${status.outputMappings.toLocaleString()} mappings; ${status.seconds}s`);
+      console.log(`Source ${source.name}: ${status.input}; ${status.rows.toLocaleString()} rows / ${status.megabytes} MB; ${status.matched.toLocaleString()} input rows matched; ${status.outputMappings.toLocaleString()} mappings; ${status.epgCandidates.toLocaleString()} EPG candidate rows; ${status.seconds}s`);
     } catch (error) {
       const status = { id: source.id, name: source.name, ok: false, error: error.message, seconds: elapsedSeconds(sourceStarted) };
       sourceStatus.push(status);
@@ -480,6 +623,32 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
         error: error.message,
       });
     }
+  }
+
+  report(onProgress, { phase: "loading-guides", epgCandidates: epgCandidates.length });
+  const { guideDocs, guideStatus } = await loadGuideDocs(state);
+
+  const assisted = resolveWithEpg({
+    candidates: epgCandidates,
+    guideDocs,
+    matcher,
+    allowedCountries,
+    existingRows: sourceRows,
+  });
+  if (assisted.rows.length) {
+    sourceRows.push(...assisted.rows);
+    matchedInputRows += assisted.newlyMatchedRows;
+    for (const id of assisted.refIds) matchedRefIds.add(id);
+    for (const status of sourceStatus) {
+      const extra = assisted.mappingsBySource.get(status.id);
+      if (!extra) continue;
+      status.matched = Number(status.matched || 0) + Number(extra.newlyMatchedRows || 0);
+      status.outputMappings = Number(status.outputMappings || 0) + Number(extra.mappings || 0);
+      status.epgAssistedMappings = extra.mappings;
+    }
+    console.log(`EPG-assisted matching: ${assisted.rows.length} mappings (${assisted.statics} static, ${assisted.events} event); ${assisted.newlyMatchedRows} previously-unmatched provider rows`);
+  } else if (guideDocs.length && epgCandidates.length) {
+    console.log(`EPG-assisted matching: no additional mappings from ${epgCandidates.length} candidate rows`);
   }
 
   if (dlhdReference) {
@@ -498,6 +667,9 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     dlhdStatus.sourceRows = rawSourceRows;
     dlhdStatus.matchedInputRows = matchedInputRows;
     dlhdStatus.outputMappings = sourceRows.length;
+    dlhdStatus.epgAssistedMappings = assisted.rows.length;
+    dlhdStatus.epgAssistedStaticMappings = assisted.statics;
+    dlhdStatus.epgAssistedEventMappings = assisted.events;
     dlhdStatus.matchedReferences = matchedRefIds.size;
     dlhdStatus.matchedChannelReferences = matchedChannels;
     dlhdStatus.matchedEventReferences = matchedEvents;
@@ -549,31 +721,6 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   if (dlhdStatus) {
     dlhdStatus.outputStaticChannels = outputStaticChannels;
     dlhdStatus.outputEvents = outputEvents;
-  }
-
-  report(onProgress, { phase: "loading-guides", outputStaticChannels, outputEvents });
-  const guideDocs = [];
-  const guideStatus = [];
-  for (const guide of [...(state.guides || [])]
-    .filter((g) => g.enabled !== false)
-    .sort((a, b) => Number(a.priority || 100) - Number(b.priority || 100))) {
-    try {
-      const body = await fetchText(guide.url);
-      const parsed = parseXmlTv(body);
-      guideDocs.push({ ...guide, parsed });
-      guideStatus.push({ id: guide.id, name: guide.name, ok: true, channels: parsed.channels.size });
-      console.log(`Guide ${guide.name}: ${parsed.channels.size} channels`);
-    } catch (error) {
-      guideStatus.push({ id: guide.id, name: guide.name, ok: false, error: error.message });
-      console.error(`Guide ${guide.name} failed: ${error.message}`);
-    }
-  }
-  if (guideStatus.some((row) => !row.ok)) {
-    try {
-      const previousGuide = parseXmlTv(await loadGuide());
-      guideDocs.push({ id: "__previous__", name: "Last known good guide", parsed: previousGuide });
-      console.warn("Using last-known-good generated guide because at least one XMLTV source failed");
-    } catch {}
   }
 
   const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {});
