@@ -2,7 +2,7 @@ import http from "node:http";
 import { config, withInternalKey } from "./config.js";
 import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
-import { reconcileDispatcharr } from "./dispatcharr.js";
+import { provisionDispatcharrInputs, reconcileDispatcharr } from "./dispatcharr.js";
 import { loadGuide, loadSnapshot, loadState, newId, saveState } from "./store.js";
 import { duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "./sources.js";
 import { json, readJsonBody, text } from "./util.js";
@@ -203,6 +203,16 @@ export function createAdminServer() {
         return json(res, 200, state.overrides);
       }
 
+      if (req.method === "GET" && path === "/api/dispatcharr/inputs/preview") {
+        return json(res, 200, await provisionDispatcharrInputs(await loadState(), { apply: false }));
+      }
+      if (req.method === "POST" && path === "/api/dispatcharr/inputs/provision") {
+        const body = await readJsonBody(req);
+        return json(res, 200, await provisionDispatcharrInputs(await loadState(), {
+          apply: body.apply === true,
+          refresh: body.refresh !== false,
+        }));
+      }
       if (req.method === "GET" && path === "/api/dispatcharr/preview") {
         return json(res, 200, await reconcileDispatcharr(await loadSnapshot(), { apply: false }));
       }
