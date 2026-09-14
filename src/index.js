@@ -2,6 +2,11 @@ import { config } from "./config.js";
 import { refreshCatalog } from "./catalog.js";
 import { createAdminServer, createInternalServer } from "./server.js";
 
+if (!config.adminKey) {
+  console.error("ADMIN_KEY is required because the admin/API listener may be exposed through Traefik.");
+  process.exit(1);
+}
+
 const adminServer = createAdminServer();
 const internalServer = createInternalServer();
 

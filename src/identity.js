@@ -49,7 +49,7 @@ export function canonicalIdentity(row, aliases = {}) {
 }
 
 export function countryOf(row) {
-  const hay = normalize(`${row.group || ""} ${row.name || ""}`);
+  const hay = normalize(`${row.group || ""} ${row.name || ""} ${row.tvgName || ""}`);
   const rules = [
     ["GB", /\b(?:uk|gb|united kingdom|england|scotland|wales)\b/],
     ["US", /\b(?:us|usa|united states)\b/],
@@ -61,7 +61,15 @@ export function countryOf(row) {
     ["CA", /\b(?:ca|canada)\b/],
     ["AU", /\b(?:au|australia)\b/],
   ];
-  return rules.find(([, re]) => re.test(hay))?.[0] || "";
+  const byText = rules.find(([, re]) => re.test(hay))?.[0];
+  if (byText) return byText;
+
+  const id = String(row.tvgId || "").toLowerCase();
+  const suffix = /(?:^|[._-])(uk|gb|us|usa|pt|es|fr|de|it|ca|au)(?:$|[._-])/i.exec(id)?.[1]?.toLowerCase();
+  const suffixMap = {
+    uk:"GB", gb:"GB", us:"US", usa:"US", pt:"PT", es:"ES", fr:"FR", de:"DE", it:"IT", ca:"CA", au:"AU",
+  };
+  return suffixMap[suffix] || "";
 }
 
 export function canonicalGroup(row) {

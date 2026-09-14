@@ -1,28 +1,76 @@
 import { attr, text } from "./util.js";
 
+function extinfMeta(line) {
+  return {
+    name: text(line.slice(line.indexOf(",") + 1)),
+    tvgId: attr(line, "tvg-id"),
+    tvgName: attr(line, "tvg-name"),
+    logo: attr(line, "tvg-logo"),
+    group: attr(line, "group-title") || "Live TV",
+    channelNumber: Number(attr(line, "tvg-chno")) || null,
+  };
+}
+
+function consumeLine(raw, state) {
+  const line = String(raw || "").trim();
+  if (line.startsWith("#EXTINF:")) {
+    state.meta = extinfMeta(line);
+    return null;
+  }
+  if (state.meta && /^(https?|rtsp|rtmp):\/\//i.test(line)) {
+    const row = { ...state.meta, url: line };
+    state.meta = null;
+    return row;
+  }
+  return null;
+}
+
 export function parseM3u(body) {
-  const lines = String(body || "").split(/\r?\n/);
   const rows = [];
-  let meta = null;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (line.startsWith("#EXTINF:")) {
-      meta = {
-        name: text(line.slice(line.indexOf(",") + 1)),
-        tvgId: attr(line, "tvg-id"),
-        tvgName: attr(line, "tvg-name"),
-        logo: attr(line, "tvg-logo"),
-        group: attr(line, "group-title") || "Live TV",
-        channelNumber: Number(attr(line, "tvg-chno")) || null,
-      };
-      continue;
-    }
-    if (meta && /^(https?|rtsp|rtmp):\/\//i.test(line)) {
-      rows.push({ ...meta, url: line });
-      meta = null;
-    }
+  const state = { meta: null };
+  for (const raw of String(body || "").split(/\r?\n/)) {
+    const row = consumeLine(raw, state);
+    if (row) rows.push(row);
   }
   return rows;
+}
+
+// Incremental parser for very large provider playlists. The full M3U is never
+// materialised as one string or split into a giant array. Only the current line
+// and the current EXTINF metadata are retained while bytes arrive.
+export async function parseM3uStream(readable, { onRow, maxLineLength = 4 * 1024 * 1024 } = {}) {
+  if (!readable || typeof readable[Symbol.asyncIterator] !== "function") {
+    throw new Error("M3U response body is not streamable");
+  }
+  const decoder = new TextDecoder("utf-8");
+  const state = { meta: null };
+  let carry = "";
+  let rows = 0;
+  let bytes = 0;
+
+  async function handle(raw) {
+    const row = consumeLine(raw.replace(/\r$/, ""), state);
+    if (!row) return;
+    rows += 1;
+    if (onRow) await onRow(row);
+  }
+
+  for await (const chunk of readable) {
+    bytes += chunk?.byteLength ?? chunk?.length ?? 0;
+    carry += decoder.decode(chunk, { stream: true });
+    let newline;
+    while ((newline = carry.indexOf("\n")) !== -1) {
+      const line = carry.slice(0, newline);
+      carry = carry.slice(newline + 1);
+      if (line.length > maxLineLength) throw new Error(`M3U line exceeds ${maxLineLength} characters`);
+      await handle(line);
+    }
+    if (carry.length > maxLineLength) throw new Error(`M3U line exceeds ${maxLineLength} characters`);
+  }
+
+  carry += decoder.decode();
+  if (carry) await handle(carry);
+  return { rows, bytes };
 }
 
 function q(value) {

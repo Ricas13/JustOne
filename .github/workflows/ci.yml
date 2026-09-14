@@ -11,4 +11,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm test
+      - run: npm run check
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config -q
