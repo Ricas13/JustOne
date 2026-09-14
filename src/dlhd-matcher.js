@@ -14,10 +14,12 @@ const NUMBER_WORDS = new Map([
 ]);
 const REGION_TOKENS = new Set(["east","west"]);
 const BORING_TOKENS = new Set([
-  "live","channel","sports","sport","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream"
+  "live","channel","sports","sport","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream",
+  "start","stop"
 ]);
-const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|@|\bppv\b|\bevents?\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
+const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|\bx\b|@|\bppv\b|\bevents?\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
 const EVENT_GROUP_RE = /(?:\blive\s*events?\b|\bppv\b|\bespn\s*plus\b|\bdazn\b|\bflo\b|\bfanatiz\b|\bmax\s*ppv\b|\bncaa\b|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b|\bmls\b)/i;
+const DECORATION_BRACKET_RE = /^(?:event\s*only|ppv|live|bk|backup|alt|hd|fhd|uhd|sd|km|bg)$/i;
 
 function expandLeagueAliases(value) {
   return String(value || "")
@@ -26,15 +28,35 @@ function expandLeagueAliases(value) {
     .replace(/\bUEL\b/gi, "Europa League")
     .replace(/\bUECL\b/gi, "Conference League")
     .replace(/\bL1\b/gi, "League One")
-    .replace(/\bL2\b/gi, "League Two");
+    .replace(/\bL2\b/gi, "League Two")
+    .replace(/\bSPL\b/gi, "Scottish Premiership")
+    .replace(/\bWSL\b/gi, "Women Super League");
+}
+
+function meaningfulBracket(value) {
+  const source = String(value || "");
+  for (const match of source.matchAll(/\[([^\]]+)\]/g)) {
+    const inner = String(match[1] || "").trim();
+    if (!inner || DECORATION_BRACKET_RE.test(inner)) continue;
+    if (EVENT_LIKE_RE.test(inner) || /\d{4}-\d{2}-\d{2}/.test(inner) || /\b(?:cricket|hockey|football|soccer|basketball|baseball|wrestling|mma|boxing|tennis|golf)\b/i.test(inner)) {
+      return inner;
+    }
+  }
+  return "";
 }
 
 function cleanEventDecorations(value) {
-  return expandLeagueAliases(value)
-    .replace(/\[(?:event\s*only|ppv|live)\]/gi, " ")
-    .replace(/\b(?:live\s+football|live\s+soccer|event|ppv)\s*\d{1,3}\s*[:|-]?/gi, " ")
+  const bracket = meaningfulBracket(value);
+  let source = bracket || String(value || "");
+  source = source
+    .replace(/\b([A-Za-z][A-Za-z0-9 .'-]{1,40})\s+x\s+([A-Za-z][A-Za-z0-9 .'-]{1,40})\b/gi, "$1 vs $2")
+    .replace(/\b(?:start|stop)\s*:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b/gi, " ")
+    .replace(/\(\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s*\)/g, " ")
+    .replace(/\[(?:event\s*only|ppv|live|bk|backup|alt|hd|fhd|uhd|sd)\]/gi, " ")
+    .replace(/\b(?:live\s+football|live\s+soccer|event|ppv|mlb\s+live|nhl\s+live|nba\s+live)\s*\d{1,3}\s*[:|-]?/gi, " ")
     .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:am|pm)?\b/gi, " ")
     .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, " ");
+  return expandLeagueAliases(source);
 }
 
 function canonicalToken(token) {
@@ -70,7 +92,7 @@ function keyVariants(value) {
 
 function significantTokens(value) {
   const first = keyVariants(value)[0] || "";
-  return new Set(first.split(" ").filter((x) => x.length > 1 && !COUNTRY_WORDS.has(x) && !BORING_TOKENS.has(x)));
+  return new Set(first.split(" ").filter((x) => x.length > 1 && !COUNTRY_WORDS.has(x) && !BORING_TOKENS.has(x) && !/^\d+$/.test(x)));
 }
 
 function tokenScore(a, b) {
@@ -101,7 +123,7 @@ function addIndex(map, values, row) {
 
 export function isEventLikeRow(row) {
   const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
-  return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value);
+  return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value) || Boolean(meaningfulBracket(value));
 }
 
 export function createDlhdMatcher(reference, aliases = {}) {
