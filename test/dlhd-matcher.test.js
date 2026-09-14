@@ -11,7 +11,7 @@ const reference = {
     { id:"canal", kind:"channel", name:"Canal Plus France", aliases:["Canal Plus France"] },
   ],
   events: [
-    { id:"evt1", kind:"event", name:"Arsenal vs Chelsea", aliases:["Arsenal vs Chelsea","Sky Sports Main Event"] },
+    { id:"evt1", kind:"event", name:"England - Premier League : Arsenal vs Chelsea", aliases:["England - Premier League : Arsenal vs Chelsea","Sky Sports Main Event"] },
   ],
 };
 
@@ -26,6 +26,12 @@ test("indexed matcher resolves static variants and linked event channels", () =>
   assert.ok(event.some((x)=>x.id === "evt1"));
 });
 
+test("fuzzy event matching accepts two-team v/vs naming differences", () => {
+  const matcher = createDlhdMatcher(reference);
+  const event = matcher.match({ name:"Arsenal v Chelsea FHD", group:"Live Events" });
+  assert.ok(event.some((x)=>x.id === "evt1"));
+});
+
 test("country policy keeps all DLHD events but only GB PT US static channels", () => {
   const matcher = createDlhdMatcher(reference);
 
@@ -37,7 +43,7 @@ test("country policy keeps all DLHD events but only GB PT US static channels", (
   const frRef = matcher.match(frRow).find((x)=>x.id === "canal");
   assert.equal(mappingAllowedForCountries(frRow, frRef, allowed), false);
 
-  const eventRow = { name:"Arsenal vs Chelsea FHD", group:"Spain Events" };
+  const eventRow = { name:"Arsenal v Chelsea FHD", group:"Spain Events" };
   const eventRef = matcher.match(eventRow).find((x)=>x.id === "evt1");
   assert.equal(mappingAllowedForCountries(eventRow, eventRef, allowed), true);
 });
