@@ -29,9 +29,10 @@ function q(value) {
   return String(value ?? "").replace(/["\r\n]/g, " ").trim();
 }
 
-export function buildM3u(snapshot, { sourceId = null, publicGuideUrl = "" } = {}) {
-  const header = publicGuideUrl
-    ? `#EXTM3U url-tvg="${q(publicGuideUrl)}" x-tvg-url="${q(publicGuideUrl)}"`
+export function buildM3u(snapshot, { sourceId = null, guideUrl = "", publicGuideUrl = "" } = {}) {
+  const xmltv = guideUrl || publicGuideUrl;
+  const header = xmltv
+    ? `#EXTM3U url-tvg="${q(xmltv)}" x-tvg-url="${q(xmltv)}"`
     : "#EXTM3U";
   const lines = [header];
   for (const channel of snapshot.channels || []) {
