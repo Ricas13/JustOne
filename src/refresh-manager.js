@@ -8,6 +8,7 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
     running: false,
     id: null,
     reason: null,
+    sourceMode: null,
     phase: "idle",
     currentSource: null,
     startedAt: null,
@@ -30,14 +31,16 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
     };
   }
 
-  function start(reason = "manual") {
+  function start(reason = "manual", options = {}) {
     if (currentPromise) return { started: false, status: snapshot() };
 
+    const sourceMode = options.sourceMode || "auto";
     const id = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     status = {
       running: true,
       id,
       reason,
+      sourceMode,
       phase: "starting",
       currentSource: null,
       startedAt: now(),
@@ -47,10 +50,10 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
       progress: {},
     };
 
-    console.log(`[refresh ${id}] started (${reason})`);
+    console.log(`[refresh ${id}] started (${reason}; sourceMode=${sourceMode})`);
     currentPromise = (async () => {
       try {
-        const result = await runRefresh({ onProgress: updateProgress });
+        const result = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
         const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
         const events = (result.channels || []).filter((x) => x.referenceKind === "event").length;
         status = {
@@ -63,6 +66,7 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
             channels: result.channels?.length || 0,
             staticChannels,
             events,
+            sourceMode: result.sourceMode || sourceMode,
             matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
             totalReferences: result.dlhdStatus?.totalReferences ?? null,
           },
