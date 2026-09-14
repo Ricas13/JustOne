@@ -1,27 +1,6 @@
-# Dependencies
-node_modules/
-**/node_modules/
-
-# Build
-dist/
-build/
-*.tsbuildinfo
-
-# Env & secrets
 .env
-.env.local
-*.pem
-
-# Runtime data
-data/cache/
-data/logs/
-
-# OS / IDE
+node_modules/
+data/*.json
+data/*.xml
+!data/.gitkeep
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-
-# Docker
-*.log

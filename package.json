@@ -1,0 +1,15 @@
+{
+  "name": "justone-catalog",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "IPTV catalogue, metadata enrichment and Dispatcharr reconciliation without video proxying.",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "check": "node --check src/index.js && node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

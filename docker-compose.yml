@@ -1,73 +1,11 @@
 services:
-  dlhd-proxy:
-    build:
-      context: ./docker/dlhd-proxy
+  justone:
+    build: .
+    container_name: justone-catalog
     restart: unless-stopped
-    environment:
-      DLHD_BASE_URL: ${DLHD_BASE_URL:-https://daddylivestream.com}
-      API_URL: http://dlhd-proxy:3000
-      SOCKS5: ${SOCKS5:-}
-      CHANNEL_REFRESH_SECONDS: ${CHANNEL_REFRESH_SECONDS:-300}
-      DLHD_PROXY_KEY_FILE: /app/data/token.key
+    env_file:
+      - .env
+    ports:
+      - "8090:8090"
     volumes:
-      - dlhd-data:/app/data
-    ports:
-      - "${DLHD_PROXY_PORT:-3000}:3000"
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3)); sys.exit(0 if data.get('ok') else 1)"
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 5s
-
-  jellyfin-live:
-    build:
-      context: ./apps/jellyfin-live
-    restart: unless-stopped
-    depends_on:
-      dlhd-proxy:
-        condition: service_healthy
-    environment:
-      DLHD_PROXY_URL: http://dlhd-proxy:3000
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8090}
-      PLAYLIST_KEY: ${PLAYLIST_KEY:-}
-      JELLYFIN_LIVE_PORT: 8090
-      JELLYFIN_REFRESH_MIN: ${JELLYFIN_REFRESH_MIN:-10}
-      JELLYFIN_EPG_CACHE_MIN: ${JELLYFIN_EPG_CACHE_MIN:-60}
-      JELLYFIN_EPG_MAX_SOURCES: ${JELLYFIN_EPG_MAX_SOURCES:-12}
-      JELLYFIN_AUTO_EPG: ${JELLYFIN_AUTO_EPG:-true}
-      JELLYFIN_EXCLUDE_ADULT: ${JELLYFIN_EXCLUDE_ADULT:-true}
-      JELLYFIN_EPG_SOURCE_URLS: ${JELLYFIN_EPG_SOURCE_URLS:-}
-      DLSTREAMS_HOME: ${DLSTREAMS_HOME:-https://dlstreams.st/}
-      JELLYFIN_STREAM_STALL_MS: ${JELLYFIN_STREAM_STALL_MS:-12000}
-      JELLYFIN_SOURCES_PER_CANDIDATE: ${JELLYFIN_SOURCES_PER_CANDIDATE:-2}
-    ports:
-      - "${JELLYFIN_LIVE_PORT:-8090}:8090"
-    networks:
-      - default
-      - media_net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=media_net"
-      - "traefik.http.routers.justone-jellyfin.rule=Host(`${TRAEFIK_HOST:-resolver.vpn4u.cc}`) && PathPrefix(`/jellyfin`)"
-      - "traefik.http.routers.justone-jellyfin.entrypoints=websecure"
-      - "traefik.http.routers.justone-jellyfin.tls=true"
-      - "traefik.http.routers.justone-jellyfin.tls.certresolver=le"
-      - "traefik.http.routers.justone-jellyfin.priority=11000"
-      - "traefik.http.routers.justone-jellyfin.service=justone-jellyfin"
-      - "traefik.http.routers.justone-jellyfin.middlewares=justone-jellyfin-compress"
-      - "traefik.http.middlewares.justone-jellyfin-compress.compress=true"
-      - "traefik.http.services.justone-jellyfin.loadbalancer.server.port=8090"
-      - "traefik.http.services.justone-jellyfin.loadbalancer.responseForwarding.flushInterval=100ms"
-
-volumes:
-  dlhd-data:
-
-networks:
-  media_net:
-    name: ${TRAEFIK_NETWORK:-media_net}
-    external: true
+      - ./data:/data
