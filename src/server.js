@@ -1,6 +1,6 @@
 import http from "node:http";
 import { config, withInternalKey } from "./config.js";
-import { refreshCatalog } from "./catalog.js";
+import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
 import { reconcileDispatcharr } from "./dispatcharr.js";
 import { loadGuide, loadSnapshot, loadState, newId, saveState } from "./store.js";
@@ -96,7 +96,13 @@ export function createAdminServer() {
       }
       if (req.method === "GET" && path === "/health") {
         const snapshot = await loadSnapshot();
-        return json(res, 200, { ok: true, generatedAt: snapshot.generatedAt, channels: snapshot.channels.length, dlhd: snapshot.dlhdStatus || null });
+        return json(res, 200, {
+          ok: true,
+          generatedAt: snapshot.generatedAt,
+          channels: snapshot.channels.length,
+          dlhd: snapshot.dlhdStatus || null,
+          refresh: refreshManager.status(),
+        });
       }
       if (req.method === "GET" && path === "/admin") {
         return sendText(res, 200, ADMIN_HTML, "text/html; charset=utf-8");
@@ -126,7 +132,13 @@ export function createAdminServer() {
           })),
         });
       }
-      if (req.method === "POST" && path === "/api/refresh") return json(res, 200, await refreshCatalog());
+      if (req.method === "POST" && path === "/api/refresh") {
+        const started = refreshManager.start("admin");
+        return json(res, 202, started);
+      }
+      if (req.method === "GET" && path === "/api/refresh/status") {
+        return json(res, 200, refreshManager.status());
+      }
 
       if (req.method === "GET" && path === "/api/sources") return json(res, 200, (await loadState()).sources);
       if (req.method === "POST" && path === "/api/sources") return await addSource(req, res);
