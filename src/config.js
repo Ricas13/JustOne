@@ -12,6 +12,12 @@ function boolEnv(name, fallback = false) {
 function cleanUrl(value, fallback = "") {
   return String(value || fallback).replace(/\/+$/, "");
 }
+function csvEnv(name, fallback = "") {
+  return String(process.env[name] || fallback)
+    .split(",")
+    .map((x) => x.trim().toUpperCase())
+    .filter(Boolean);
+}
 
 export const config = {
   port: intEnv("PORT", 8090),
@@ -24,6 +30,8 @@ export const config = {
   adminKey: String(process.env.ADMIN_KEY || ""),
   refreshMinutes: intEnv("REFRESH_MINUTES", 30),
   fetchTimeoutMs: intEnv("FETCH_TIMEOUT_MS", 30000),
+  playlistFetchTimeoutMs: intEnv("PLAYLIST_FETCH_TIMEOUT_MS", 15 * 60 * 1000),
+  playlistMaxLineLength: intEnv("PLAYLIST_MAX_LINE_LENGTH", 4 * 1024 * 1024),
   qualityOrder: String(process.env.DEFAULT_QUALITY_ORDER || "HD,FHD,UHD,SD,UNKNOWN")
     .split(",").map((x) => x.trim().toUpperCase()).filter(Boolean),
   dlhd: {
@@ -34,6 +42,7 @@ export const config = {
     includeSchedule: boolEnv("DLHD_INCLUDE_SCHEDULE", true),
     includeUpcoming: boolEnv("DLHD_INCLUDE_UPCOMING", true),
     failClosed: boolEnv("DLHD_FAIL_CLOSED", true),
+    staticCountries: csvEnv("DLHD_STATIC_COUNTRIES", "GB,PT,US"),
   },
   dispatcharr: {
     url: cleanUrl(process.env.DISPATCHARR_URL),
