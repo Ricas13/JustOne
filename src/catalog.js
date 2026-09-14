@@ -1,7 +1,7 @@
 import { config } from "./config.js";
 import { loadGuide, loadSnapshot, loadState, saveGuide, saveSnapshot } from "./store.js";
-import { parseM3u } from "./m3u.js";
-import { canonicalGroup, canonicalIdentity, isBackup, qualityOf, variantRank } from "./identity.js";
+import { parseM3uStream } from "./m3u.js";
+import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, variantRank } from "./identity.js";
 import { enrichAndBuildGuide, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, filterSourceRowsByDlhd, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
 import { text, timeoutSignal } from "./util.js";
@@ -11,6 +11,18 @@ async function fetchText(url) {
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
   return await response.text();
 }
+
+async function fetchPlaylist(url) {
+  const response = await fetch(url, {
+    signal: timeoutSignal(config.playlistFetchTimeoutMs),
+    redirect: "follow",
+    headers: { "user-agent":"Mozilla/5.0 JustOne Catalog", accept:"audio/x-mpegurl,application/x-mpegURL,text/plain,*/*" },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  if (!response.body) throw new Error("playlist response has no body");
+  return response;
+}
+
 function sourcePriority(source) { return Number.isFinite(Number(source.priority)) ? Number(source.priority) : 100; }
 function familyOrder(sources) {
   const enabled = [...sources].filter((s) => s.enabled !== false).sort((a,b)=>sourcePriority(a)-sourcePriority(b)||text(a.name).localeCompare(text(b.name)));
@@ -125,20 +137,103 @@ function buildRawChannels(sourceRows, state, previous) {
   return channels.sort((a,b)=>a.number-b.number||a.name.localeCompare(b.name));
 }
 
+function staticCountry(item, ref) {
+  return countryOf(item.row) || countryOf({ name: ref?.name || "", group: ref?.group || "" });
+}
+function targetMapping(item, allowedCountries) {
+  if (item.reference?.kind === "event") return true;
+  if (!item.reference || !allowedCountries.size) return true;
+  return allowedCountries.has(staticCountry(item, item.reference));
+}
+function targetReference(ref, allowedCountries) {
+  if (ref.kind === "event") return true;
+  if (!allowedCountries.size) return true;
+  return allowedCountries.has(countryOf({ name:ref.name || "", group:ref.group || "" }));
+}
+
+async function scanSource(source, reference, aliases, allowedCountries) {
+  const response = await fetchPlaylist(source.url);
+  const kept = [];
+  const matchedRefs = new Set();
+  let matchedInputRows = 0;
+  let batch = [];
+
+  function flush() {
+    if (!batch.length) return;
+    if (!reference) {
+      kept.push(...batch);
+      matchedInputRows += batch.length;
+      batch = [];
+      return;
+    }
+    const matched = filterSourceRowsByDlhd(batch, reference, aliases);
+    const accepted = matched.rows.filter((item)=>targetMapping(item, allowedCountries));
+    const uniqueRows = new Set(accepted.map((item)=>item.row));
+    matchedInputRows += uniqueRows.size;
+    for (const item of accepted) {
+      kept.push(item);
+      if (item.reference?.id) matchedRefs.add(item.reference.id);
+    }
+    batch = [];
+  }
+
+  const stats = await parseM3uStream(response.body, {
+    maxLineLength: config.playlistMaxLineLength,
+    onRow: async (row) => {
+      batch.push({ source, row });
+      if (batch.length >= 5000) flush();
+    },
+  });
+  flush();
+  return { ...stats, kept, matchedInputRows, matchedRefs };
+}
+
 export async function refreshCatalog() {
-  const state=await loadState(); const previous=await loadSnapshot(); const rawSourceRows=[]; const sourceStatus=[];
+  const state=await loadState();
+  const previous=await loadSnapshot();
+  const sourceStatus=[];
+  const sourceRows=[];
+  const matchedRefIds=new Set();
+  let rawSourceRows=0;
+  let matchedInputRows=0;
+  const allowedCountries=new Set(config.dlhd.staticCountries || []);
+
+  // DLHD is deliberately fetched first. Provider playlists can be hundreds of
+  // megabytes, so we stream them through the small desired-reference set and
+  // discard irrelevant rows immediately instead of buffering whole M3Us.
+  const { reference:dlhdReference,status:dlhdStatus }=await loadDlhdReference(previous);
+
   for(const source of (state.sources||[]).filter((s)=>s.enabled!==false)){
-    try{ const body=await fetchText(source.url); const rows=parseM3u(body); for(const row of rows) rawSourceRows.push({source,row}); sourceStatus.push({id:source.id,name:source.name,ok:true,rows:rows.length}); }
+    try{
+      const scanned=await scanSource(source,dlhdReference,state.aliases||{},allowedCountries);
+      rawSourceRows += scanned.rows;
+      matchedInputRows += scanned.matchedInputRows;
+      sourceRows.push(...scanned.kept);
+      for(const id of scanned.matchedRefs) matchedRefIds.add(id);
+      sourceStatus.push({
+        id:source.id,
+        name:source.name,
+        ok:true,
+        rows:scanned.rows,
+        matched:scanned.matchedInputRows,
+        outputMappings:scanned.kept.length,
+        bytes:scanned.bytes,
+        megabytes:Number((scanned.bytes/1024/1024).toFixed(1)),
+      });
+    }
     catch(error){ sourceStatus.push({id:source.id,name:source.name,ok:false,error:error.message}); }
   }
 
-  const { reference:dlhdReference,status:dlhdStatus }=await loadDlhdReference(previous);
-  let sourceRows=rawSourceRows;
   if(dlhdReference){
-    const dlhdMatch=filterSourceRowsByDlhd(rawSourceRows,dlhdReference,state.aliases||{});
-    sourceRows=dlhdMatch.rows;
-    dlhdStatus.sourceRows=rawSourceRows.length; dlhdStatus.matchedInputRows=dlhdMatch.matchedInputRows; dlhdStatus.outputMappings=sourceRows.length; dlhdStatus.matchedReferences=dlhdMatch.matchedReferences; dlhdStatus.totalReferences=dlhdMatch.totalReferences;
-    dlhdStatus.unmatchedReferences=dlhdMatch.unmatchedReferences.slice(0,200).map((ref)=>({id:ref.id,kind:ref.kind,name:ref.name,group:ref.group||""}));
+    const allRefs=[...(dlhdReference.channels||[]),...(dlhdReference.events||[])];
+    const targetRefs=allRefs.filter((ref)=>targetReference(ref,allowedCountries) || matchedRefIds.has(ref.id));
+    dlhdStatus.staticCountries=[...allowedCountries];
+    dlhdStatus.sourceRows=rawSourceRows;
+    dlhdStatus.matchedInputRows=matchedInputRows;
+    dlhdStatus.outputMappings=sourceRows.length;
+    dlhdStatus.matchedReferences=matchedRefIds.size;
+    dlhdStatus.totalReferences=targetRefs.length;
+    dlhdStatus.unmatchedReferences=targetRefs.filter((ref)=>!matchedRefIds.has(ref.id)).slice(0,200).map((ref)=>({id:ref.id,kind:ref.kind,name:ref.name,group:ref.group||""}));
   }
 
   let channels=buildRawChannels(sourceRows,state,previous);
@@ -148,6 +243,10 @@ export async function refreshCatalog() {
     const byId=new Map(channels.map((channel)=>[channel.id,channel]));
     for(const old of previous.channels||[]){
       if(allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
+      if(old.referenceKind!=="event" && allowedCountries.size){
+        const oldCountry=String(old.group||"").match(/TV\s*\|\s*(GB|PT|US)\b/i)?.[1]?.toUpperCase() || "";
+        if(!allowedCountries.has(oldCountry)) continue;
+      }
       const retained=(old.variants||[]).filter((variant)=>failedSourceIds.has(variant.sourceId)); if(!retained.length) continue;
       const current=byId.get(old.id);
       if(current){ const seen=new Set(current.variants.map((variant)=>`${variant.sourceId}|${variant.url}`)); current.variants.push(...retained.filter((variant)=>!seen.has(`${variant.sourceId}|${variant.url}`))); current.variants=orderVariantsBreadthFirst(current.variants,state.sources||[]); current.retainedDueToSourceFailure=true; }
