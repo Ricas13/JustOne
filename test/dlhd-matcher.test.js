@@ -11,6 +11,18 @@ const reference = {
     { id:"bravo", kind:"channel", name:"Bravo USA", aliases:["Bravo USA"] },
     { id:"sky", kind:"channel", name:"Sky Sports Main Event UK", aliases:["Sky Sports Main Event UK"] },
     { id:"canal", kind:"channel", name:"Canal Plus France", aliases:["Canal Plus France"] },
+    { id:"benfica", kind:"channel", name:"Benfica TV PT", aliases:["Benfica TV PT"] },
+    { id:"tnt1", kind:"channel", name:"TNT Sports 1 UK", aliases:["TNT Sports 1 UK"] },
+    { id:"via1", kind:"channel", name:"Viaplay Sports 1 UK", aliases:["Viaplay Sports 1 UK"] },
+    { id:"abcny", kind:"channel", name:"ABC NY USA", aliases:["ABC NY USA"] },
+    { id:"cbsny", kind:"channel", name:"CBSNY USA", aliases:["CBSNY USA"] },
+    { id:"nbcny", kind:"channel", name:"NBCNY USA", aliases:["NBCNY USA"] },
+    { id:"foxny", kind:"channel", name:"FOXNY USA", aliases:["FOXNY USA"] },
+    { id:"pix", kind:"channel", name:"CW PIX 11 USA", aliases:["CW PIX 11 USA"] },
+    { id:"my9", kind:"channel", name:"MY9TV USA", aliases:["MY9TV USA"] },
+    { id:"btn", kind:"channel", name:"BIG TEN Network (BTN USA)", aliases:["BIG TEN Network (BTN USA)"] },
+    { id:"mgm", kind:"channel", name:"MGM+ USA / Epix", aliases:["MGM+ USA / Epix"] },
+    { id:"gal", kind:"channel", name:"Galavisi贸n USA", aliases:["Galavisi贸n USA"] },
   ],
   events: [
     { id:"evt1", kind:"event", name:"England - Premier League : Arsenal vs Chelsea", aliases:["England - Premier League : Arsenal vs Chelsea","Sky Sports Main Event UK"] },
@@ -29,6 +41,27 @@ test("indexed matcher resolves real provider naming variants", () => {
   assert.ok(matcher.match({ name:"PT| RTP 1 FHD", group:"Portugal" }).some((x)=>x.id === "rtp"));
   assert.ok(matcher.match({ name:"US| BRAVO (EAST)", group:"USA" }).some((x)=>x.id === "bravo"));
   assert.ok(matcher.match({ name:"UK| SKY SPORTS MAIN EVENTS HD", group:"UK Sports" }).some((x)=>x.id === "sky"));
+});
+
+test("static aliases cover known legacy brands and US affiliate callsigns", () => {
+  const matcher = createDlhdMatcher(reference);
+  const cases = [
+    [{ name:"PT| BTV 1 HD", group:"Portugal" }, "benfica"],
+    [{ name:"UK| BT SPORT 1 HD", group:"UK Sports" }, "tnt1"],
+    [{ name:"UK| PREMIER SPORTS 1 HD", group:"UK Sports" }, "via1"],
+    [{ name:"US| WABC 7 HD", group:"USA" }, "abcny"],
+    [{ name:"US| WCBS 2 HD", group:"USA" }, "cbsny"],
+    [{ name:"US| WNBC 4 HD", group:"USA" }, "nbcny"],
+    [{ name:"US| WNYW 5 HD", group:"USA" }, "foxny"],
+    [{ name:"US| WPIX 11 HD", group:"USA" }, "pix"],
+    [{ name:"US| WWOR 9 HD", group:"USA" }, "my9"],
+    [{ name:"US| BTN HD", group:"USA Sports" }, "btn"],
+    [{ name:"US| EPIX HD", group:"USA Movies" }, "mgm"],
+    [{ name:"US| GALAVISION HD", group:"USA" }, "gal"],
+  ];
+  for (const [row, expected] of cases) {
+    assert.ok(matcher.match(row).some((x)=>x.id === expected), `${row.name} should match ${expected}`);
+  }
 });
 
 test("indexed matcher resolves linked event channels", () => {
