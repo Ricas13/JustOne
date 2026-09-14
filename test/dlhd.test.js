@@ -18,6 +18,37 @@ test("24/7 parser prefers nearby card title over generic watch-link text", () =>
   assert.deepEqual(parse247Html(html).map((x) => x.name), ["BBC One UK"]);
 });
 
+test("24/7 parser resolves a title that appears before the channel link", () => {
+  const html = '<div class="card"><div class="card__title">BBC Four UK</div><a href="/watch.php?id=37"><span>Watch Now</span></a></div>';
+  assert.deepEqual(parse247Html(html).map((x) => x.name), ["BBC Four UK"]);
+});
+
+test("24/7 parser does not borrow an adjacent card title", () => {
+  const html = [
+    '<div class="card"><div class="card__title">BBC One UK</div><a href="/watch.php?id=35">Watch Now</a></div>',
+    '<div class="card"><a href="/watch.php?id=36">Watch Now</a><div class="card__title">RTP 1 Portugal</div></div>',
+    '<div class="card"><div class="card__title">ESPN USA</div><a href="/watch.php?id=37">Watch Now</a></div>',
+  ].join('');
+  assert.deepEqual(parse247Html(html).map((x) => [x.id, x.name]), [
+    ["35", "BBC One UK"],
+    ["36", "RTP 1 Portugal"],
+    ["37", "ESPN USA"],
+  ]);
+});
+
+test("DLHD static references retain explicit country metadata", () => {
+  const reference = buildDlhdReference({ channels: [
+    { id:"35", name:"BBC One UK" },
+    { id:"80", name:"RTP 1 Portugal" },
+    { id:"99", name:"ESPN USA" },
+  ] });
+  assert.deepEqual(reference.channels.map((x) => [x.country, x.group]), [
+    ["GB", "TV | UK"],
+    ["PT", "TV | PT"],
+    ["US", "TV | USA"],
+  ]);
+});
+
 test("parses public schedule events and linked channels", () => {
   const html = `<div>Sunday 13th Sep 2026 - Schedule Time UK GMT</div><div class="card__meta">All Soccer Events ⚽</div><span>11:00</span><div class="schedule__eventTitle">England - Championship : Sheffield United vs Wolverhampton Wanderers</div><a href="/watch.php?id=66">Sky Sports Football UK</a><a href="/watch.php?id=134">Event Stream</a>`;
   const out = parseScheduleHtml(html);
