@@ -1,8 +1,10 @@
 import { refreshCatalog } from "./catalog.js";
+import { augmentGuideWithEvents, finalizeSnapshot } from "./finalize.js";
+import { loadGuide, loadState, saveGuide, saveSnapshot } from "./store.js";
 
 function now() { return new Date().toISOString(); }
 
-export function createRefreshManager(runRefresh = refreshCatalog) {
+export function createRefreshManager(runRefresh = refreshCatalog, { finalize = runRefresh === refreshCatalog } = {}) {
   let currentPromise = null;
   let status = {
     running: false,
@@ -53,7 +55,26 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
     console.log(`[refresh ${id}] started (${reason}; sourceMode=${sourceMode})`);
     currentPromise = (async () => {
       try {
-        const result = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
+        const raw = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
+        let result = raw;
+
+        // Production refreshes receive the final layout/linked-event pass and
+        // are persisted a second time. Injected refresh functions (unit tests or
+        // callers deliberately supplying their own runner) stay side-effect free
+        // unless createRefreshManager(..., { finalize: true }) is requested.
+        if (finalize) {
+          const state = await loadState();
+          const finalized = finalizeSnapshot(raw, state);
+          result = finalized.snapshot;
+
+          if (finalized.addedEvents.length) {
+            const guide = augmentGuideWithEvents(await loadGuide(), finalized.addedEvents);
+            await saveGuide(guide);
+            console.log(`[refresh ${id}] linked-channel fallback added ${finalized.addedEvents.length} playable DLHD event(s)`);
+          }
+          await saveSnapshot(result);
+        }
+
         const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
         const events = (result.channels || []).filter((x) => x.referenceKind === "event").length;
         status = {
@@ -69,6 +90,7 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
             sourceMode: result.sourceMode || sourceMode,
             matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
             totalReferences: result.dlhdStatus?.totalReferences ?? null,
+            linkedChannelFallbackEvents: result.dlhdStatus?.linkedChannelFallbackEvents ?? 0,
           },
         };
         console.log(`[refresh ${id}] complete: ${staticChannels} static channels + ${events} events = ${result.channels?.length || 0} outputs`);
