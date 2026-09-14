@@ -5,17 +5,24 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    # Admin/API is local-host only by default. Put your authenticated reverse
-    # proxy in front of this explicitly if you want remote admin access.
+    # Keep direct host access local-only. Remote admin goes through Traefik.
     ports:
       - "127.0.0.1:${PORT:-8090}:8090"
     # M3U/XMLTV is available only to containers already on media_net.
+    # There is deliberately no Traefik router and no host port for 8091.
     expose:
       - "8091"
     volumes:
       - ./data:/data
     networks:
       - media_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=media_net"
+      - "traefik.http.routers.justone-admin.rule=Host(`${JUSTONE_ADMIN_HOST:-resolver.vpn4u.cc}`)"
+      - "traefik.http.routers.justone-admin.entrypoints=websecure"
+      - "traefik.http.routers.justone-admin.tls=true"
+      - "traefik.http.services.justone-admin.loadbalancer.server.port=8090"
 
 networks:
   media_net:
