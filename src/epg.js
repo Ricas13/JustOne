@@ -57,6 +57,27 @@ function remapProgramme(programme, tvgId) {
   return programme.replace(/\bchannel=(?:"[^"]+"|'[^']+')/i, `channel="${xmlEscape(tvgId)}"`);
 }
 
+function xmltvTime(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`;
+}
+
+function generatedEventProgramme(channel) {
+  const event = channel.event;
+  if (!event || !Number.isFinite(Number(event.start))) return null;
+  const start = Number(event.start);
+  const end = Number.isFinite(Number(event.end)) ? Number(event.end) : start + 3 * 60 * 60 * 1000;
+  return [
+    `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
+    `    <title>${xmlEscape(channel.name)}</title>`,
+    event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
+    `    <desc>${xmlEscape("DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
+    channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
+    "  </programme>",
+  ].filter(Boolean).join("\n");
+}
+
 export function enrichAndBuildGuide(channels, docs, overrides = {}) {
   const hits = new Map();
   for (const channel of channels) {
@@ -66,7 +87,9 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}) {
     if (override.logo) channel.logo = override.logo;
     else if (hit?.meta?.icon) channel.logo = hit.meta.icon;
     if (!channel.logo) channel.logo = channel.variants.find((v) => v.logo)?.logo || "";
-    channel.epg = hit ? { guideId: hit.doc.id, sourceId: hit.sourceId } : null;
+    channel.epg = channel.referenceKind === "event"
+      ? { generated: "dlhd-schedule" }
+      : (hit ? { guideId: hit.doc.id, sourceId: hit.sourceId } : null);
   }
 
   const out = [
@@ -82,6 +105,11 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}) {
   }
 
   for (const channel of channels) {
+    if (channel.referenceKind === "event") {
+      const generated = generatedEventProgramme(channel);
+      if (generated) out.push(generated);
+      continue;
+    }
     const hit = hits.get(channel.id);
     if (!hit) continue;
     for (const programme of hit.doc.parsed.programmes.get(hit.sourceId) || []) {
