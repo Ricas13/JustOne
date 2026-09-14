@@ -1,86 +1,109 @@
 # JustOne Catalog
 
-JustOne is now a **control-plane service for IPTV metadata and Dispatcharr channel reconciliation**.
+JustOne is an **IPTV catalogue/control plane**. It does not proxy, remux, transcode, probe or play video. There is no FFmpeg playback path in JustOne.
 
-It deliberately does **not** proxy, remux, transcode, probe, or play video. There is no FFmpeg in this project.
+## What decides which channels exist?
+
+**DLHD is the authoritative availability catalogue.** JustOne periodically reads:
+
+- DLHD's 24/7 channel catalogue
+- DLHD's current schedule/events
+
+It then filters every configured IPTV provider/account playlist against that reference. A channel that exists in an IPTV list but is not represented by DLHD is not emitted.
+
+DLHD is used only for **names, availability, event relationships and optional logos**. Playback always comes from your own configured IPTV playlists.
+
+If `DLHD_API_KEY` is set, JustOne prefers DLHD's structured `channels` and `schedule` JSON API. Without a key it uses the public 24/7 and schedule HTML pages.
 
 ## Architecture
 
 ```text
-Provider M3Us
-    ↓
-JustOne Catalog
-  - canonical channel identity
-  - duplicate/variant classification
-  - provider/account awareness
-  - EPG matching
-  - logo enrichment
-  - deterministic failover ordering
-    ↓
-per-source curated M3Us ──→ Decypharr / connection layer ──→ Dispatcharr
-    │                                                        │
-    └──────────────── XMLTV / logos ─────────────────────────┴─→ Jellyfin
+DLHD 24/7 + schedule ───────────────┐
+                                     │ authoritative whitelist
+Provider A / Line 1 M3U ────────────┤
+Provider A / Line 2 M3U ────────────┤
+Provider B / Line 1 M3U ────────────┤
+                                     ▼
+                              JustOne Catalog
+                           match / filter / enrich
+                                     │
+                    Docker-internal M3Us + XMLTV
+                                     │
+                                     ▼
+                         connection-management layer
+                                     │
+                                     ▼
+                                Dispatcharr
+                                     │
+                                     ▼
+                                  Jellyfin
 ```
 
-The important model is:
+For schedule events, JustOne first looks for an IPTV entry matching the event title. It can also use the **specific linear channels DLHD lists for that event** (for example Sky Sports Football). Generic DLHD labels such as `Event Stream`, `Event SD Stream` and `Channel Not Listed` are deliberately not used as cross-event aliases because they are ambiguous.
+
+## Source/variant ordering
+
+Within one canonical channel/event, JustOne keeps all useful provider variants and orders them breadth-first across failure domains before going deeper into one provider/account:
 
 ```text
-channel → source families/accounts → quality/backup variants
+Provider A / account 1 / HD
+Provider B / account 1 / HD
+Provider A / account 2 / HD
+Provider A / account 1 / backup HD
+Provider B / account 1 / backup HD
+...
 ```
 
-For example, five BBC One URLs from one 1-connection account are kept as variants of one source family, not treated as five independent providers.
+Dispatcharr remains responsible for real-time connection capacity, buffering detection and failover.
 
-## Failover ordering
+## Internal-only M3U/XMLTV
 
-JustOne orders streams **breadth-first across independent providers/accounts before going deeper into variants**.
+M3U and XMLTV outputs are served on a **separate internal listener** (`8091`). `docker-compose.yml` uses `expose`, not `ports`, so that listener has no host/public port.
 
-With `A1`, `A2` from Provider A and `B1` from Provider B, each containing HD and FHD BBC One variants, the desired order is:
+The admin/API listener is separate (`8090`) and is published to `127.0.0.1` only by default.
+
+Internal output URLs are typically:
 
 ```text
-A1 HD
-B1 HD
-A2 HD
-A1 FHD
-B1 FHD
-A2 FHD
+http://justone-catalog:8091/m3u/source/<source-id>.m3u
+http://justone-catalog:8091/m3u/master.m3u
+http://justone-catalog:8091/epg/guide.xml
 ```
 
-That avoids burning through every alternative from one dead provider before trying another failure domain. Dispatcharr remains responsible for real-time capacity, buffering detection and stream switching.
+`GET /api/internal-outputs` returns the exact generated internal URLs for your configured sources.
 
-## Outputs
+To let another Docker container consume them, attach that container to the same network:
 
-- `GET /m3u/source/:sourceId.m3u` — curated M3U for one IPTV credential/line
-- `GET /m3u/master.m3u` — all curated variants, mainly for inspection
-- `GET /epg/guide.xml` — canonical XMLTV guide for Jellyfin
-- `GET /api/catalog` — current canonical catalogue and ordered variants
-- `GET /api/dispatcharr/preview` — dry-run reconciliation plan
-- `POST /api/dispatcharr/reconcile` with `{"apply":true}` — apply the plan when explicitly enabled
-
-Every output stream receives the canonical `tvg-id`, clean channel name/logo/group, plus an internal rank marker in the stream display name, e.g.:
-
-```text
-BBC One [JO:001] [HD]
-BBC One [JO:004] [FHD]
+```bash
+docker network connect justone-internal <consumer-container>
 ```
 
-The rank marker is for the reconciler. The actual Dispatcharr/Jellyfin channel name remains clean (`BBC One`).
+Do **not** publish port `8091` through Docker, Traefik, Cloudflare or another reverse proxy.
+
+## Failure behaviour
+
+`DLHD_FAIL_CLOSED=true` is the default. That means:
+
+- a DLHD refresh failure never causes JustOne to expose the entire unfiltered provider list;
+- the last-known-good DLHD reference is reused when possible;
+- if there is no valid DLHD reference at all, the refresh fails instead of publishing unwanted output.
+
+Provider and XMLTV refresh failures also retain last-known-good data where possible.
 
 ## Quick start
 
 ```bash
 cp .env.example .env
-# set ADMIN_KEY and PUBLIC_URL
+# set ADMIN_KEY
 docker compose up -d --build
 ```
 
-Open `http://localhost:8090/admin` for the built-in source/EPG manager, or use the API below.
+Open `http://127.0.0.1:8090/admin` locally. The service creates `/data/state.json` on first start.
 
-The service creates `/data/state.json` on first start.
-
-Add a source:
+Add one source per real provider credential/line:
 
 ```bash
-curl -X POST http://localhost:8090/api/sources \
+curl -X POST http://127.0.0.1:8090/api/sources \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -94,94 +117,69 @@ curl -X POST http://localhost:8090/api/sources \
   }'
 ```
 
-Add another credential as another source. There is no configured source-count limit.
-
-Add XMLTV:
+Add XMLTV sources in the same way via `/api/guides`, then run:
 
 ```bash
-curl -X POST http://localhost:8090/api/guides \
-  -H 'Authorization: Bearer change-me' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name":"UK Guide",
-    "priority":10,
-    "url":"https://example.com/guide.xml",
-    "enabled":true
-  }'
-```
-
-Then refresh:
-
-```bash
-curl -X POST http://localhost:8090/api/refresh \
+curl -X POST http://127.0.0.1:8090/api/refresh \
   -H 'Authorization: Bearer change-me'
 ```
 
-## Suggested flow with Decypharr and Dispatcharr
+Inspect DLHD matching:
 
-1. Add each provider credential/line to JustOne as a separate source.
-2. Feed `/m3u/source/<id>.m3u` into the connection-management layer for that line.
-3. Add those resulting M3Us to Dispatcharr as separate M3U accounts/profiles with their real connection limits.
-4. Ensure `tvg-id` and the JustOne rank marker survive the connection layer.
-5. Review `/api/dispatcharr/preview`.
-6. Set `DISPATCHARR_APPLY_ENABLED=true` only after the preview is correct.
-7. Apply reconciliation.
-8. Give Jellyfin the Dispatcharr playback M3U and JustOne `/epg/guide.xml`.
+```bash
+curl http://127.0.0.1:8090/api/dlhd \
+  -H 'Authorization: Bearer change-me'
+```
+
+The response includes matched-reference counts and up to 200 currently unmatched DLHD channels/events, which is useful for improving aliases without broadening matching unsafely.
 
 ## Dispatcharr safety
 
-JustOne only owns channels whose `tvg_id` starts with `justone.`. It does not delete unrelated Dispatcharr channels.
-
-Reconciliation defaults to a **preview**. Applying changes requires both:
+JustOne only owns Dispatcharr channels whose `tvg_id` starts with `justone.`. Reconciliation is preview-only unless both of these are true:
 
 ```text
 DISPATCHARR_APPLY_ENABLED=true
 ```
 
-and an explicit request body:
+and the reconcile request explicitly contains:
 
 ```json
 {"apply": true}
 ```
 
-Authentication supports either a Dispatcharr API key or JWT login credentials. Current Dispatcharr REST resources used are the official channel, stream, group and logo APIs.
+Use `/api/dispatcharr/preview` before applying.
 
-## Metadata policy
+## Metadata / EPG
 
-For channel identity, quality tags (`HD`, `FHD`, `UHD`, `SD`) and backup markers are stripped before canonical matching. Manual aliases and overrides can correct edge cases without changing provider playlists.
+Static channels use configured XMLTV data where it can be matched by original `tvg-id` or channel name. Event channels get a generated XMLTV programme from the DLHD schedule, while logos may still be enriched from the matched underlying IPTV/EPG channel.
 
-Logo precedence is:
+Logo precedence remains:
 
 ```text
-manual override → matched XMLTV logo → provider logo
+manual override → matched XMLTV logo → DLHD/provider logo
 ```
 
-XMLTV matching first tries provider `tvg-id` values and then normalized channel names. Programme XML is preserved and remapped onto the canonical JustOne `tvg-id`.
+## Important APIs
 
-## State API
+Admin/API listener (`8090`):
 
-- `GET /api/state`
+- `GET /api/catalog`
+- `GET /api/dlhd`
+- `GET /api/internal-outputs`
 - `GET/POST /api/sources`
-- `PATCH/DELETE /api/sources/:id`
 - `GET/POST /api/guides`
-- `PATCH/DELETE /api/guides/:id`
 - `PUT /api/aliases`
 - `PUT /api/overrides`
 - `POST /api/refresh`
+- `GET /api/dispatcharr/preview`
+- `POST /api/dispatcharr/reconcile`
 
-Aliases are keyed by normalized incoming channel name and map to the canonical display name. Overrides may be keyed by canonical channel id or canonical key and can set `name`, `group`, `logo`, `number`, or `disabled`.
+Internal listener (`8091`, Docker network only):
 
-## What was removed
+- `GET /m3u/source/:sourceId.m3u`
+- `GET /m3u/master.m3u`
+- `GET /epg/guide.xml`
 
-The rebuild intentionally removes the previous:
+## Still deliberately absent
 
-- DLHD resolver/proxy
-- FFmpeg playback/remux path
-- playback state machine
-- stall monitoring
-- rolling buffers
-- source learning/scoring
-- warm standby
-- video proxy endpoints
-
-Those concerns belong in Dispatcharr or the upstream connection layer, not in the catalogue.
+JustOne still contains no DLHD playback resolver, video proxy, FFmpeg remuxing, playback state machine, warm standby or stream-health probing. DLHD determines **what should exist**; your IPTV providers and Dispatcharr determine **how it plays**.
