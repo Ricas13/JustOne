@@ -15,6 +15,8 @@ const reference = {
   events: [
     { id:"evt1", kind:"event", name:"England - Premier League : Arsenal vs Chelsea", aliases:["England - Premier League : Arsenal vs Chelsea","Sky Sports Main Event UK"] },
     { id:"evt2", kind:"event", name:"Scotland - League Cup : Stenhousemuir vs Hearts", aliases:["Scotland - League Cup : Stenhousemuir vs Hearts"] },
+    { id:"evt3", kind:"event", name:"Field Hockey : New England College vs UMass Boston", aliases:["Field Hockey : New England College vs UMass Boston"] },
+    { id:"evt4", kind:"event", name:"Baseball MLB : Dodgers vs Reds", aliases:["Baseball MLB : Dodgers vs Reds"] },
   ],
 };
 
@@ -49,6 +51,24 @@ test("event-group matching handles provider team feeds and league abbreviations"
   const named = matcher.match({ name:"UK| LIVE FOOTBALL 01: Stenhousemuir vs Hearts 7:45pm", group:"EU | UK LIVE EVENTS-PPV" });
   assert.ok(named.some((x)=>x.id === "evt2"));
   assert.equal(isEventLikeRow({ name:"UK| EPL : ARSENAL", group:"EU | UK LIVE EVENTS-PPV" }), true);
+});
+
+test("event matching preserves meaningful bracket content from provider feeds", () => {
+  const matcher = createDlhdMatcher(reference);
+  const flo = matcher.match({
+    name:"US| FLO SPORTS 002 [New England College vs UMass_Boston _ Field Hockey (NEC vs UMass_Boston) (2026-09-14 14:00:00)]",
+    group:"AM | USA FLO",
+  });
+  assert.ok(flo.some((x)=>x.id === "evt3"));
+});
+
+test("event matching normalizes x separators and embedded start stop timestamps", () => {
+  const matcher = createDlhdMatcher(reference);
+  const mlb = matcher.match({
+    name:"US| MLB LIVE 01 : Dodgers x Reds start:2026-09-14 23:40:00 stop:2026-09-15 06:53:20",
+    group:"AM | USA MLB",
+  });
+  assert.ok(mlb.some((x)=>x.id === "evt4"));
 });
 
 test("near-match suggestions identify likely static aliases without auto-merging", () => {
