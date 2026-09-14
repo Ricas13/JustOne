@@ -1,4 +1,6 @@
 import { refreshCatalog } from "./catalog.js";
+import { augmentGuideWithEvents, finalizeSnapshot } from "./finalize.js";
+import { loadGuide, loadState, saveGuide, saveSnapshot } from "./store.js";
 
 function now() { return new Date().toISOString(); }
 
@@ -53,7 +55,18 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
     console.log(`[refresh ${id}] started (${reason}; sourceMode=${sourceMode})`);
     currentPromise = (async () => {
       try {
-        const result = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
+        const raw = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
+        const state = await loadState();
+        const finalized = finalizeSnapshot(raw, state);
+        const result = finalized.snapshot;
+
+        if (finalized.addedEvents.length) {
+          const guide = augmentGuideWithEvents(await loadGuide(), finalized.addedEvents);
+          await saveGuide(guide);
+          console.log(`[refresh ${id}] linked-channel fallback added ${finalized.addedEvents.length} playable DLHD event(s)`);
+        }
+        await saveSnapshot(result);
+
         const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
         const events = (result.channels || []).filter((x) => x.referenceKind === "event").length;
         status = {
@@ -69,6 +82,7 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
             sourceMode: result.sourceMode || sourceMode,
             matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
             totalReferences: result.dlhdStatus?.totalReferences ?? null,
+            linkedChannelFallbackEvents: result.dlhdStatus?.linkedChannelFallbackEvents ?? 0,
           },
         };
         console.log(`[refresh ${id}] complete: ${staticChannels} static channels + ${events} events = ${result.channels?.length || 0} outputs`);
