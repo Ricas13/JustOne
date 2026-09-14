@@ -5,7 +5,18 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Admin/API is local-host only by default. Put your authenticated reverse
+    # proxy in front of this explicitly if you want remote admin access.
     ports:
-      - "8090:8090"
+      - "127.0.0.1:${PORT:-8090}:8090"
+    # M3U/XMLTV is Docker-internal only: no host port is published.
+    expose:
+      - "8091"
     volumes:
       - ./data:/data
+    networks:
+      - justone-internal
+
+networks:
+  justone-internal:
+    name: ${JUSTONE_DOCKER_NETWORK:-justone-internal}
