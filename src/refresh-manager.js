@@ -1,5 +1,6 @@
 import { refreshCatalog } from "./catalog.js";
 import { augmentGuideWithEvents, finalizeSnapshot } from "./finalize.js";
+import { loadProviderOrders } from "./provider-order.js";
 import { loadGuide, loadState, saveGuide, saveSnapshot } from "./store.js";
 
 function now() { return new Date().toISOString(); }
@@ -64,7 +65,8 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
         // unless createRefreshManager(..., { finalize: true }) is requested.
         if (finalize) {
           const state = await loadState();
-          const finalized = finalizeSnapshot(raw, state);
+          const providerOrders = await loadProviderOrders();
+          const finalized = finalizeSnapshot(raw, state, { providerOrders });
           result = finalized.snapshot;
 
           if (finalized.addedEvents.length) {
@@ -73,6 +75,10 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
             console.log(`[refresh ${id}] linked-channel fallback added ${finalized.addedEvents.length} playable DLHD event(s)`);
           }
           await saveSnapshot(result);
+
+          for (const [country, info] of Object.entries(result.lineupOrdering || {})) {
+            console.log(`[refresh ${id}] ${country} lineup: ${info.matched}/${info.total} ordered by ${info.provider || "provider reference"}; ${info.unmatched} fallback alphabetical`);
+          }
         }
 
         const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
@@ -91,6 +97,7 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
             matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
             totalReferences: result.dlhdStatus?.totalReferences ?? null,
             linkedChannelFallbackEvents: result.dlhdStatus?.linkedChannelFallbackEvents ?? 0,
+            lineupOrdering: result.lineupOrdering || null,
           },
         };
         console.log(`[refresh ${id}] complete: ${staticChannels} static channels + ${events} events = ${result.channels?.length || 0} outputs`);
