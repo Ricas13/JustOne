@@ -24,6 +24,10 @@ services:
       - "traefik.http.routers.justone-admin.priority=100"
       - "traefik.http.routers.justone-admin.tls=true"
       - "traefik.http.routers.justone-admin.tls.certresolver=le"
+      - "traefik.http.routers.justone-admin.middlewares=justone-admin-root"
+      - "traefik.http.middlewares.justone-admin-root.redirectregex.regex=^https?://([^/]+)/?$"
+      - "traefik.http.middlewares.justone-admin-root.redirectregex.replacement=https://$${1}/admin"
+      - "traefik.http.middlewares.justone-admin-root.redirectregex.permanent=false"
       - "traefik.http.services.justone-admin.loadbalancer.server.port=8090"
 
 networks:
