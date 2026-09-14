@@ -79,7 +79,7 @@ function withAutoXtreamGuides(state) {
   const seenProviders = new Set();
   let autoIndex = 0;
 
-  for (const source of (state.sources || []).filter((row) => row.enabled !== false)) {
+  for (const source of (state.sources || []).filter((row) => row.enabled !== false && row.epgDisabled !== true)) {
     let parsed;
     try { parsed = new URL(source.url); } catch { continue; }
     const providerKey = `${parsed.protocol}//${parsed.host}`.toLowerCase();
