@@ -21,10 +21,11 @@ export function createRefreshManager(runRefresh = refreshCatalog) {
   }
 
   function updateProgress(progress = {}) {
+    const hasCurrentSource = Object.prototype.hasOwnProperty.call(progress, "currentSource");
     status = {
       ...status,
       phase: progress.phase || status.phase,
-      currentSource: progress.currentSource ?? status.currentSource,
+      currentSource: hasCurrentSource ? progress.currentSource : status.currentSource,
       progress: { ...(status.progress || {}), ...progress },
     };
   }
