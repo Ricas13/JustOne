@@ -32,6 +32,15 @@ function safeCacheId(sourceId) {
   return String(sourceId || "source").replace(/[^a-zA-Z0-9_.-]+/g, "_");
 }
 
+function providerKeyForUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 export async function ensureProviderCacheDir() {
   await fs.mkdir(providerCacheDir, { recursive: true });
   return providerCacheDir;
@@ -77,13 +86,19 @@ function withAutoXtreamGuides(state) {
   const guides = [...(state.guides || [])];
   const manualUrls = new Set(guides.map((guide) => String(guide.url || "")));
   const seenProviders = new Set();
+  const disabledProviders = new Set(
+    (state.sources || [])
+      .filter((row) => row.epgDisabled === true)
+      .map((row) => providerKeyForUrl(row.url))
+      .filter(Boolean)
+  );
   let autoIndex = 0;
 
-  for (const source of (state.sources || []).filter((row) => row.enabled !== false && row.epgDisabled !== true)) {
+  for (const source of (state.sources || []).filter((row) => row.enabled !== false)) {
     let parsed;
     try { parsed = new URL(source.url); } catch { continue; }
     const providerKey = `${parsed.protocol}//${parsed.host}`.toLowerCase();
-    if (seenProviders.has(providerKey)) continue;
+    if (disabledProviders.has(providerKey) || seenProviders.has(providerKey)) continue;
     seenProviders.add(providerKey);
 
     const url = String(source.detectedEpgUrl || deriveXtreamXmltvUrl(source.url) || "");
