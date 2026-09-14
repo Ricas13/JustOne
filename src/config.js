@@ -28,7 +28,14 @@ export const config = {
   internalKey: String(process.env.INTERNAL_KEY || ""),
   dataDir: path.resolve(process.env.DATA_DIR || "./data"),
   adminKey: String(process.env.ADMIN_KEY || ""),
-  refreshMinutes: intEnv("REFRESH_MINUTES", 30),
+
+  // Provider playlists are enormous and normally change much less frequently
+  // than the DLHD event schedule. Download providers once per day, but refresh
+  // DLHD and rematch against the cached provider M3Us every eight hours.
+  providerRefreshMinutes: intEnv("PROVIDER_REFRESH_MINUTES", 24 * 60),
+  dlhdRefreshMinutes: intEnv("DLHD_REFRESH_MINUTES", 8 * 60),
+  providerCacheMaxAgeMinutes: intEnv("PROVIDER_CACHE_MAX_AGE_MINUTES", 24 * 60),
+
   fetchTimeoutMs: intEnv("FETCH_TIMEOUT_MS", 30000),
   playlistFetchTimeoutMs: intEnv("PLAYLIST_FETCH_TIMEOUT_MS", 30 * 60 * 1000),
   playlistMaxLineLength: intEnv("PLAYLIST_MAX_LINE_LENGTH", 4 * 1024 * 1024),
