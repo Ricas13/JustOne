@@ -82,16 +82,20 @@ export function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString("hex")}`;
 }
 
-function withAutoXtreamGuides(state) {
-  const guides = [...(state.guides || [])];
-  const manualUrls = new Set(guides.map((guide) => String(guide.url || "")));
-  const seenProviders = new Set();
-  const disabledProviders = new Set(
+function disabledProviderKeys(state) {
+  return new Set(
     (state.sources || [])
       .filter((row) => row.epgDisabled === true)
       .map((row) => providerKeyForUrl(row.url))
       .filter(Boolean)
   );
+}
+
+function withAutoXtreamGuides(state) {
+  const guides = [...(state.guides || [])];
+  const manualUrls = new Set(guides.map((guide) => String(guide.url || "")));
+  const seenProviders = new Set();
+  const disabledProviders = disabledProviderKeys(state);
   let autoIndex = 0;
 
   for (const source of (state.sources || []).filter((row) => row.enabled !== false)) {
@@ -131,8 +135,14 @@ export async function loadState() {
 }
 
 export async function saveState(state) {
+  const disabledProviders = disabledProviderKeys(state);
+  const sources = (state.sources || []).map((source) => {
+    const providerKey = providerKeyForUrl(source.url);
+    return disabledProviders.has(providerKey) ? { ...source, epgDisabled: true } : source;
+  });
   const persisted = {
     ...state,
+    sources,
     guides: (state.guides || []).filter((guide) => guide.auto !== true),
   };
   await atomicWrite(statePath, `${JSON.stringify(persisted, null, 2)}\n`);
