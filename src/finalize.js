@@ -1,4 +1,5 @@
 import { countryOf } from "./identity.js";
+import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
 
 const EVENT_TYPE_ORDER = [
@@ -48,9 +49,6 @@ export function eventTypeFor(ref = {}) {
   if (/\b(?:rock in rio|festival|concert|music)\b/.test(hay)) return "Music";
   if (/\b(?:jeopardy|tv shows?|premiere|episode|season)\b/.test(hay)) return "TV & Entertainment";
 
-  // DLHD often labels football fixtures simply as "Events". Keep this after
-  // the explicit sport checks so Super Liga handball/volleyball is not folded
-  // into football just because it contains "liga".
   if (/\b(?:soccer|football|futsal|premier league|champions league|europa league|conference league|la liga|liga i|liga 1|liga 2|serie a|serie b|allsvenskan|superettan|brasileirao|eredivisie|bundesliga|mls|nws|copa|cup|division)\b/.test(hay)) return "Football";
 
   return "Other";
@@ -152,24 +150,35 @@ function materializeLinkedEvents(snapshot) {
   return { added, mappings };
 }
 
-function layoutChannels(channels, overrides = {}) {
+function layoutChannels(channels, overrides = {}, providerOrders = null) {
   for (const channel of channels) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
     if (channel.referenceKind === "event") {
       const type = eventTypeFor({ name: channel.name, category: channel.event?.originalCategory || channel.event?.category || channel.group });
       channel.event = { ...(channel.event || {}), category: type };
       if (!override.group) channel.group = `Events | ${type}`;
-    } else if (!override.group) {
-      const cc = staticCountry(channel);
-      if (cc === "GB") channel.group = "TV | UK";
-      else if (cc === "PT") channel.group = "TV | PT";
-      else if (cc === "US") channel.group = "TV | USA";
+    } else {
+      if (!override.group) {
+        const cc = staticCountry(channel);
+        if (cc === "GB") channel.group = "TV | UK";
+        else if (cc === "PT") channel.group = "TV | PT";
+        else if (cc === "US") channel.group = "TV | USA";
+      }
+      const providerOrder = providerOrderForChannel(channel, providerOrders);
+      if (providerOrder) channel.providerOrder = providerOrder;
+      else delete channel.providerOrder;
     }
   }
 
   const staticRows = channels.filter((ch) => ch.referenceKind !== "event").sort((a, b) => {
     const ac = staticCountry(a), bc = staticCountry(b);
-    return (COUNTRY_RANK.get(ac) ?? 99) - (COUNTRY_RANK.get(bc) ?? 99) || a.name.localeCompare(b.name);
+    const countryDifference = (COUNTRY_RANK.get(ac) ?? 99) - (COUNTRY_RANK.get(bc) ?? 99);
+    if (countryDifference) return countryDifference;
+    const ap = Number(a.providerOrder?.position);
+    const bp = Number(b.providerOrder?.position);
+    const aPosition = Number.isFinite(ap) ? ap : Number.MAX_SAFE_INTEGER;
+    const bPosition = Number.isFinite(bp) ? bp : Number.MAX_SAFE_INTEGER;
+    return aPosition - bPosition || a.name.localeCompare(b.name);
   });
   const eventRows = channels.filter((ch) => ch.referenceKind === "event").sort((a, b) => {
     const at = eventTypeFor({ name: a.name, category: a.event?.category || a.group });
@@ -179,6 +188,9 @@ function layoutChannels(channels, overrides = {}) {
       || a.name.localeCompare(b.name);
   });
 
+  // Keep the country blocks stable for Jellyfin while provider positions decide
+  // the order within each block. We intentionally do not expose raw provider
+  // channel numbers because US local and national providers can reuse numbers.
   const nextByCountry = new Map([["GB", 1000], ["PT", 2000], ["US", 3000]]);
   for (const channel of staticRows) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
@@ -235,17 +247,30 @@ export function augmentGuideWithEvents(guideXml, channels) {
   return String(guideXml).replace(/\s*<\/tv>\s*$/i, `\n${additions.join("\n")}\n</tv>\n`);
 }
 
-export function finalizeSnapshot(snapshot, state = {}) {
+export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null } = {}) {
   const cloned = structuredClone(snapshot || {});
   cloned.channels = cloned.channels || [];
   const fallback = materializeLinkedEvents(cloned);
   cloned.channels.push(...fallback.added);
-  cloned.channels = layoutChannels(cloned.channels, state.overrides || {});
+  cloned.channels = layoutChannels(cloned.channels, state.overrides || {}, providerOrders);
 
   const staticCount = cloned.channels.filter((ch) => ch.referenceKind !== "event").length;
   const eventCount = cloned.channels.filter((ch) => ch.referenceKind === "event").length;
   const matchedStaticIds = new Set(cloned.channels.filter((ch) => ch.referenceKind !== "event").map((ch) => ch.dlhdRefId).filter(Boolean));
   const matchedEventIds = new Set(cloned.channels.filter((ch) => ch.referenceKind === "event").map((ch) => ch.dlhdRefId).filter(Boolean));
+
+  const orderingSummary = {};
+  for (const [cc, label] of [["GB","UK"],["PT","PT"],["US","USA"]]) {
+    const rows = cloned.channels.filter((ch) => ch.referenceKind !== "event" && staticCountry(ch) === cc);
+    orderingSummary[label] = {
+      provider: providerOrders?.metadata?.[cc]?.provider || null,
+      source: providerOrders?.metadata?.[cc]?.source || null,
+      matched: rows.filter((ch) => ch.providerOrder).length,
+      unmatched: rows.filter((ch) => !ch.providerOrder).length,
+      total: rows.length,
+    };
+  }
+  cloned.lineupOrdering = orderingSummary;
 
   if (cloned.dlhdStatus) {
     cloned.dlhdStatus.linkedChannelFallbackEvents = fallback.added.length;
