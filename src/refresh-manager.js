@@ -1,0 +1,95 @@
+import { refreshCatalog } from "./catalog.js";
+
+function now() { return new Date().toISOString(); }
+
+export function createRefreshManager(runRefresh = refreshCatalog) {
+  let currentPromise = null;
+  let status = {
+    running: false,
+    id: null,
+    reason: null,
+    phase: "idle",
+    currentSource: null,
+    startedAt: null,
+    finishedAt: null,
+    lastError: null,
+    summary: null,
+  };
+
+  function snapshot() {
+    return structuredClone(status);
+  }
+
+  function updateProgress(progress = {}) {
+    status = {
+      ...status,
+      phase: progress.phase || status.phase,
+      currentSource: progress.currentSource ?? status.currentSource,
+      progress: { ...(status.progress || {}), ...progress },
+    };
+  }
+
+  function start(reason = "manual") {
+    if (currentPromise) return { started: false, status: snapshot() };
+
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    status = {
+      running: true,
+      id,
+      reason,
+      phase: "starting",
+      currentSource: null,
+      startedAt: now(),
+      finishedAt: null,
+      lastError: null,
+      summary: null,
+      progress: {},
+    };
+
+    console.log(`[refresh ${id}] started (${reason})`);
+    currentPromise = (async () => {
+      try {
+        const result = await runRefresh({ onProgress: updateProgress });
+        const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
+        const events = (result.channels || []).filter((x) => x.referenceKind === "event").length;
+        status = {
+          ...status,
+          running: false,
+          phase: "complete",
+          currentSource: null,
+          finishedAt: now(),
+          summary: {
+            channels: result.channels?.length || 0,
+            staticChannels,
+            events,
+            matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
+            totalReferences: result.dlhdStatus?.totalReferences ?? null,
+          },
+        };
+        console.log(`[refresh ${id}] complete: ${staticChannels} static channels + ${events} events = ${result.channels?.length || 0} outputs`);
+      } catch (error) {
+        status = {
+          ...status,
+          running: false,
+          phase: "failed",
+          currentSource: null,
+          finishedAt: now(),
+          lastError: error?.message || String(error),
+        };
+        console.error(`[refresh ${id}] failed:`, error);
+      } finally {
+        currentPromise = null;
+      }
+    })();
+
+    return { started: true, status: snapshot() };
+  }
+
+  return {
+    start,
+    status: snapshot,
+    wait: () => currentPromise,
+  };
+}
+
+export const refreshManager = createRefreshManager();
