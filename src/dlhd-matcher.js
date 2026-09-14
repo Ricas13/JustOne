@@ -21,6 +21,48 @@ const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|\bx\b|@|\bppv\b|\bevents?\b|\b(?:final
 const EVENT_GROUP_RE = /(?:\blive\s*events?\b|\bppv\b|\bespn\s*plus\b|\bdazn\b|\bflo\b|\bfanatiz\b|\bmax\s*ppv\b|\bncaa\b|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b|\bmls\b)/i;
 const DECORATION_BRACKET_RE = /^(?:event\s*only|ppv|live|bk|backup|alt|hd|fhd|uhd|sd|km|bg)$/i;
 
+// These are deliberate brand/callsign equivalents, not broad fuzzy synonyms.
+// They only generate extra exact keys. They never make the fuzzy threshold looser.
+const STATIC_ALIAS_GROUPS = [
+  ["benfica tv", "btv", "benfica tv 1", "btv 1"],
+  ["tnt sports 1", "bt sport 1"],
+  ["tnt sports 2", "bt sport 2"],
+  ["tnt sports 3", "bt sport 3"],
+  ["tnt sports 4", "bt sport 4"],
+  ["viaplay sports 1", "premier sports 1"],
+  ["viaplay sports 2", "premier sports 2"],
+  ["big ten network", "big 10 network", "big ten network btn", "big 10 network btn", "btn"],
+  ["abc ny", "wabc", "abc 7 ny", "abc 7 new york", "wabc 7"],
+  ["cbsny", "cbs ny", "wcbs", "cbs 2 ny", "cbs 2 new york", "wcbs 2"],
+  ["nbcny", "nbc ny", "wnbc", "nbc 4 ny", "nbc 4 new york", "wnbc 4"],
+  ["foxny", "fox ny", "wnyw", "fox 5 ny", "fox 5 new york", "wnyw 5"],
+  ["cw pix 11", "pix 11", "pix11", "wpix", "wpix 11"],
+  ["my9tv", "my 9", "my9", "wwor", "wwor 9"],
+  ["mgm", "mgm usa epix", "mgm plus", "mgm plus usa epix", "epix"],
+  ["showtime 2", "showtime 2 sho2", "sho2"],
+  ["showtime family zone", "showtime family zone sho family zone", "sho family zone"],
+  ["showtime next", "showtime next sho next", "sho next"],
+  ["tmc channel", "the movie channel", "tmc"],
+  ["heroes and icons", "heroes and icons h and i", "h and i"],
+  ["investigation discovery", "investigation discovery id", "discovery id"],
+  ["eleven sports 1", "dazn eleven 1"],
+  ["eleven sports 2", "dazn eleven 2"],
+  ["eleven sports 3", "dazn eleven 3"],
+  ["eleven sports 4", "dazn eleven 4"],
+  ["eleven sports 5", "dazn eleven 5"],
+  ["cw", "cw network", "the cw"],
+  ["cbs", "cbs network"],
+];
+
+const STATIC_ALIAS_INDEX = (() => {
+  const index = new Map();
+  for (const group of STATIC_ALIAS_GROUPS) {
+    const values = [...new Set(group.map((value) => normalize(value)).filter(Boolean))];
+    for (const value of values) index.set(value, values);
+  }
+  return index;
+})();
+
 function expandLeagueAliases(value) {
   return String(value || "")
     .replace(/\bEPL\b/gi, "Premier League")
@@ -66,14 +108,42 @@ function canonicalToken(token) {
   return token;
 }
 
-function keyVariants(value) {
+function normalizedBase(value) {
   let base = normalize(strippedChannelName(cleanEventDecorations(value)));
-  if (!base) return [];
+  // One DLHD label is currently mojibaked as Galavisi贸n; normalize() turns it
+  // into "galavisi n". Repair only this known broken token boundary.
+  base = base.replace(/\bgalavisi n\b/g, "galavision");
+  if (!base) return "";
   let tokens = base.split(" ").filter(Boolean);
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[tokens.length - 1])) tokens.pop();
-  tokens = tokens.map(canonicalToken);
-  if (!tokens.length) return [];
+  return tokens.map(canonicalToken).join(" ");
+}
+
+function keyVariants(value) {
+  const base = normalizedBase(value);
+  if (!base) return [];
+
+  const bases = new Set([base]);
+  for (const alias of STATIC_ALIAS_INDEX.get(base) || []) bases.add(alias);
+
+  // A few DLHD labels carry explanatory text after the core channel name.
+  // Add the known core form without treating arbitrary parentheticals as aliases.
+  const knownCorePatterns = [
+    [/^mgm(?: plus)? .* epix$/, "mgm"],
+    [/^showtime 2 .* sho2.*$/, "showtime 2"],
+    [/^showtime family zone .* sho family zone.*$/, "showtime family zone"],
+    [/^showtime next .* sho next.*$/, "showtime next"],
+    [/^big (?:ten|10) network .* btn.*$/, "big 10 network"],
+    [/^heroes and icons .* h and i.*$/, "heroes and icons"],
+    [/^investigation discovery .* id.*$/, "investigation discovery"],
+  ];
+  for (const [re, replacement] of knownCorePatterns) {
+    if (re.test(base)) {
+      bases.add(replacement);
+      for (const alias of STATIC_ALIAS_INDEX.get(replacement) || []) bases.add(alias);
+    }
+  }
 
   const out = new Set();
   const add = (parts) => {
@@ -84,9 +154,12 @@ function keyVariants(value) {
     if (joined.endsWith(" tv")) out.add(joined.slice(0, -3).trim());
   };
 
-  add(tokens);
-  const withoutRegion = tokens.filter((token) => !REGION_TOKENS.has(token));
-  if (withoutRegion.length !== tokens.length) add(withoutRegion);
+  for (const candidate of bases) {
+    const tokens = candidate.split(" ").filter(Boolean).map(canonicalToken);
+    add(tokens);
+    const withoutRegion = tokens.filter((token) => !REGION_TOKENS.has(token));
+    if (withoutRegion.length !== tokens.length) add(withoutRegion);
+  }
   return [...out].filter(Boolean);
 }
 
