@@ -17,6 +17,8 @@ const REMOTE_LINEUPS = {
   },
 };
 
+const COUNTRY_TOKENS = new Set(["uk","gb","usa","us","pt","portugal","england"]);
+const QUALITY_TOKENS = new Set(["hd","fhd","uhd","4k","sd"]);
 const NUMBER_WORDS = new Map([
   ["one", "1"], ["two", "2"], ["three", "3"], ["four", "4"], ["five", "5"],
   ["six", "6"], ["seven", "7"], ["eight", "8"], ["nine", "9"], ["ten", "10"],
@@ -24,10 +26,10 @@ const NUMBER_WORDS = new Map([
 
 function key(value) {
   let tokens = normalize(value).split(" ").filter(Boolean);
-  while (tokens.length > 1 && new Set(["uk","gb","usa","us","pt","portugal","england"]).has(tokens[0])) tokens.shift();
-  while (tokens.length > 1 && new Set(["uk","gb","usa","us","pt","portugal","england"]).has(tokens[tokens.length - 1])) tokens.pop();
+  while (tokens.length > 1 && COUNTRY_TOKENS.has(tokens[0])) tokens.shift();
+  while (tokens.length > 1 && COUNTRY_TOKENS.has(tokens[tokens.length - 1])) tokens.pop();
   tokens = tokens
-    .filter((token) => !new Set(["hd","fhd","uhd","4k","sd"]).has(token))
+    .filter((token) => !QUALITY_TOKENS.has(token))
     .map((token) => NUMBER_WORDS.get(token) || token);
   return tokens.join(" ");
 }
@@ -189,9 +191,7 @@ export async function loadProviderOrders() {
   if (JSON.stringify(nextCache) !== JSON.stringify(cache || {})) await writeCache(nextCache);
 
   const countries = {};
-  for (const country of ["GB", "PT", "US"]) {
-    countries[country] = makeIndex(country, nextCache.countries?.[country]);
-  }
+  for (const country of ["GB", "PT", "US"]) countries[country] = makeIndex(country, nextCache.countries?.[country]);
   return {
     countries,
     metadata: {
@@ -203,7 +203,7 @@ export async function loadProviderOrders() {
 }
 
 export function providerOrderForChannel(channel, providerOrders) {
-  const country = String(channel?.group || "").match(/TV\s*\|\s*(?:UK|GB|PT|USA|US)\b/i)?.[1]?.toUpperCase();
+  const country = String(channel?.group || "").match(/TV\s*\|\s*(UK|GB|PT|USA|US)\b/i)?.[1]?.toUpperCase();
   const cc = country === "UK" ? "GB" : country === "USA" ? "US" : country;
   const index = providerOrders?.countries?.[cc];
   if (!index) return null;
