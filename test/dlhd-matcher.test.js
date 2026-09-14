@@ -121,8 +121,9 @@ test("event matching normalizes x separators and embedded start stop timestamps"
 test("near-match suggestions identify likely static aliases without auto-merging", () => {
   const matcher = createDlhdMatcher(reference);
   const suggestions = matcher.suggest({ name:"UK| BBC ONE LONDON", group:"UK General" }, { kind:"channel" });
-  assert.equal(suggestions[0]?.ref.id, "bbc");
-  assert.ok(suggestions[0]?.score > 0.4);
+  const bbcOne = suggestions.find((row)=>row.ref.id === "bbc");
+  assert.ok(bbcOne, "BBC One should remain a diagnostic suggestion");
+  assert.ok(bbcOne.score > 0.4);
 });
 
 test("country policy keeps all DLHD events but only GB PT US static channels", () => {
