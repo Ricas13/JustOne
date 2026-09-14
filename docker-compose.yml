@@ -21,7 +21,9 @@ services:
       - "traefik.docker.network=media_net"
       - "traefik.http.routers.justone-admin.rule=Host(`${JUSTONE_ADMIN_HOST:-resolver.vpn4u.cc}`)"
       - "traefik.http.routers.justone-admin.entrypoints=websecure"
+      - "traefik.http.routers.justone-admin.priority=100"
       - "traefik.http.routers.justone-admin.tls=true"
+      - "traefik.http.routers.justone-admin.tls.certresolver=le"
       - "traefik.http.services.justone-admin.loadbalancer.server.port=8090"
 
 networks:
