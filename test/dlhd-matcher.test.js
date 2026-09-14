@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDlhdMatcher } from "../src/dlhd-matcher.js";
+import { createDlhdMatcher, isEventLikeRow } from "../src/dlhd-matcher.js";
 import { mappingAllowedForCountries } from "../src/catalog.js";
 
 const reference = {
@@ -14,6 +14,7 @@ const reference = {
   ],
   events: [
     { id:"evt1", kind:"event", name:"England - Premier League : Arsenal vs Chelsea", aliases:["England - Premier League : Arsenal vs Chelsea","Sky Sports Main Event UK"] },
+    { id:"evt2", kind:"event", name:"Scotland - League Cup : Stenhousemuir vs Hearts", aliases:["Scotland - League Cup : Stenhousemuir vs Hearts"] },
   ],
 };
 
@@ -38,6 +39,23 @@ test("fuzzy event matching accepts two-team v/vs naming differences", () => {
   const matcher = createDlhdMatcher(reference);
   const event = matcher.match({ name:"Arsenal v Chelsea FHD", group:"Live Events" });
   assert.ok(event.some((x)=>x.id === "evt1"));
+});
+
+test("event-group matching handles provider team feeds and league abbreviations", () => {
+  const matcher = createDlhdMatcher(reference);
+  const epl = matcher.match({ name:"UK| EPL : ARSENAL", group:"EU | UK LIVE EVENTS-PPV" });
+  assert.ok(epl.some((x)=>x.id === "evt1"));
+
+  const named = matcher.match({ name:"UK| LIVE FOOTBALL 01: Stenhousemuir vs Hearts 7:45pm", group:"EU | UK LIVE EVENTS-PPV" });
+  assert.ok(named.some((x)=>x.id === "evt2"));
+  assert.equal(isEventLikeRow({ name:"UK| EPL : ARSENAL", group:"EU | UK LIVE EVENTS-PPV" }), true);
+});
+
+test("near-match suggestions identify likely static aliases without auto-merging", () => {
+  const matcher = createDlhdMatcher(reference);
+  const suggestions = matcher.suggest({ name:"UK| BBC ONE LONDON", group:"UK General" }, { kind:"channel" });
+  assert.equal(suggestions[0]?.ref.id, "bbc");
+  assert.ok(suggestions[0]?.score > 0.4);
 });
 
 test("country policy keeps all DLHD events but only GB PT US static channels", () => {
