@@ -1,5 +1,18 @@
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import { config } from "./config.js";
-import { loadGuide, loadSnapshot, loadState, saveGuide, saveSnapshot } from "./store.js";
+import {
+  ensureProviderCacheDir,
+  loadGuide,
+  loadProviderCacheMeta,
+  loadSnapshot,
+  loadState,
+  providerCacheExists,
+  providerCachePath,
+  saveGuide,
+  saveProviderCacheMeta,
+  saveSnapshot,
+} from "./store.js";
 import { parseM3uStream } from "./m3u.js";
 import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, variantRank } from "./identity.js";
 import { enrichAndBuildGuide, guideSummary, parseXmlTv } from "./epg.js";
@@ -270,48 +283,125 @@ function targetReference(ref, allowedCountries) {
   return allowedCountries.has(countryOf({ name: ref.name || "", group: ref.group || "" }));
 }
 
-async function scanSource(source, matcher, allowedCountries, onProgress) {
-  const response = await fetchPlaylist(source.url);
+async function cacheState(source) {
+  const exists = await providerCacheExists(source.id);
+  const meta = exists ? await loadProviderCacheMeta(source.id) : null;
+  const urlMatches = Boolean(meta && meta.url === source.url);
+  const cachedAtMs = Date.parse(meta?.cachedAt || "");
+  const maxAgeMs = config.providerCacheMaxAgeMinutes * 60 * 1000;
+  const fresh = exists && urlMatches && Number.isFinite(cachedAtMs) && (Date.now() - cachedAtMs) <= maxAgeMs;
+  return { exists, meta, urlMatches, fresh };
+}
+
+async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto") {
   const kept = [];
   const matchedRefs = new Set();
   let matchedInputRows = 0;
+  const cache = await cacheState(source);
+  let readable;
+  let input = "provider";
+  let cacheHandle = null;
+  let tmpPath = null;
+  let response = null;
 
-  const stats = await parseM3uStream(response.body, {
-    maxLineLength: config.playlistMaxLineLength,
-    onRow: (row) => {
-      if (!matcher) {
-        kept.push({ source, row });
-        matchedInputRows += 1;
-        return;
-      }
-      const refs = matcher.match(row);
-      let accepted = 0;
-      for (const ref of refs) {
-        if (!mappingAllowedForCountries(row, ref, allowedCountries)) continue;
-        kept.push({ source, row, reference: ref });
-        matchedRefs.add(ref.id);
-        accepted += 1;
-      }
-      if (accepted) matchedInputRows += 1;
-    },
-    onProgress: ({ rows, bytes }) => {
-      report(onProgress, {
-        phase: "scanning-source",
-        currentSource: source.name,
-        sourceId: source.id,
-        rows,
-        bytes,
-        megabytes: Number((bytes / 1024 / 1024).toFixed(1)),
-        matchedInputRows,
-        outputMappings: kept.length,
-      });
-    },
-  });
+  const useCache = sourceMode === "cache"
+    ? cache.exists && cache.urlMatches
+    : sourceMode === "auto"
+      ? cache.fresh
+      : false;
 
-  return { ...stats, kept, matchedInputRows, matchedRefs };
+  if (useCache) {
+    readable = fs.createReadStream(providerCachePath(source.id));
+    input = "cache";
+  } else {
+    try {
+      response = await fetchPlaylist(source.url);
+      readable = response.body;
+      await ensureProviderCacheDir();
+      tmpPath = `${providerCachePath(source.id)}.${process.pid}.${Date.now()}.tmp`;
+      cacheHandle = await fsp.open(tmpPath, "w");
+      input = "provider";
+    } catch (error) {
+      if (cache.exists && cache.urlMatches) {
+        console.warn(`Source ${source.name}: provider fetch failed (${error.message}); using last cached M3U`);
+        readable = fs.createReadStream(providerCachePath(source.id));
+        input = "cache-fallback";
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  let stats;
+  try {
+    stats = await parseM3uStream(readable, {
+      maxLineLength: config.playlistMaxLineLength,
+      onChunk: cacheHandle ? async (chunk) => { await cacheHandle.write(chunk); } : undefined,
+      onRow: (row) => {
+        if (!matcher) {
+          kept.push({ source, row });
+          matchedInputRows += 1;
+          return;
+        }
+        const refs = matcher.match(row);
+        let accepted = 0;
+        for (const ref of refs) {
+          if (!mappingAllowedForCountries(row, ref, allowedCountries)) continue;
+          kept.push({ source, row, reference: ref });
+          matchedRefs.add(ref.id);
+          accepted += 1;
+        }
+        if (accepted) matchedInputRows += 1;
+      },
+      onProgress: ({ rows, bytes }) => {
+        report(onProgress, {
+          phase: "scanning-source",
+          currentSource: source.name,
+          sourceId: source.id,
+          sourceInput: input,
+          rows,
+          bytes,
+          megabytes: Number((bytes / 1024 / 1024).toFixed(1)),
+          matchedInputRows,
+          outputMappings: kept.length,
+        });
+      },
+    });
+  } catch (error) {
+    if (cacheHandle) {
+      try { await cacheHandle.close(); } catch {}
+      try { await fsp.rm(tmpPath, { force: true }); } catch {}
+      cacheHandle = null;
+    }
+    throw error;
+  }
+
+  if (cacheHandle) {
+    await cacheHandle.close();
+    await fsp.rename(tmpPath, providerCachePath(source.id));
+    const cachedAt = new Date().toISOString();
+    await saveProviderCacheMeta(source.id, {
+      sourceId: source.id,
+      name: source.name,
+      url: source.url,
+      cachedAt,
+      bytes: stats.bytes,
+      rows: stats.rows,
+    });
+    cache.meta = { ...(cache.meta || {}), cachedAt, url: source.url, bytes: stats.bytes, rows: stats.rows };
+  }
+
+  return {
+    ...stats,
+    kept,
+    matchedInputRows,
+    matchedRefs,
+    input,
+    cachedAt: input === "provider" ? new Date().toISOString() : cache.meta?.cachedAt || null,
+  };
 }
 
-export async function refreshCatalog({ onProgress } = {}) {
+export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   const started = Date.now();
   const state = await loadState();
   const previous = await loadSnapshot();
@@ -323,11 +413,9 @@ export async function refreshCatalog({ onProgress } = {}) {
   const allowedCountries = new Set(config.dlhd.staticCountries || []);
   const enabledSources = (state.sources || []).filter((s) => s.enabled !== false);
 
-  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); countries=${[...allowedCountries].join(",") || "all"}`);
-  report(onProgress, { phase: "loading-dlhd", currentSource: null, sourcesTotal: enabledSources.length });
+  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; countries=${[...allowedCountries].join(",") || "all"}`);
+  report(onProgress, { phase: "loading-dlhd", currentSource: null, sourceMode, sourcesTotal: enabledSources.length });
 
-  // Fetch the small DLHD desired-state first, then stream huge provider M3Us
-  // through one precomputed matcher. Non-matches are discarded immediately.
   const { reference: dlhdReference, status: dlhdStatus } = await loadDlhdReference(previous);
   const matcher = dlhdReference ? createDlhdMatcher(dlhdReference, state.aliases || {}) : null;
 
@@ -336,6 +424,7 @@ export async function refreshCatalog({ onProgress } = {}) {
   console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} events (${dlhdReference?.mode || "disabled"})`);
   report(onProgress, {
     phase: "scanning-sources",
+    sourceMode,
     dlhdChannels: dlhdReference?.channels?.length || 0,
     dlhdEvents: dlhdReference?.events?.length || 0,
   });
@@ -343,11 +432,12 @@ export async function refreshCatalog({ onProgress } = {}) {
   for (let i = 0; i < enabledSources.length; i++) {
     const source = enabledSources[i];
     const sourceStarted = Date.now();
-    console.log(`Source ${i + 1}/${enabledSources.length} ${source.name}: starting ${source.url ? new URL(source.url).hostname : "playlist"}`);
+    console.log(`Source ${i + 1}/${enabledSources.length} ${source.name}: starting (${sourceMode})`);
     report(onProgress, {
       phase: "scanning-source",
       currentSource: source.name,
       sourceId: source.id,
+      sourceMode,
       sourceIndex: i + 1,
       sourcesTotal: enabledSources.length,
       rows: 0,
@@ -357,7 +447,7 @@ export async function refreshCatalog({ onProgress } = {}) {
       outputMappings: 0,
     });
     try {
-      const scanned = await scanSource(source, matcher, allowedCountries, onProgress);
+      const scanned = await scanSource(source, matcher, allowedCountries, onProgress, sourceMode);
       rawSourceRows += scanned.rows;
       matchedInputRows += scanned.matchedInputRows;
       sourceRows.push(...scanned.kept);
@@ -366,6 +456,8 @@ export async function refreshCatalog({ onProgress } = {}) {
         id: source.id,
         name: source.name,
         ok: true,
+        input: scanned.input,
+        cachedAt: scanned.cachedAt,
         rows: scanned.rows,
         matched: scanned.matchedInputRows,
         outputMappings: scanned.kept.length,
@@ -374,7 +466,7 @@ export async function refreshCatalog({ onProgress } = {}) {
         seconds: elapsedSeconds(sourceStarted),
       };
       sourceStatus.push(status);
-      console.log(`Source ${source.name}: ${status.rows.toLocaleString()} rows / ${status.megabytes} MB; ${status.matched.toLocaleString()} input rows matched; ${status.outputMappings.toLocaleString()} mappings; ${status.seconds}s`);
+      console.log(`Source ${source.name}: ${status.input}; ${status.rows.toLocaleString()} rows / ${status.megabytes} MB; ${status.matched.toLocaleString()} input rows matched; ${status.outputMappings.toLocaleString()} mappings; ${status.seconds}s`);
     } catch (error) {
       const status = { id: source.id, name: source.name, ok: false, error: error.message, seconds: elapsedSeconds(sourceStarted) };
       sourceStatus.push(status);
@@ -394,11 +486,15 @@ export async function refreshCatalog({ onProgress } = {}) {
     const allRefs = [...(dlhdReference.channels || []), ...(dlhdReference.events || [])];
     const refById = new Map(allRefs.map((ref) => [ref.id, ref]));
     const targetRefs = allRefs.filter((ref) => targetReference(ref, allowedCountries) || matchedRefIds.has(ref.id));
+    const targetChannelRefs = targetRefs.filter((ref) => ref.kind === "channel");
+    const targetEventRefs = targetRefs.filter((ref) => ref.kind === "event");
     const matchedChannels = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "channel").length;
     const matchedEvents = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "event").length;
     dlhdStatus.staticCountries = [...allowedCountries];
     dlhdStatus.referenceChannels = dlhdReference.channels?.length || 0;
     dlhdStatus.referenceEvents = dlhdReference.events?.length || 0;
+    dlhdStatus.targetChannelReferences = targetChannelRefs.length;
+    dlhdStatus.targetEventReferences = targetEventRefs.length;
     dlhdStatus.sourceRows = rawSourceRows;
     dlhdStatus.matchedInputRows = matchedInputRows;
     dlhdStatus.outputMappings = sourceRows.length;
@@ -483,6 +579,7 @@ export async function refreshCatalog({ onProgress } = {}) {
   const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {});
   const snapshot = {
     generatedAt: new Date().toISOString(),
+    sourceMode,
     channels,
     sourceStatus,
     guideStatus,

@@ -25,6 +25,13 @@ test("parseM3uStream handles arbitrary network chunk boundaries", async () => {
   assert.equal(rows[1].url, "https://provider/live/2");
 });
 
+test("parseM3uStream forwards every raw chunk for provider caching", async () => {
+  const chunks = [Buffer.from(sample.slice(0, 31)), Buffer.from(sample.slice(31))];
+  const cached = [];
+  await parseM3uStream(Readable.from(chunks), { onChunk: (chunk) => cached.push(Buffer.from(chunk)) });
+  assert.equal(Buffer.concat(cached).toString("utf8"), sample);
+});
+
 test("parseM3uStream can scan a large generated playlist incrementally", async () => {
   const count = 20000;
   function* chunks() {

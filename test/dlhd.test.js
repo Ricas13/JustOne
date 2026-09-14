@@ -13,6 +13,11 @@ test("parses 24/7 channels", () => {
   assert.deepEqual(parse247Html(html).map((x) => x.name), ["BBC One UK", "Sky Sports Football UK"]);
 });
 
+test("24/7 parser prefers nearby card title over generic watch-link text", () => {
+  const html = '<div class="card"><a href="/watch.php?id=35"><span>Watch Now</span></a><div class="card__title">BBC One UK</div></div>';
+  assert.deepEqual(parse247Html(html).map((x) => x.name), ["BBC One UK"]);
+});
+
 test("parses public schedule events and linked channels", () => {
   const html = `<div>Sunday 13th Sep 2026 - Schedule Time UK GMT</div><div class="card__meta">All Soccer Events ⚽</div><span>11:00</span><div class="schedule__eventTitle">England - Championship : Sheffield United vs Wolverhampton Wanderers</div><a href="/watch.php?id=66">Sky Sports Football UK</a><a href="/watch.php?id=134">Event Stream</a>`;
   const out = parseScheduleHtml(html);
@@ -30,7 +35,7 @@ test("filters IPTV rows to DLHD channel and event catalogue", () => {
   const schedule = parseScheduleHtml(`<div>Sunday 13th Sep 2026 - Schedule Time UK GMT</div><div class="card__meta">Football</div><span>11:00</span><div class="schedule__eventTitle">Sheffield United vs Wolverhampton Wanderers</div><a href="/watch.php?id=66">Sky Sports Football UK</a>`);
   const reference = buildDlhdReference({ channels: [{ id: "35", name: "BBC One UK" }], schedule });
   const sourceRows = [
-    { source: { id: "a" }, row: { name: "UK: BBC One FHD", tvgName: "BBC One FHD" } },
+    { source: { id: "a" }, row: { name: "UK| BBC 1 FHD", tvgName: "BBC 1 FHD" } },
     { source: { id: "a" }, row: { name: "Sky Sports Football HD", tvgName: "Sky Sports Football UK" } },
     { source: { id: "a" }, row: { name: "Random Shopping TV" } },
   ];

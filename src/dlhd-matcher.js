@@ -7,8 +7,20 @@ const COUNTRY_WORDS = new Set([
   "netherlands","nl","belgium","ch","switzerland","austria","greece","turkey","serbia","croatia","israel","mexico",
   "brazil","argentina","new","zealand","nz","india","japan","korea","china","russia","bulgaria","slovakia","cz"
 ]);
+const NUMBER_WORDS = new Map([
+  ["one","1"],["two","2"],["three","3"],["four","4"],["five","5"],
+  ["six","6"],["seven","7"],["eight","8"],["nine","9"],["ten","10"],
+]);
+const REGION_TOKENS = new Set(["east","west"]);
 const BORING_TOKENS = new Set(["live","channel","sports","sport","tv","hd","fhd","uhd","sd","vs","versus"]);
 const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|@|\bppv\b|\bevent\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
+
+function canonicalToken(token) {
+  if (NUMBER_WORDS.has(token)) return NUMBER_WORDS.get(token);
+  if (token === "events") return "event";
+  if (token === "channels") return "channel";
+  return token;
+}
 
 function keyVariants(value) {
   let base = normalize(strippedChannelName(value));
@@ -16,9 +28,21 @@ function keyVariants(value) {
   let tokens = base.split(" ").filter(Boolean);
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[tokens.length - 1])) tokens.pop();
-  base = tokens.join(" ");
-  const out = new Set([base, base.replace(/\s+/g, "")]);
-  if (base.endsWith(" tv")) out.add(base.slice(0, -3).trim());
+  tokens = tokens.map(canonicalToken);
+  if (!tokens.length) return [];
+
+  const out = new Set();
+  const add = (parts) => {
+    if (!parts.length) return;
+    const joined = parts.join(" ");
+    out.add(joined);
+    out.add(joined.replace(/\s+/g, ""));
+    if (joined.endsWith(" tv")) out.add(joined.slice(0, -3).trim());
+  };
+
+  add(tokens);
+  const withoutRegion = tokens.filter((token) => !REGION_TOKENS.has(token));
+  if (withoutRegion.length !== tokens.length) add(withoutRegion);
   return [...out].filter(Boolean);
 }
 
@@ -31,10 +55,6 @@ function fuzzyTokenMatch(a, b) {
   if (a.size < 2 || b.size < 2) return false;
   let common = 0;
   for (const token of a) if (b.has(token)) common += 1;
-  // Two-team fixtures commonly reduce to only two useful tokens once league,
-  // country, quality and "v/vs" decorations are removed. Requiring three
-  // tokens caused valid provider event names such as "Arsenal v Chelsea" to
-  // miss a DLHD event titled "Premier League: Arsenal vs Chelsea".
   return common >= 2 && common / Math.min(a.size, b.size) >= 0.8;
 }
 

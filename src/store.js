@@ -6,6 +6,7 @@ import { config } from "./config.js";
 const statePath = path.join(config.dataDir, "state.json");
 const snapshotPath = path.join(config.dataDir, "snapshot.json");
 const guidePath = path.join(config.dataDir, "guide.xml");
+const providerCacheDir = path.join(config.dataDir, "provider-cache");
 
 const EMPTY_STATE = {
   version: 1,
@@ -24,6 +25,47 @@ async function atomicWrite(file, content) {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tmp, content);
   await fs.rename(tmp, file);
+}
+
+function safeCacheId(sourceId) {
+  return String(sourceId || "source").replace(/[^a-zA-Z0-9_.-]+/g, "_");
+}
+
+export async function ensureProviderCacheDir() {
+  await fs.mkdir(providerCacheDir, { recursive: true });
+  return providerCacheDir;
+}
+
+export function providerCachePath(sourceId) {
+  return path.join(providerCacheDir, `${safeCacheId(sourceId)}.m3u`);
+}
+
+export function providerCacheMetaPath(sourceId) {
+  return path.join(providerCacheDir, `${safeCacheId(sourceId)}.json`);
+}
+
+export async function loadProviderCacheMeta(sourceId) {
+  try {
+    return JSON.parse(await fs.readFile(providerCacheMetaPath(sourceId), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function saveProviderCacheMeta(sourceId, meta) {
+  await ensureProviderCacheDir();
+  await atomicWrite(providerCacheMetaPath(sourceId), `${JSON.stringify(meta, null, 2)}\n`);
+}
+
+export async function providerCacheExists(sourceId) {
+  try {
+    const stat = await fs.stat(providerCachePath(sourceId));
+    return stat.isFile() && stat.size > 0;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 export function newId(prefix) {

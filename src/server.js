@@ -108,7 +108,6 @@ export function createAdminServer() {
         return sendText(res, 200, ADMIN_HTML, "text/html; charset=utf-8");
       }
 
-      // M3U/XMLTV never exist on the admin/public listener.
       if (path.startsWith("/m3u/") || path === "/epg/guide.xml") {
         return json(res, 404, { error: "output is available only on the internal listener" });
       }
@@ -133,11 +132,22 @@ export function createAdminServer() {
         });
       }
       if (req.method === "POST" && path === "/api/refresh") {
-        const started = refreshManager.start("admin");
+        const started = refreshManager.start("admin-dlhd", { sourceMode: "cache" });
+        return json(res, 202, started);
+      }
+      if (req.method === "POST" && path === "/api/refresh/providers") {
+        const started = refreshManager.start("admin-provider", { sourceMode: "network" });
         return json(res, 202, started);
       }
       if (req.method === "GET" && path === "/api/refresh/status") {
         return json(res, 200, refreshManager.status());
+      }
+      if (req.method === "GET" && path === "/api/refresh/config") {
+        return json(res, 200, {
+          providerRefreshMinutes: config.providerRefreshMinutes,
+          dlhdRefreshMinutes: config.dlhdRefreshMinutes,
+          providerCacheMaxAgeMinutes: config.providerCacheMaxAgeMinutes,
+        });
       }
 
       if (req.method === "GET" && path === "/api/sources") return json(res, 200, (await loadState()).sources);

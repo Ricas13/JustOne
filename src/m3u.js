@@ -40,6 +40,7 @@ export function parseM3u(body) {
 // and the current EXTINF metadata are retained while bytes arrive.
 export async function parseM3uStream(readable, {
   onRow,
+  onChunk,
   onProgress,
   progressIntervalBytes = 25 * 1024 * 1024,
   maxLineLength = 4 * 1024 * 1024,
@@ -69,6 +70,7 @@ export async function parseM3uStream(readable, {
   }
 
   for await (const chunk of readable) {
+    if (onChunk) await onChunk(chunk);
     bytes += chunk?.byteLength ?? chunk?.length ?? 0;
     carry += decoder.decode(chunk, { stream: true });
     let newline;
