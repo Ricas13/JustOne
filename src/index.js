@@ -17,12 +17,27 @@ internalServer.listen(config.internalPort, config.internalBindAddress, () => {
   console.log(`JustOne internal outputs listening on ${config.internalBindAddress}:${config.internalPort} (not published by docker-compose)`);
 });
 
-setTimeout(() => refreshManager.start("startup"), 250);
-if (config.refreshMinutes > 0) {
+console.log(`Refresh cadence: providers every ${config.providerRefreshMinutes} min; DLHD every ${config.dlhdRefreshMinutes} min`);
+
+// Startup uses a fresh provider cache if available, otherwise it downloads the
+// provider M3U and creates the cache. This avoids a huge re-download on every
+// container restart while still self-healing when no cache exists.
+setTimeout(() => refreshManager.start("startup", { sourceMode: "auto" }), 250);
+
+// Register the daily provider timer first. At the 24h boundary it also fetches
+// fresh DLHD, so if the 8h timer fires on the same tick it can safely skip.
+if (config.providerRefreshMinutes > 0) {
   setInterval(() => {
-    const result = refreshManager.start("scheduled");
-    if (!result.started) console.log("Scheduled refresh skipped because another refresh is still running");
-  }, config.refreshMinutes * 60 * 1000).unref();
+    const result = refreshManager.start("provider-scheduled", { sourceMode: "network" });
+    if (!result.started) console.log("Provider refresh skipped because another refresh is still running");
+  }, config.providerRefreshMinutes * 60 * 1000).unref();
+}
+
+if (config.dlhdRefreshMinutes > 0) {
+  setInterval(() => {
+    const result = refreshManager.start("dlhd-scheduled", { sourceMode: "cache" });
+    if (!result.started) console.log("DLHD refresh skipped because another refresh is still running");
+  }, config.dlhdRefreshMinutes * 60 * 1000).unref();
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
