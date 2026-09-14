@@ -1,50 +1,187 @@
-# JustOne
+# JustOne Catalog
 
-A deliberately small Jellyfin Live TV bridge built around the DLHD playback flow, with JustOne's channel merging, naming, logos/artwork and XMLTV guide enrichment kept on top.
+JustOne is now a **control-plane service for IPTV metadata and Dispatcharr channel reconciliation**.
 
-The DLHD resolver is a clean implementation informed by the public `amddeus/dlhd-proxy` project and the current DLHD player protocol. The old JustOne playback platform, source scoring, learning, warm standby, rolling buffer and renewable-HLS layers are intentionally not part of this version.
+It deliberately does **not** proxy, remux, transcode, probe, or play video. There is no FFmpeg in this project.
 
-## Playback rule
+## Architecture
 
-Playback is intentionally boring:
+```text
+Provider M3Us
+    ↓
+JustOne Catalog
+  - canonical channel identity
+  - duplicate/variant classification
+  - provider/account awareness
+  - EPG matching
+  - logo enrichment
+  - deterministic failover ordering
+    ↓
+per-source curated M3Us ──→ Decypharr / connection layer ──→ Dispatcharr
+    │                                                        │
+    └──────────────── XMLTV / logos ─────────────────────────┴─→ Jellyfin
+```
 
-1. Open the first merged provider candidate and request its first stream (`source=0`).
-2. If FFmpeg cannot produce media, try that candidate's second stream (`source=1`).
-3. If the channel had another duplicate provider row merged into it, repeat the same sequence for that row.
-4. While playing, actual FFmpeg output bytes are monitored. If no media bytes arrive for the stall timeout, that FFmpeg process is killed and the next ordered source starts in the same HTTP response.
-5. If every ordered source fails, the request ends. A new tune starts again from source 1.
+The important model is:
 
-There is no source ranking, background probing, learning, warm backup or automatic promotion of a source merely because it appears better.
+```text
+channel → source families/accounts → quality/backup variants
+```
 
-## Services
+For example, five BBC One URLs from one 1-connection account are kept as variants of one source family, not treated as five independent providers.
 
-Only two containers are required:
+## Failover ordering
 
-- `dlhd-proxy` scrapes the raw channel list, resolves one explicit provider source, and proxies HLS assets with the required referer.
-- `jellyfin-live` merges duplicate channels, applies naming/grouping, enriches logos and EPG data, and remuxes the chosen source to MPEG-TS for Jellyfin with sequential failover.
+JustOne orders streams **breadth-first across independent providers/accounts before going deeper into variants**.
 
-## Run
+With `A1`, `A2` from Provider A and `B1` from Provider B, each containing HD and FHD BBC One variants, the desired order is:
+
+```text
+A1 HD
+B1 HD
+A2 HD
+A1 FHD
+B1 FHD
+A2 FHD
+```
+
+That avoids burning through every alternative from one dead provider before trying another failure domain. Dispatcharr remains responsible for real-time capacity, buffering detection and stream switching.
+
+## Outputs
+
+- `GET /m3u/source/:sourceId.m3u` — curated M3U for one IPTV credential/line
+- `GET /m3u/master.m3u` — all curated variants, mainly for inspection
+- `GET /epg/guide.xml` — canonical XMLTV guide for Jellyfin
+- `GET /api/catalog` — current canonical catalogue and ordered variants
+- `GET /api/dispatcharr/preview` — dry-run reconciliation plan
+- `POST /api/dispatcharr/reconcile` with `{"apply":true}` — apply the plan when explicitly enabled
+
+Every output stream receives the canonical `tvg-id`, clean channel name/logo/group, plus an internal rank marker in the stream display name, e.g.:
+
+```text
+BBC One [JO:001] [HD]
+BBC One [JO:004] [FHD]
+```
+
+The rank marker is for the reconciler. The actual Dispatcharr/Jellyfin channel name remains clean (`BBC One`).
+
+## Quick start
 
 ```bash
 cp .env.example .env
+# set ADMIN_KEY and PUBLIC_URL
 docker compose up -d --build
 ```
 
-Default endpoints:
+Open `http://localhost:8090/admin` for the built-in source/EPG manager, or use the API below.
 
-- M3U: `http://localhost:8090/jellyfin/playlist.m3u8`
-- XMLTV: `http://localhost:8090/jellyfin/guide.xml`
-- Health: `http://localhost:8090/jellyfin/health`
-- Diagnostics: `http://localhost:8090/jellyfin/diagnostics`
+The service creates `/data/state.json` on first start.
 
-Set `PUBLIC_URL` to the externally reachable base URL before adding the M3U to Jellyfin. If `PLAYLIST_KEY` is set, the generated playlist and guide URLs include that key.
+Add a source:
 
-## Failover tuning
+```bash
+curl -X POST http://localhost:8090/api/sources \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":"Provider A - Line 1",
+    "provider":"Provider A",
+    "account":"Line 1",
+    "maxStreams":1,
+    "priority":10,
+    "url":"https://provider.example/line1.m3u",
+    "enabled":true
+  }'
+```
 
-`JELLYFIN_STREAM_STALL_MS` defaults to `12000`. This is the maximum time without FFmpeg output bytes before the current stream is considered stalled.
+Add another credential as another source. There is no configured source-count limit.
 
-`JELLYFIN_SOURCES_PER_CANDIDATE` defaults to `2`, matching the intended stream 1 -> stream 2 behavior.
+Add XMLTV:
 
-## What was deliberately removed
+```bash
+curl -X POST http://localhost:8090/api/guides \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":"UK Guide",
+    "priority":10,
+    "url":"https://example.com/guide.xml",
+    "enabled":true
+  }'
+```
 
-The rebuild does not include the old `apps/platform` service, candidate manager API, source scoring/learning, warm monitoring, renewable-HLS state machine, rolling playback buffer, image-cache sidecar, Traefik project config, or the stack of runtime patches previously applied to dlhd-proxy.
+Then refresh:
+
+```bash
+curl -X POST http://localhost:8090/api/refresh \
+  -H 'Authorization: Bearer change-me'
+```
+
+## Suggested flow with Decypharr and Dispatcharr
+
+1. Add each provider credential/line to JustOne as a separate source.
+2. Feed `/m3u/source/<id>.m3u` into the connection-management layer for that line.
+3. Add those resulting M3Us to Dispatcharr as separate M3U accounts/profiles with their real connection limits.
+4. Ensure `tvg-id` and the JustOne rank marker survive the connection layer.
+5. Review `/api/dispatcharr/preview`.
+6. Set `DISPATCHARR_APPLY_ENABLED=true` only after the preview is correct.
+7. Apply reconciliation.
+8. Give Jellyfin the Dispatcharr playback M3U and JustOne `/epg/guide.xml`.
+
+## Dispatcharr safety
+
+JustOne only owns channels whose `tvg_id` starts with `justone.`. It does not delete unrelated Dispatcharr channels.
+
+Reconciliation defaults to a **preview**. Applying changes requires both:
+
+```text
+DISPATCHARR_APPLY_ENABLED=true
+```
+
+and an explicit request body:
+
+```json
+{"apply": true}
+```
+
+Authentication supports either a Dispatcharr API key or JWT login credentials. Current Dispatcharr REST resources used are the official channel, stream, group and logo APIs.
+
+## Metadata policy
+
+For channel identity, quality tags (`HD`, `FHD`, `UHD`, `SD`) and backup markers are stripped before canonical matching. Manual aliases and overrides can correct edge cases without changing provider playlists.
+
+Logo precedence is:
+
+```text
+manual override → matched XMLTV logo → provider logo
+```
+
+XMLTV matching first tries provider `tvg-id` values and then normalized channel names. Programme XML is preserved and remapped onto the canonical JustOne `tvg-id`.
+
+## State API
+
+- `GET /api/state`
+- `GET/POST /api/sources`
+- `PATCH/DELETE /api/sources/:id`
+- `GET/POST /api/guides`
+- `PATCH/DELETE /api/guides/:id`
+- `PUT /api/aliases`
+- `PUT /api/overrides`
+- `POST /api/refresh`
+
+Aliases are keyed by normalized incoming channel name and map to the canonical display name. Overrides may be keyed by canonical channel id or canonical key and can set `name`, `group`, `logo`, `number`, or `disabled`.
+
+## What was removed
+
+The rebuild intentionally removes the previous:
+
+- DLHD resolver/proxy
+- FFmpeg playback/remux path
+- playback state machine
+- stall monitoring
+- rolling buffers
+- source learning/scoring
+- warm standby
+- video proxy endpoints
+
+Those concerns belong in Dispatcharr or the upstream connection layer, not in the catalogue.
