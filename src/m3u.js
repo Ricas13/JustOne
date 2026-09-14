@@ -38,7 +38,12 @@ export function parseM3u(body) {
 // Incremental parser for very large provider playlists. The full M3U is never
 // materialised as one string or split into a giant array. Only the current line
 // and the current EXTINF metadata are retained while bytes arrive.
-export async function parseM3uStream(readable, { onRow, maxLineLength = 4 * 1024 * 1024 } = {}) {
+export async function parseM3uStream(readable, {
+  onRow,
+  onProgress,
+  progressIntervalBytes = 25 * 1024 * 1024,
+  maxLineLength = 4 * 1024 * 1024,
+} = {}) {
   if (!readable || typeof readable[Symbol.asyncIterator] !== "function") {
     throw new Error("M3U response body is not streamable");
   }
@@ -47,12 +52,20 @@ export async function parseM3uStream(readable, { onRow, maxLineLength = 4 * 1024
   let carry = "";
   let rows = 0;
   let bytes = 0;
+  let lastProgressBytes = 0;
 
   async function handle(raw) {
     const row = consumeLine(raw.replace(/\r$/, ""), state);
     if (!row) return;
     rows += 1;
     if (onRow) await onRow(row);
+  }
+
+  async function progress(force = false) {
+    if (!onProgress) return;
+    if (!force && bytes - lastProgressBytes < progressIntervalBytes) return;
+    lastProgressBytes = bytes;
+    await onProgress({ rows, bytes });
   }
 
   for await (const chunk of readable) {
@@ -66,10 +79,12 @@ export async function parseM3uStream(readable, { onRow, maxLineLength = 4 * 1024
       await handle(line);
     }
     if (carry.length > maxLineLength) throw new Error(`M3U line exceeds ${maxLineLength} characters`);
+    await progress(false);
   }
 
   carry += decoder.decode();
   if (carry) await handle(carry);
+  await progress(true);
   return { rows, bytes };
 }
 
