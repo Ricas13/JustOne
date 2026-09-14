@@ -7,6 +7,14 @@ import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtecte
 import { createDlhdMatcher } from "./dlhd-matcher.js";
 import { text, timeoutSignal } from "./util.js";
 
+function elapsedSeconds(started) {
+  return Number(((Date.now() - started) / 1000).toFixed(1));
+}
+
+function report(onProgress, payload) {
+  try { onProgress?.(payload); } catch (error) { console.warn("Refresh progress callback failed:", error.message); }
+}
+
 async function fetchText(url) {
   const response = await fetch(url, {
     signal: timeoutSignal(config.fetchTimeoutMs),
@@ -262,7 +270,7 @@ function targetReference(ref, allowedCountries) {
   return allowedCountries.has(countryOf({ name: ref.name || "", group: ref.group || "" }));
 }
 
-async function scanSource(source, matcher, allowedCountries) {
+async function scanSource(source, matcher, allowedCountries, onProgress) {
   const response = await fetchPlaylist(source.url);
   const kept = [];
   const matchedRefs = new Set();
@@ -286,12 +294,25 @@ async function scanSource(source, matcher, allowedCountries) {
       }
       if (accepted) matchedInputRows += 1;
     },
+    onProgress: ({ rows, bytes }) => {
+      report(onProgress, {
+        phase: "scanning-source",
+        currentSource: source.name,
+        sourceId: source.id,
+        rows,
+        bytes,
+        megabytes: Number((bytes / 1024 / 1024).toFixed(1)),
+        matchedInputRows,
+        outputMappings: kept.length,
+      });
+    },
   });
 
   return { ...stats, kept, matchedInputRows, matchedRefs };
 }
 
-export async function refreshCatalog() {
+export async function refreshCatalog({ onProgress } = {}) {
+  const started = Date.now();
   const state = await loadState();
   const previous = await loadSnapshot();
   const sourceStatus = [];
@@ -300,20 +321,48 @@ export async function refreshCatalog() {
   let rawSourceRows = 0;
   let matchedInputRows = 0;
   const allowedCountries = new Set(config.dlhd.staticCountries || []);
+  const enabledSources = (state.sources || []).filter((s) => s.enabled !== false);
+
+  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); countries=${[...allowedCountries].join(",") || "all"}`);
+  report(onProgress, { phase: "loading-dlhd", currentSource: null, sourcesTotal: enabledSources.length });
 
   // Fetch the small DLHD desired-state first, then stream huge provider M3Us
   // through one precomputed matcher. Non-matches are discarded immediately.
   const { reference: dlhdReference, status: dlhdStatus } = await loadDlhdReference(previous);
   const matcher = dlhdReference ? createDlhdMatcher(dlhdReference, state.aliases || {}) : null;
 
-  for (const source of (state.sources || []).filter((s) => s.enabled !== false)) {
+  if (dlhdStatus?.channelsError) console.warn(`DLHD channels refresh warning: ${dlhdStatus.channelsError}`);
+  if (dlhdStatus?.scheduleError) console.warn(`DLHD schedule refresh warning: ${dlhdStatus.scheduleError}`);
+  console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} events (${dlhdReference?.mode || "disabled"})`);
+  report(onProgress, {
+    phase: "scanning-sources",
+    dlhdChannels: dlhdReference?.channels?.length || 0,
+    dlhdEvents: dlhdReference?.events?.length || 0,
+  });
+
+  for (let i = 0; i < enabledSources.length; i++) {
+    const source = enabledSources[i];
+    const sourceStarted = Date.now();
+    console.log(`Source ${i + 1}/${enabledSources.length} ${source.name}: starting ${source.url ? new URL(source.url).hostname : "playlist"}`);
+    report(onProgress, {
+      phase: "scanning-source",
+      currentSource: source.name,
+      sourceId: source.id,
+      sourceIndex: i + 1,
+      sourcesTotal: enabledSources.length,
+      rows: 0,
+      bytes: 0,
+      megabytes: 0,
+      matchedInputRows: 0,
+      outputMappings: 0,
+    });
     try {
-      const scanned = await scanSource(source, matcher, allowedCountries);
+      const scanned = await scanSource(source, matcher, allowedCountries, onProgress);
       rawSourceRows += scanned.rows;
       matchedInputRows += scanned.matchedInputRows;
       sourceRows.push(...scanned.kept);
       for (const id of scanned.matchedRefs) matchedRefIds.add(id);
-      sourceStatus.push({
+      const status = {
         id: source.id,
         name: source.name,
         ok: true,
@@ -322,20 +371,40 @@ export async function refreshCatalog() {
         outputMappings: scanned.kept.length,
         bytes: scanned.bytes,
         megabytes: Number((scanned.bytes / 1024 / 1024).toFixed(1)),
-      });
+        seconds: elapsedSeconds(sourceStarted),
+      };
+      sourceStatus.push(status);
+      console.log(`Source ${source.name}: ${status.rows.toLocaleString()} rows / ${status.megabytes} MB; ${status.matched.toLocaleString()} input rows matched; ${status.outputMappings.toLocaleString()} mappings; ${status.seconds}s`);
     } catch (error) {
-      sourceStatus.push({ id: source.id, name: source.name, ok: false, error: error.message });
+      const status = { id: source.id, name: source.name, ok: false, error: error.message, seconds: elapsedSeconds(sourceStarted) };
+      sourceStatus.push(status);
+      console.error(`Source ${source.name} failed after ${status.seconds}s: ${error.message}`);
+      report(onProgress, {
+        phase: "source-error",
+        currentSource: source.name,
+        sourceId: source.id,
+        sourceIndex: i + 1,
+        sourcesTotal: enabledSources.length,
+        error: error.message,
+      });
     }
   }
 
   if (dlhdReference) {
     const allRefs = [...(dlhdReference.channels || []), ...(dlhdReference.events || [])];
+    const refById = new Map(allRefs.map((ref) => [ref.id, ref]));
     const targetRefs = allRefs.filter((ref) => targetReference(ref, allowedCountries) || matchedRefIds.has(ref.id));
+    const matchedChannels = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "channel").length;
+    const matchedEvents = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "event").length;
     dlhdStatus.staticCountries = [...allowedCountries];
+    dlhdStatus.referenceChannels = dlhdReference.channels?.length || 0;
+    dlhdStatus.referenceEvents = dlhdReference.events?.length || 0;
     dlhdStatus.sourceRows = rawSourceRows;
     dlhdStatus.matchedInputRows = matchedInputRows;
     dlhdStatus.outputMappings = sourceRows.length;
     dlhdStatus.matchedReferences = matchedRefIds.size;
+    dlhdStatus.matchedChannelReferences = matchedChannels;
+    dlhdStatus.matchedEventReferences = matchedEvents;
     dlhdStatus.totalReferences = targetRefs.length;
     dlhdStatus.unmatchedReferences = targetRefs
       .filter((ref) => !matchedRefIds.has(ref.id))
@@ -343,6 +412,7 @@ export async function refreshCatalog() {
       .map((ref) => ({ id: ref.id, kind: ref.kind, name: ref.name, group: ref.group || "" }));
   }
 
+  report(onProgress, { phase: "building-catalog", currentSource: null });
   let channels = buildRawChannels(sourceRows, state, previous);
   const failedSourceIds = new Set(sourceStatus.filter((row) => !row.ok).map((row) => row.id));
   const allowedDlhdIds = dlhdReference
@@ -378,6 +448,14 @@ export async function refreshCatalog() {
     channels = channels.sort((a, b) => a.number - b.number || a.name.localeCompare(b.name));
   }
 
+  const outputStaticChannels = channels.filter((channel) => channel.referenceKind !== "event").length;
+  const outputEvents = channels.filter((channel) => channel.referenceKind === "event").length;
+  if (dlhdStatus) {
+    dlhdStatus.outputStaticChannels = outputStaticChannels;
+    dlhdStatus.outputEvents = outputEvents;
+  }
+
+  report(onProgress, { phase: "loading-guides", outputStaticChannels, outputEvents });
   const guideDocs = [];
   const guideStatus = [];
   for (const guide of [...(state.guides || [])]
@@ -388,14 +466,17 @@ export async function refreshCatalog() {
       const parsed = parseXmlTv(body);
       guideDocs.push({ ...guide, parsed });
       guideStatus.push({ id: guide.id, name: guide.name, ok: true, channels: parsed.channels.size });
+      console.log(`Guide ${guide.name}: ${parsed.channels.size} channels`);
     } catch (error) {
       guideStatus.push({ id: guide.id, name: guide.name, ok: false, error: error.message });
+      console.error(`Guide ${guide.name} failed: ${error.message}`);
     }
   }
   if (guideStatus.some((row) => !row.ok)) {
     try {
       const previousGuide = parseXmlTv(await loadGuide());
       guideDocs.push({ id: "__previous__", name: "Last known good guide", parsed: previousGuide });
+      console.warn("Using last-known-good generated guide because at least one XMLTV source failed");
     } catch {}
   }
 
@@ -411,5 +492,7 @@ export async function refreshCatalog() {
   };
   await saveSnapshot(snapshot);
   await saveGuide(guideXml);
+  report(onProgress, { phase: "complete", currentSource: null, outputStaticChannels, outputEvents });
+  console.log(`Catalog refresh complete in ${elapsedSeconds(started)}s: ${outputStaticChannels} static + ${outputEvents} events = ${channels.length} channels`);
   return snapshot;
 }
