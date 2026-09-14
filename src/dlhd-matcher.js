@@ -7,7 +7,7 @@ const COUNTRY_WORDS = new Set([
   "netherlands","nl","belgium","ch","switzerland","austria","greece","turkey","serbia","croatia","israel","mexico",
   "brazil","argentina","new","zealand","nz","india","japan","korea","china","russia","bulgaria","slovakia","cz"
 ]);
-const BORING_TOKENS = new Set(["live","channel","sports","sport","tv","hd","fhd","uhd","sd"]);
+const BORING_TOKENS = new Set(["live","channel","sports","sport","tv","hd","fhd","uhd","sd","vs","versus"]);
 const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|@|\bppv\b|\bevent\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
 
 function keyVariants(value) {
@@ -28,10 +28,14 @@ function significantTokens(value) {
 }
 
 function fuzzyTokenMatch(a, b) {
-  if (a.size < 3 || b.size < 3) return false;
+  if (a.size < 2 || b.size < 2) return false;
   let common = 0;
   for (const token of a) if (b.has(token)) common += 1;
-  return common >= 3 && common / Math.min(a.size, b.size) >= 0.72;
+  // Two-team fixtures commonly reduce to only two useful tokens once league,
+  // country, quality and "v/vs" decorations are removed. Requiring three
+  // tokens caused valid provider event names such as "Arsenal v Chelsea" to
+  // miss a DLHD event titled "Premier League: Arsenal vs Chelsea".
+  return common >= 2 && common / Math.min(a.size, b.size) >= 0.8;
 }
 
 function addIndex(map, values, row) {
@@ -77,7 +81,7 @@ export function createDlhdMatcher(reference, aliases = {}) {
     if (!hasEvent && rawNames.some((value) => EVENT_LIKE_RE.test(String(value)))) {
       for (const value of rawNames) {
         const tokens = significantTokens(value);
-        if (tokens.size < 3) continue;
+        if (tokens.size < 2) continue;
         for (const candidate of fuzzyEvents) {
           if (fuzzyTokenMatch(tokens, candidate.tokens)) matches.set(candidate.ref.id, candidate.ref);
         }
