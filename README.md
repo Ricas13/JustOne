@@ -72,9 +72,11 @@ Only the small matched catalogue remains in memory. Source status reports the sc
 Large-playlist settings:
 
 ```text
-PLAYLIST_FETCH_TIMEOUT_MS=900000
+PLAYLIST_FETCH_TIMEOUT_MS=1800000
 PLAYLIST_MAX_LINE_LENGTH=4194304
 ```
+
+The default timeout is 30 minutes per provider source. Sources are scanned sequentially so several giant playlists do not compete for RAM and bandwidth at the same time.
 
 ## Source / failover ordering
 
@@ -172,7 +174,7 @@ Each playlist has one-click:
 - Copy internal M3U
 - Remove
 
-The UI also shows the last refresh status, number of provider rows scanned and matching output count.
+The UI also shows the last refresh status and provider row count.
 
 ### Bulk add
 
