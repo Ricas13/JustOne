@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "../src/sources.js";
+import { deriveXtreamXmltvUrl, duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "../src/sources.js";
 
 test("playlist URL is enough to create a one-connection source", () => {
   const source = normaliseSourceInput({ url: "https://iptv.example.com/get.php?u=abc&p=def" }, []);
@@ -9,6 +9,17 @@ test("playlist URL is enough to create a one-connection source", () => {
   assert.equal(source.account, "Line 1");
   assert.equal(source.maxStreams, 1);
   assert.equal(source.enabled, true);
+});
+
+test("Xtream get.php playlists expose the matching XMLTV endpoint", () => {
+  const url = "http://iptv.example.com/get.php?username=alice&password=secret&type=m3u_plus&output=mpegts";
+  assert.equal(
+    deriveXtreamXmltvUrl(url),
+    "http://iptv.example.com/xmltv.php?username=alice&password=secret"
+  );
+  const source = normaliseSourceInput({ url }, []);
+  assert.equal(source.detectedEpgUrl, "http://iptv.example.com/xmltv.php?username=alice&password=secret");
+  assert.equal(deriveXtreamXmltvUrl("https://iptv.example.com/list.m3u"), "");
 });
 
 test("automatic line numbering is per provider", () => {
