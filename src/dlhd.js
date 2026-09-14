@@ -7,6 +7,10 @@ const COUNTRY_WORDS = new Set([
   "netherlands","nl","belgium","ch","switzerland","austria","greece","turkey","serbia","croatia","israel","mexico",
   "brazil","argentina","new","zealand","nz","india","japan","korea","china","russia","bulgaria","slovakia","cz"
 ]);
+const NUMBER_WORDS = new Map([
+  ["one","1"],["two","2"],["three","3"],["four","4"],["five","5"],
+  ["six","6"],["seven","7"],["eight","8"],["nine","9"],["ten","10"],
+]);
 const GENERIC_EVENT_ALIAS_RE = /^(?:event(?:\s+(?:sd|hd|fhd))?\s+(?:stream|feed)|event\s+ppv|channel\s+not\s+listed|bb\s+cam\s+live|multifeed)$/i;
 
 function htmlText(value) {
@@ -21,26 +25,41 @@ function logoUrl(baseUrl, value) {
 function channelIdFromHref(href) {
   return /(?:watch\.php\?(?:[^"']*&)?id=|stream-)(\d+)/i.exec(String(href || ""))?.[1] || "";
 }
+function cardTitle(value) {
+  return htmlText(/card__title[^>]*>([\s\S]*?)<\//i.exec(String(value || ""))?.[1] || "");
+}
 export function parse247Html(html, baseUrl = "https://dlive.sx") {
+  const source = String(html || "");
   const out = [];
   const seen = new Set();
   const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
-  while ((match = anchorRe.exec(String(html || "")))) {
+  while ((match = anchorRe.exec(source))) {
     const id = channelIdFromHref(match[1]);
     if (!id || seen.has(id)) continue;
-    let name = htmlText(match[2]);
-    if (!name || /^(?:watch|play|live)$/i.test(name)) {
-      const around = String(html || "").slice(match.index, Math.min(String(html || "").length, anchorRe.lastIndex + 500));
-      name = htmlText(/card__title[^>]*>([\s\S]*?)<\//i.exec(around)?.[1] || "");
+
+    // DLHD has changed its 24/7 card markup more than once. The clickable
+    // anchor can contain generic text such as "Watch Now", while the real
+    // channel name lives in card__title either inside or immediately after it.
+    // Always prefer card__title so we don't successfully parse hundreds of
+    // channel IDs whose names are all effectively useless for matching.
+    const around = source.slice(match.index, Math.min(source.length, anchorRe.lastIndex + 900));
+    let name = cardTitle(match[2]) || cardTitle(around);
+    if (!name) name = htmlText(match[2]);
+    if (/^(?:watch|watch now|play|play now|live|live now|open|open channel)$/i.test(name)) {
+      name = cardTitle(around);
     }
     if (!name) continue;
+
     seen.add(id);
-    const logo = /<img\b[^>]*src=["']([^"']+)["']/i.exec(match[2])?.[1] || "";
+    const logo = /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(match[2])?.[1]
+      || /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(around)?.[1]
+      || "";
     out.push({ id, name, logo: logoUrl(baseUrl, logo) });
   }
+
   const legacyRe = /href=["'][^"']*watch\.php\?id=(\d+)[^"']*["'][^>]*>[\s\S]{0,600}?card__title[^>]*>([\s\S]*?)<\//gi;
-  while ((match = legacyRe.exec(String(html || "")))) {
+  while ((match = legacyRe.exec(source))) {
     const id = match[1];
     if (seen.has(id)) continue;
     const name = htmlText(match[2]);
@@ -206,14 +225,27 @@ export function buildDlhdReference({ channels = [], schedule = { events:[] }, mo
   return { generatedAt:new Date().toISOString(), mode, channels:staticRows, events:eventRows };
 }
 
+function canonicalToken(token) {
+  if (NUMBER_WORDS.has(token)) return NUMBER_WORDS.get(token);
+  if (token === "events") return "event";
+  if (token === "channels") return "channel";
+  return token;
+}
 function keyVariants(value) {
   let base = normalize(strippedChannelName(value));
   if (!base) return [];
   let tokens = base.split(" ").filter(Boolean);
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[tokens.length-1])) tokens.pop();
+  tokens = tokens.map(canonicalToken);
   base = tokens.join(" ");
   const out = new Set([base, base.replace(/\s+/g,"")]);
+  const withoutRegion = tokens.filter((token)=>!new Set(["east","west"]).has(token));
+  if (withoutRegion.length !== tokens.length) {
+    const regional = withoutRegion.join(" ");
+    out.add(regional);
+    out.add(regional.replace(/\s+/g,""));
+  }
   if (base.endsWith(" tv")) out.add(base.slice(0,-3).trim());
   return [...out].filter(Boolean);
 }
@@ -222,9 +254,9 @@ function significantTokens(value) {
 }
 function fuzzyEventMatch(a,b) {
   const aa = significantTokens(a), bb = significantTokens(b);
-  if (aa.size < 3 || bb.size < 3) return false;
+  if (aa.size < 2 || bb.size < 2) return false;
   let common=0; for (const t of aa) if (bb.has(t)) common++;
-  return common >= 3 && common / Math.min(aa.size, bb.size) >= 0.72;
+  return common >= 2 && common / Math.min(aa.size, bb.size) >= 0.8;
 }
 function addIndex(map, values, row) {
   for (const value of values) for (const key of keyVariants(value)) {
