@@ -56,7 +56,7 @@ test("provider-order normalization ignores quality and number words", () => {
 test("provider order can resolve aliases rather than only canonical names", () => {
   const orders = providerOrders();
   const hit = providerOrderForChannel(
-    channel("abc", "ABC NY USA", "TV | USA", ["WABC 7 HD", "ABC 7 New York"]),
+    channel("abc", "ABC Network USA", "TV | USA", ["WABC"]),
     orders,
   );
   assert.equal(hit.position, 7);
