@@ -18,7 +18,8 @@ const BORING_TOKENS = new Set([
   "start","stop"
 ]);
 const EVENT_BORING_TOKENS = new Set([
-  "live","channel","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream","start","stop"
+  "live","channel","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream","start","stop",
+  "uk","gb","us","usa","pt","eu","am"
 ]);
 const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|\bx\b|@|\bppv\b|\bevents?\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
 const EVENT_GROUP_RE = /(?:\blive\s*events?\b|\bppv\b|\bespn\s*plus\b|\bdazn\b|\bflo\b|\bfanatiz\b|\bmax\s*ppv\b|\bncaa\b|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b|\bmls\b)/i;
