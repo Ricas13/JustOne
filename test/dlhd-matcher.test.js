@@ -8,11 +8,20 @@ const reference = {
     { id:"bbc", kind:"channel", name:"BBC One UK", aliases:["BBC One UK"] },
     { id:"bbc4", kind:"channel", name:"BBC Four UK", aliases:["BBC Four UK"] },
     { id:"rtp", kind:"channel", name:"RTP 1 Portugal", aliases:["RTP 1 Portugal"] },
+    { id:"tvi", kind:"channel", name:"TVI Reality Portugal", aliases:["TVI Reality Portugal"] },
     { id:"eleven1", kind:"channel", name:"Eleven Sports 1 Portugal", aliases:["Eleven Sports 1 Portugal"] },
     { id:"daznuk", kind:"channel", name:"DAZN 1 UK", aliases:["DAZN 1 UK"] },
     { id:"espn", kind:"channel", name:"ESPN USA", aliases:["ESPN USA"] },
     { id:"bravo", kind:"channel", name:"Bravo USA", aliases:["Bravo USA"] },
+    { id:"fox", kind:"channel", name:"FOX USA", aliases:["FOX USA"] },
+    { id:"crime", kind:"channel", name:"Crime+ Investigation USA", aliases:["Crime+ Investigation USA"] },
+    { id:"id", kind:"channel", name:"Investigation Discovery (ID USA)", aliases:["Investigation Discovery (ID USA)"] },
+    { id:"racer", kind:"channel", name:"Racer TV USA", aliases:["Racer TV USA"] },
+    { id:"spectrum", kind:"channel", name:"Spectrum SportsNet USA", aliases:["Spectrum SportsNet USA"] },
+    { id:"tudn", kind:"channel", name:"TUDN USA", aliases:["TUDN USA"] },
     { id:"sky", kind:"channel", name:"Sky Sports Main Event UK", aliases:["Sky Sports Main Event UK"] },
+    { id:"skyaction", kind:"channel", name:"Sky Sports Action UK", aliases:["Sky Sports Action UK"] },
+    { id:"skyscifi", kind:"channel", name:"Sky Cinema Sci-Fi Horror UK", aliases:["Sky Cinema Sci-Fi Horror UK"] },
     { id:"canal", kind:"channel", name:"Canal Plus France", aliases:["Canal Plus France"] },
     { id:"benfica", kind:"channel", name:"Benfica TV PT", aliases:["Benfica TV PT"] },
     { id:"tnt1", kind:"channel", name:"TNT Sports 1 UK", aliases:["TNT Sports 1 UK"] },
@@ -62,9 +71,30 @@ test("static aliases cover legacy brands, numbering and affiliate callsigns", ()
     [{ name:"US| BTN HD", group:"USA Sports" }, "btn"],
     [{ name:"US| EPIX HD", group:"USA Movies" }, "mgm"],
     [{ name:"US| GALAVISION HD", group:"USA" }, "gal"],
+    [{ name:"US| FOX NETWORK HD", group:"USA" }, "fox"],
+    [{ name:"US| C&I HD", tvgName:"Crime and Investigation", group:"USA" }, "crime"],
+    [{ name:"US| ID NETWORK HD", group:"USA" }, "id"],
+    [{ name:"US| MAVTV HD", group:"USA" }, "racer"],
+    [{ name:"US| SPECTRUM SPORTS NET HD", group:"USA Sports" }, "spectrum"],
+    [{ name:"US| TUDN NETWORK HD", group:"USA Sports" }, "tudn"],
+    [{ name:"UK| SKY SPORTS NFL HD", group:"UK Sports" }, "skyaction"],
+    [{ name:"UK| SKY CINEMA SCI FI & HORROR HD", group:"UK Movies" }, "skyscifi"],
+    [{ name:"PT| TVI REALITY 24/7 HD", group:"Portugal" }, "tvi"],
   ];
   for (const [row, expected] of cases) {
     assert.ok(matcher.match(row).some((x)=>x.id === expected), `${row.name} should match ${expected}`);
+  }
+});
+
+test("provider tvg-id participates in exact static identity matching", () => {
+  const matcher = createDlhdMatcher(reference);
+  const cases = [
+    [{ name:"UK| PROVIDER SLOT 004", group:"UK", tvgId:"BBCFour.uk" }, "bbc4"],
+    [{ name:"PT| PROVIDER SLOT 122", group:"Portugal", tvgId:"TVIReality.pt" }, "tvi"],
+    [{ name:"US| PROVIDER SLOT 301", group:"USA", tvgId:"TUDN.us" }, "tudn"],
+  ];
+  for (const [row, expected] of cases) {
+    assert.ok(matcher.match(row).some((x)=>x.id === expected), `${row.tvgId} should match ${expected}`);
   }
 });
 
