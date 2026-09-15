@@ -8,7 +8,6 @@ const statePath = path.join(config.dataDir, "state.json");
 const snapshotPath = path.join(config.dataDir, "snapshot.json");
 const guidePath = path.join(config.dataDir, "guide.xml");
 const providerCacheDir = path.join(config.dataDir, "provider-cache");
-const upstreamGuideCacheDir = path.join(config.dataDir, "upstream-guide-cache");
 
 const EMPTY_STATE = {
   version: 1,
@@ -75,40 +74,6 @@ export async function providerCacheExists(sourceId) {
     return stat.isFile() && stat.size > 0;
   } catch (error) {
     if (error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-function upstreamGuideCachePath(guideId) {
-  return path.join(upstreamGuideCacheDir, `${safeCacheId(guideId)}.xml`);
-}
-
-function upstreamGuideCacheMetaPath(guideId) {
-  return path.join(upstreamGuideCacheDir, `${safeCacheId(guideId)}.json`);
-}
-
-export async function saveUpstreamGuideCache(guide, body) {
-  await fs.mkdir(upstreamGuideCacheDir, { recursive: true });
-  const id = safeCacheId(guide?.id || crypto.createHash("sha1").update(String(guide?.url || "guide")).digest("hex"));
-  const xmlPath = upstreamGuideCachePath(id);
-  const metaPath = upstreamGuideCacheMetaPath(id);
-  await atomicWrite(xmlPath, String(body || ""));
-  await atomicWrite(metaPath, `${JSON.stringify({
-    id: guide?.id || id,
-    url: String(guide?.url || ""),
-    cachedAt: new Date().toISOString(),
-  }, null, 2)}\n`);
-}
-
-export async function loadUpstreamGuideCache(guide) {
-  const id = safeCacheId(guide?.id || crypto.createHash("sha1").update(String(guide?.url || "guide")).digest("hex"));
-  try {
-    const meta = JSON.parse(await fs.readFile(upstreamGuideCacheMetaPath(id), "utf8"));
-    if (String(meta?.url || "") !== String(guide?.url || "")) return null;
-    const body = await fs.readFile(upstreamGuideCachePath(id), "utf8");
-    return body.trim() ? body : null;
-  } catch (error) {
-    if (error.code === "ENOENT") return null;
     throw error;
   }
 }
