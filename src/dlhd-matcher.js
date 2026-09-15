@@ -17,8 +17,13 @@ const BORING_TOKENS = new Set([
   "live","channel","sports","sport","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream",
   "start","stop"
 ]);
+const EVENT_BORING_TOKENS = new Set([
+  "live","channel","tv","hd","fhd","uhd","sd","vs","versus","event","events","only","feed","stream","start","stop",
+  "uk","gb","us","usa","pt","eu","am"
+]);
 const EVENT_LIKE_RE = /(?:\bvs\.?\b|\bv\b|\bx\b|@|\bppv\b|\bevents?\b|\b(?:final|semifinal|semi-final|quarterfinal|quarter-final|qualifying|practice|race|round|stage|session)\b)/i;
 const EVENT_GROUP_RE = /(?:\blive\s*events?\b|\bppv\b|\bespn\s*plus\b|\bdazn\b|\bflo\b|\bfanatiz\b|\bmax\s*ppv\b|\bncaa\b|\bnfl\b|\bnba\b|\bnhl\b|\bmlb\b|\bmls\b)/i;
+const EVENT_EPG_CARRIER_RE = /(?:\bsports?\b|\bfutbol\b|\bfutebol\b|\bsoccer\b|\bfootball\b|\btennis\b|\bbasketball\b|\bvolleyball\b|\bhandball\b|\bhockey\b|\bbaseball\b|\bcricket\b|\brugby\b|\bgolf\b|\bracing\b|\bmotorsport\b|\bmma\b|\bboxing\b|\bwrestling\b|\bufc\b|\bespn\b|\bdazn\b|\bbein\b|\btnt\s*sports?\b|\bfox\s*sports?\b|\bpremiere\b|\bsportv\b|\btyc\b|\bfanatiz\b|\btudn\b|\bgol\s*tv\b|\bclaro\s*sports?\b|\bsky\s*sports?\b|\beurosport\b|\bsupersport\b|\barena\s*sport\b)/i;
 const DECORATION_BRACKET_RE = /^(?:event\s*only|ppv|live|bk|backup|alt|hd|fhd|uhd|sd|km|bg)$/i;
 
 // Deliberate brand/callsign equivalents only. These add exact lookup keys and
@@ -173,6 +178,14 @@ function significantTokens(value) {
   return new Set(first.split(" ").filter((x) => x.length > 1 && !COUNTRY_WORDS.has(x) && !BORING_TOKENS.has(x) && !/^\d+$/.test(x)));
 }
 
+function eventSignificantTokens(value) {
+  const base = normalize(cleanEventDecorations(value));
+  if (!base) return new Set();
+  return new Set(base.split(" ")
+    .map(canonicalToken)
+    .filter((x) => x.length > 1 && !EVENT_BORING_TOKENS.has(x) && !/^\d+$/.test(x)));
+}
+
 function tokenScore(a, b) {
   if (!a.size || !b.size) return { score: 0, common: 0, shortCoverage: 0, refCoverage: 0 };
   let common = 0;
@@ -212,9 +225,14 @@ function tvgIdName(value) {
     .trim();
 }
 
-export function isEventLikeRow(row) {
+function isDirectEventLikeRow(row) {
   const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
   return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value) || Boolean(meaningfulBracket(value));
+}
+
+export function isEventLikeRow(row) {
+  const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
+  return isDirectEventLikeRow(row) || EVENT_EPG_CARRIER_RE.test(value);
 }
 
 export function createDlhdMatcher(reference, aliases = {}) {
@@ -230,10 +248,10 @@ export function createDlhdMatcher(reference, aliases = {}) {
   for (const ref of reference?.events || []) {
     addIndex(eventTitleIndex, [ref.name], ref);
     addIndex(eventAliasIndex, (ref.aliases || []).slice(1), ref);
-    fuzzyEvents.push({ ref, tokens: significantTokens(ref.name) });
+    fuzzyEvents.push({ ref, tokens: eventSignificantTokens(ref.name) });
   }
   for (const ref of refs) {
-    const tokens = significantTokens(ref.name);
+    const tokens = ref.kind === "event" ? eventSignificantTokens(ref.name) : significantTokens(ref.name);
     refTokens.set(ref.id, tokens);
     for (const token of tokens) {
       const rows = tokenIndex.get(token) || [];
@@ -274,9 +292,12 @@ export function createDlhdMatcher(reference, aliases = {}) {
     }
 
     const hasEvent = [...matches.values()].some((ref) => ref.kind === "event");
-    if (!hasEvent && isEventLikeRow(row)) {
+    // Only obviously event-shaped rows get direct fuzzy event matching. Normal
+    // sports channels are still retained as EPG carriers by isEventLikeRow(),
+    // but their channel names cannot accidentally become event identities.
+    if (!hasEvent && isDirectEventLikeRow(row)) {
       for (const value of rawNames) {
-        const tokens = significantTokens(value);
+        const tokens = eventSignificantTokens(value);
         if (tokens.size < 2) continue;
         for (const candidate of fuzzyEvents) {
           if (fuzzyTokenMatch(tokens, candidate.tokens)) matches.set(candidate.ref.id, candidate.ref);
@@ -290,10 +311,12 @@ export function createDlhdMatcher(reference, aliases = {}) {
     const rawNames = namesFor(row);
     const byRef = new Map();
     for (const value of rawNames) {
-      const tokens = significantTokens(value);
-      if (!tokens.size) continue;
+      const staticTokens = significantTokens(value);
+      const eventTokens = eventSignificantTokens(value);
+      const lookupTokens = new Set([...staticTokens, ...eventTokens]);
+      if (!lookupTokens.size) continue;
       const candidates = new Map();
-      for (const token of tokens) {
+      for (const token of lookupTokens) {
         for (const ref of tokenIndex.get(token) || []) {
           if (kind && ref.kind !== kind) continue;
           if (ref.kind === "channel" && !staticCountryCompatible(row, ref)) continue;
@@ -301,6 +324,7 @@ export function createDlhdMatcher(reference, aliases = {}) {
         }
       }
       for (const ref of candidates.values()) {
+        const tokens = ref.kind === "event" ? eventTokens : staticTokens;
         const scoreData = tokenScore(tokens, refTokens.get(ref.id) || new Set());
         if (scoreData.score < minScore || scoreData.common < 1) continue;
         const previous = byRef.get(ref.id);
