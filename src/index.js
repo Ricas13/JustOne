@@ -1,3 +1,4 @@
+import { createArtworkServer } from "./artwork-server.js";
 import { config } from "./config.js";
 import { refreshManager } from "./refresh-manager.js";
 import { createAdminServer, createInternalServer } from "./server.js";
@@ -9,6 +10,8 @@ if (!config.adminKey) {
 
 const adminServer = createAdminServer();
 const internalServer = createInternalServer();
+const artworkServer = createArtworkServer();
+const artworkPort = config.internalPort + 1;
 
 adminServer.listen(config.port, config.bindAddress, () => {
   console.log(`JustOne admin listening on ${config.bindAddress}:${config.port}`);
@@ -16,16 +19,14 @@ adminServer.listen(config.port, config.bindAddress, () => {
 internalServer.listen(config.internalPort, config.internalBindAddress, () => {
   console.log(`JustOne internal outputs listening on ${config.internalBindAddress}:${config.internalPort} (not published by docker-compose)`);
 });
+artworkServer.listen(artworkPort, config.internalBindAddress, () => {
+  console.log(`JustOne event artwork listening on ${config.internalBindAddress}:${artworkPort} (media_net only)`);
+});
 
 console.log(`Refresh cadence: providers every ${config.providerRefreshMinutes} min; DLHD every ${config.dlhdRefreshMinutes} min`);
 
-// Startup uses a fresh provider cache if available, otherwise it downloads the
-// provider M3U and creates the cache. This avoids a huge re-download on every
-// container restart while still self-healing when no cache exists.
 setTimeout(() => refreshManager.start("startup", { sourceMode: "auto" }), 250);
 
-// Register the daily provider timer first. At the 24h boundary it also fetches
-// fresh DLHD, so if the 8h timer fires on the same tick it can safely skip.
 if (config.providerRefreshMinutes > 0) {
   setInterval(() => {
     const result = refreshManager.start("provider-scheduled", { sourceMode: "network" });
@@ -42,9 +43,10 @@ if (config.dlhdRefreshMinutes > 0) {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    let pending = 2;
+    let pending = 3;
     const done = () => { if (--pending <= 0) process.exit(0); };
     adminServer.close(done);
     internalServer.close(done);
+    artworkServer.close(done);
   });
 }
