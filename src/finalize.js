@@ -1,3 +1,4 @@
+import { withInternalKey } from "./config.js";
 import { countryOf } from "./identity.js";
 import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
@@ -63,6 +64,36 @@ function eventStart(channel) {
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
+function stripEventDecorations(value) {
+  return String(value || "")
+    .replace(/[\p{Regional_Indicator}\p{Extended_Pictographic}\uFE0F]/gu, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function eventPresentation(value) {
+  const clean = stripEventDecorations(value);
+  const colon = clean.lastIndexOf(":");
+  const prefix = colon > 0 ? clean.slice(0, colon).trim() : "";
+  const tail = colon > 0 ? clean.slice(colon + 1).trim() : clean;
+  const matchup = /\b(?:vs\.?|v\.?|@|x)\b/i.test(tail);
+  const genericPrefix = /^(?:soccer|football|futsal|tennis|basketball|baseball|ice hockey|hockey|handball|volleyball|rugby|cricket|boxing|mma|golf|motorsport|events?)\b/i.test(prefix);
+  const title = (matchup || genericPrefix) && tail ? tail : clean;
+  return {
+    title: title || clean || "Live Event",
+    competition: prefix && prefix !== title ? prefix : "",
+  };
+}
+
+function eventArtworkUrls(channel) {
+  const token = encodeURIComponent(String(channel.id || channel.tvgId || "event"));
+  return {
+    channel: withInternalKey(`http://justone-catalog:8091/artwork/event/channel/${token}.png`),
+    programme: withInternalKey(`http://justone-catalog:8091/artwork/event/program/${token}.png`),
+  };
+}
+
 function variantKey(variant) {
   return `${variant.sourceId || ""}|${variant.url || ""}`;
 }
@@ -125,7 +156,7 @@ function materializeLinkedEvents(snapshot) {
       tvgId: ref.tvgId,
       name: ref.name,
       group: `Events | ${type}`,
-      logo: text(ref.logo || linked.find((ch) => ch.logo)?.logo || ""),
+      logo: "",
       aliasNames: [...new Set([ref.name, ...(ref.aliases || []), ...linked.flatMap((ch) => ch.aliasNames || [])].filter(Boolean))],
       variants,
       referenceKind: "event",
@@ -139,6 +170,7 @@ function materializeLinkedEvents(snapshot) {
         time: ref.time,
         category: type,
         originalCategory: ref.category,
+        originalName: ref.name,
         linkedChannels: ref.linkedChannels || [],
       },
     };
@@ -154,9 +186,24 @@ function layoutChannels(channels, overrides = {}, providerOrders = null) {
   for (const channel of channels) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
     if (channel.referenceKind === "event") {
-      const type = eventTypeFor({ name: channel.name, category: channel.event?.originalCategory || channel.event?.category || channel.group });
-      channel.event = { ...(channel.event || {}), category: type };
+      const originalName = text(channel.event?.originalName || channel.name);
+      const type = eventTypeFor({ name: originalName, category: channel.event?.originalCategory || channel.event?.category || channel.group });
+      const presentation = eventPresentation(originalName);
+      const previousName = channel.name;
+      channel.event = {
+        ...(channel.event || {}),
+        category: type,
+        originalName,
+        competition: presentation.competition,
+      };
+      channel.aliasNames = [...new Set([...(channel.aliasNames || []), originalName, previousName].filter(Boolean))];
+      if (!override.name) channel.name = presentation.title;
+      else channel.name = text(override.name);
       if (!override.group) channel.group = `Events | ${type}`;
+      const artwork = eventArtworkUrls(channel);
+      channel.event.channelArtwork = artwork.channel;
+      channel.event.programmeArtwork = artwork.programme;
+      channel.logo = text(override.logo || artwork.channel);
     } else {
       if (!override.group) {
         const cc = staticCountry(channel);
@@ -181,16 +228,13 @@ function layoutChannels(channels, overrides = {}, providerOrders = null) {
     return aPosition - bPosition || a.name.localeCompare(b.name);
   });
   const eventRows = channels.filter((ch) => ch.referenceKind === "event").sort((a, b) => {
-    const at = eventTypeFor({ name: a.name, category: a.event?.category || a.group });
-    const bt = eventTypeFor({ name: b.name, category: b.event?.category || b.group });
+    const at = eventTypeFor({ name: a.event?.originalName || a.name, category: a.event?.category || a.group });
+    const bt = eventTypeFor({ name: b.event?.originalName || b.name, category: b.event?.category || b.group });
     return (EVENT_TYPE_RANK.get(at) ?? 99) - (EVENT_TYPE_RANK.get(bt) ?? 99)
       || eventStart(a) - eventStart(b)
       || a.name.localeCompare(b.name);
   });
 
-  // Keep the country blocks stable for Jellyfin while provider positions decide
-  // the order within each block. We intentionally do not expose raw provider
-  // channel numbers because US local and national providers can reuse numbers.
   const nextByCountry = new Map([["GB", 1000], ["PT", 2000], ["US", 3000]]);
   for (const channel of staticRows) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
@@ -221,6 +265,7 @@ function eventXml(channel) {
   if (!Number.isFinite(Number(event.start))) return "";
   const start = Number(event.start);
   const end = Number.isFinite(Number(event.end)) ? Number(event.end) : start + 3 * 60 * 60 * 1000;
+  const description = event.competition || event.originalCategory || "DLHD scheduled event";
   const rows = [
     `  <channel id="${xmlEscape(channel.tvgId)}">`,
     `    <display-name>${xmlEscape(channel.name)}</display-name>`,
@@ -228,23 +273,35 @@ function eventXml(channel) {
     "  </channel>",
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(channel.name)}</title>`,
+    event.competition ? `    <sub-title>${xmlEscape(event.competition)}</sub-title>` : "",
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    `    <desc>${xmlEscape("DLHD schedule reference; playback is supplied by a linked configured IPTV channel.")}</desc>`,
-    channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
+    `    <desc>${xmlEscape(description)}</desc>`,
+    event.programmeArtwork ? `    <icon src="${xmlEscape(event.programmeArtwork)}" />` : "",
     "  </programme>",
   ];
   return rows.filter(Boolean).join("\n");
 }
 
-export function augmentGuideWithEvents(guideXml, channels) {
-  const additions = [];
-  for (const channel of channels) {
-    if (!channel?.tvgId || String(guideXml).includes(`id="${channel.tvgId}"`)) continue;
-    const xml = eventXml(channel);
-    if (xml) additions.push(xml);
+function regexEscape(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function syncGuideEvents(guideXml, channels) {
+  let xml = String(guideXml || "");
+  const events = (channels || []).filter((channel) => channel?.referenceKind === "event" && channel?.tvgId);
+  for (const channel of events) {
+    const id = regexEscape(channel.tvgId);
+    const channelRe = new RegExp(`\\s*<channel\\b[^>]*\\bid=(?:"${id}"|'${id}')[^>]*>[\\s\\S]*?<\\/channel>\\s*`, "gi");
+    const programmeRe = new RegExp(`\\s*<programme\\b(?=[^>]*\\bchannel=(?:"${id}"|'${id}'))[^>]*>[\\s\\S]*?<\\/programme>\\s*`, "gi");
+    xml = xml.replace(channelRe, "\n").replace(programmeRe, "\n");
   }
-  if (!additions.length) return guideXml;
-  return String(guideXml).replace(/\s*<\/tv>\s*$/i, `\n${additions.join("\n")}\n</tv>\n`);
+  const additions = events.map(eventXml).filter(Boolean);
+  if (!additions.length) return xml;
+  return xml.replace(/\s*<\/tv>\s*$/i, `\n${additions.join("\n")}\n</tv>\n`);
+}
+
+export function augmentGuideWithEvents(guideXml, channels) {
+  return syncGuideEvents(guideXml, channels);
 }
 
 export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null } = {}) {

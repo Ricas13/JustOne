@@ -1,5 +1,5 @@
 import { refreshCatalog } from "./catalog.js";
-import { augmentGuideWithEvents, finalizeSnapshot } from "./finalize.js";
+import { finalizeSnapshot, syncGuideEvents } from "./finalize.js";
 import { loadProviderOrders } from "./provider-order.js";
 import { loadGuide, loadState, saveGuide, saveSnapshot } from "./store.js";
 
@@ -59,21 +59,21 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
         const raw = await runRefresh({ onProgress: updateProgress, ...options, sourceMode });
         let result = raw;
 
-        // Production refreshes receive the final layout/linked-event pass and
-        // are persisted a second time. Injected refresh functions (unit tests or
-        // callers deliberately supplying their own runner) stay side-effect free
-        // unless createRefreshManager(..., { finalize: true }) is requested.
         if (finalize) {
           const state = await loadState();
           const providerOrders = await loadProviderOrders();
           const finalized = finalizeSnapshot(raw, state, { providerOrders });
           result = finalized.snapshot;
 
+          // refreshCatalog builds static EPG from real provider XMLTV. The final
+          // pass then replaces every event XMLTV row with the final JustOne event
+          // identity: concise event title, event-only time slot and event artwork.
+          const guide = syncGuideEvents(await loadGuide(), result.channels);
+          await saveGuide(guide);
           if (finalized.addedEvents.length) {
-            const guide = augmentGuideWithEvents(await loadGuide(), finalized.addedEvents);
-            await saveGuide(guide);
             console.log(`[refresh ${id}] linked-channel fallback added ${finalized.addedEvents.length} playable DLHD event(s)`);
           }
+          console.log(`[refresh ${id}] event metadata synchronized for ${result.channels.filter((x) => x.referenceKind === "event").length} event channel(s)`);
           await saveSnapshot(result);
 
           for (const [country, info] of Object.entries(result.lineupOrdering || {})) {
