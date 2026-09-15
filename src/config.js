@@ -1,4 +1,7 @@
 import path from "node:path";
+import { installUpstreamXmltvCache } from "./upstream-xmltv-cache.js";
+
+installUpstreamXmltvCache();
 
 function intEnv(name, fallback) {
   const value = Number(process.env[name]);
