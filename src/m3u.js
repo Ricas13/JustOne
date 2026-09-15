@@ -104,9 +104,14 @@ export function buildM3u(snapshot, { sourceId = null, guideUrl = "", publicGuide
     const variants = (channel.variants || []).filter((v) => !sourceId || v.sourceId === sourceId);
     for (const variant of variants) {
       const rank = String(variant.order + 1).padStart(3, "0");
-      const label = `${channel.name} [JO:${rank}] [${variant.quality}]${variant.backup ? " [BACKUP]" : ""}`;
+      const variantLabel = `${channel.name} [JO:${rank}] [${variant.quality}]${variant.backup ? " [BACKUP]" : ""}`;
+      // The master feed is consumed by brokers such as IPTV Tunerr that merge
+      // duplicate tvg-id rows only when their display names also match. Keep its
+      // display name canonical while preserving ranked labels on per-source feeds
+      // because Dispatcharr uses [JO:n] to retain JustOne's stream ordering.
+      const displayName = sourceId ? variantLabel : channel.name;
       lines.push(
-        `#EXTINF:-1 tvg-id="${q(channel.tvgId)}" tvg-name="${q(channel.name)}" tvg-logo="${q(channel.logo)}" tvg-chno="${q(channel.number)}" group-title="${q(channel.group)}",${q(label)}`
+        `#EXTINF:-1 tvg-id="${q(channel.tvgId)}" tvg-name="${q(channel.name)}" tvg-logo="${q(channel.logo)}" tvg-chno="${q(channel.number)}" group-title="${q(channel.group)}",${q(displayName)}`
       );
       lines.push(variant.url);
     }
