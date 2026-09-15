@@ -107,8 +107,35 @@ function findHit(channel, docs) {
   return null;
 }
 
-function remapProgramme(programme, tvgId) {
-  return programme.replace(/\bchannel=(?:"[^"]+"|'[^']+')/i, `channel="${xmlEscape(tvgId)}"`);
+function remapProgramme(programme, tvgId, fallbackImage = "") {
+  let out = String(programme || "")
+    .replace(/\bchannel=(?:"[^"]+"|'[^']+')/i, `channel="${xmlEscape(tvgId)}"`);
+
+  // Restore the original JustOne programme-artwork behaviour for linear TV.
+  // Preserve any real upstream programme artwork first. Jellyfin's Live TV home
+  // cards understand XMLTV <image> more reliably than a programme <icon>, so
+  // promote an upstream icon to a backdrop image when one is not already there.
+  const iconMatch = /<icon\b[^>]*\bsrc=(?:"([^"]+)"|'([^']+)')/i.exec(out);
+  let image = xmlDecode(iconMatch?.[1] ?? iconMatch?.[2] ?? "");
+  const hasImage = /<image\b/i.test(out);
+
+  // Some provider guides have schedule data but no per-programme artwork. In
+  // that case use the official channel logo instead of Jellyfin's generic TV
+  // placeholder. This is only a visual fallback; the real programme metadata is
+  // otherwise left untouched.
+  if (!image && !hasImage && fallbackImage) {
+    image = fallbackImage;
+    out = out.replace(/<\/programme>/i, `  <icon src="${xmlEscape(image)}" />\n</programme>`);
+  }
+
+  if (!hasImage && image) {
+    out = out.replace(
+      /<\/programme>/i,
+      `  <image type="backdrop" size="3" orient="L">${xmlEscape(image)}</image>\n</programme>`,
+    );
+  }
+
+  return out;
 }
 
 function xmltvTime(ms) {
@@ -166,8 +193,9 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}) {
     }
     const hit = hits.get(channel.id);
     if (!hit) continue;
+    const fallbackImage = channel.logo || hit.meta?.icon || "";
     for (const programme of hit.doc.parsed.programmes.get(hit.sourceId) || []) {
-      out.push(remapProgramme(programme, channel.tvgId));
+      out.push(remapProgramme(programme, channel.tvgId, fallbackImage));
     }
   }
 

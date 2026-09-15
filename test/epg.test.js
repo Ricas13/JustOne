@@ -8,7 +8,32 @@ test("EPG is remapped onto canonical JustOne tvg-id and provides logo", () => {
   const xml = enrichAndBuildGuide(channels, [{ id: "guide", name: "Guide", parsed }], {});
   assert.match(xml, /channel="justone\.bbc-one\.x"/);
   assert.match(xml, /<title>News<\/title>/);
+  assert.match(xml, /<icon src="https:\/\/logo\/bbc\.png" \/>/);
+  assert.match(xml, /<image type="backdrop" size="3" orient="L">https:\/\/logo\/bbc\.png<\/image>/);
   assert.equal(channels[0].logo, "https://logo/bbc.png");
+});
+
+test("static programme artwork from provider XMLTV is preserved and promoted to Jellyfin backdrop", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="film.uk"><display-name>Film Channel</display-name><icon src="https://logo/film.png"/></channel>
+    <programme start="20260101000000 +0000" stop="20260101020000 +0000" channel="film.uk"><title>The Film</title><icon src="https://art.example/the-film.jpg"/></programme>
+  </tv>`);
+  const channels = [{ id: "film-x", key: "film", tvgId: "justone.film.x", name: "Film Channel", logo: "", aliasNames: [], variants: [{ originalTvgId: "film.uk" }] }];
+  const xml = enrichAndBuildGuide(channels, [{ id: "guide", name: "Guide", parsed }], {});
+  assert.match(xml, /<icon src="https:\/\/art\.example\/the-film\.jpg"\/>/);
+  assert.match(xml, /<image type="backdrop" size="3" orient="L">https:\/\/art\.example\/the-film\.jpg<\/image>/);
+  assert.doesNotMatch(xml, /<image[^>]*>https:\/\/logo\/film\.png<\/image>/);
+});
+
+test("existing provider programme image is not duplicated or replaced", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="five.uk"><display-name>5 USA</display-name><icon src="https://logo/5usa.png"/></channel>
+    <programme start="20260101000000 +0000" stop="20260101010000 +0000" channel="five.uk"><title>Movie</title><image type="backdrop" size="3" orient="L">https://art.example/movie.jpg</image></programme>
+  </tv>`);
+  const channels = [{ id: "five-x", key: "5 usa", tvgId: "justone.five.x", name: "5 USA", logo: "", aliasNames: [], variants: [{ originalTvgId: "five.uk" }] }];
+  const xml = enrichAndBuildGuide(channels, [{ id: "guide", name: "Guide", parsed }], {});
+  assert.equal((xml.match(/https:\/\/art\.example\/movie\.jpg/g) || []).length, 1);
+  assert.doesNotMatch(xml, /<image[^>]*>https:\/\/logo\/5usa\.png<\/image>/);
 });
 
 test("XMLTV hints expose display names and scheduled programme titles", () => {
