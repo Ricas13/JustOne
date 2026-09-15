@@ -81,6 +81,14 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
           }
         }
 
+        if (result.dlhdStatus?.enabled) {
+          const d = result.dlhdStatus;
+          console.log(
+            `[refresh ${id}] DLHD coverage: ${d.matchedChannelReferences ?? 0}/${d.targetChannelReferences ?? 0} static; `
+            + `${d.matchedEventReferences ?? 0}/${d.targetEventReferences ?? 0} events`,
+          );
+        }
+
         const staticChannels = (result.channels || []).filter((x) => x.referenceKind !== "event").length;
         const events = (result.channels || []).filter((x) => x.referenceKind === "event").length;
         status = {
