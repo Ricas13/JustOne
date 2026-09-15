@@ -19,3 +19,11 @@ test("country detection recognises target-country metadata and tvg-id suffixes",
   assert.equal(countryOf({ name:"RTP 1", group:"General", tvgId:"rtp1.pt" }), "PT");
   assert.equal(countryOf({ name:"ESPN", group:"General", tvgId:"espn.us" }), "US");
 });
+
+test("explicit foreign channel identity outranks a target-country provider group", () => {
+  assert.equal(countryOf({ name:"EuroSport 1 Greece", group:"PT Sports" }), "GR");
+  assert.equal(countryOf({ name:"TNT Sports Argentina", group:"UK Sports" }), "AR");
+  assert.equal(countryOf({ name:"MTV Poland", group:"USA Entertainment" }), "PL");
+  assert.equal(countryOf({ name:"Star TV Turkey", group:"PT General" }), "TR");
+  assert.equal(countryOf({ name:"ESPN 1 NL", group:"USA Sports" }), "NL");
+});
