@@ -1,4 +1,5 @@
 import { config, withInternalKey } from "./config.js";
+import { countryOf } from "./identity.js";
 import { text, timeoutSignal } from "./util.js";
 
 const JUSTONE_EPG_NAME = "JustOne | Canonical EPG";
@@ -319,9 +320,36 @@ async function ensureLogo(client, logos, channel, apply) {
   return created.id;
 }
 
+function snapshotStaticCountry(channel) {
+  if (channel?.referenceKind === "event") return "";
+  const explicit = String(channel?.country || "").trim().toUpperCase();
+  if (explicit) return explicit;
+  const byName = countryOf({ name: channel?.name || "" });
+  if (byName) return byName;
+  return countryOf({ group: channel?.group || "" });
+}
+
+function staticPolicyViolations(snapshot) {
+  const allowed = new Set(config.dlhd.staticCountries || []);
+  if (!allowed.size) return [];
+  return (snapshot.channels || [])
+    .filter((channel) => channel.referenceKind !== "event")
+    .map((channel) => ({ channel, country: snapshotStaticCountry(channel) }))
+    .filter(({ country }) => !country || !allowed.has(country));
+}
+
+function explicitManagedCountry(channel) {
+  return countryOf({ name: channel?.name || "" });
+}
+
 export async function reconcileDispatcharr(snapshot, { apply = false, client = new DispatcharrClient() } = {}) {
   if (apply && !config.dispatcharr.applyEnabled) {
     throw new Error("Dispatcharr apply is disabled. Set DISPATCHARR_APPLY_ENABLED=true after reviewing preview output.");
+  }
+
+  const violations = staticPolicyViolations(snapshot);
+  if (apply && violations.length) {
+    throw new Error(`Dispatcharr apply blocked: ${violations.length} static channel(s) violate the ${config.dlhd.staticCountries.join("/")} country policy.`);
   }
 
   const [channels, streams, groups, logos] = await Promise.all([
@@ -346,8 +374,26 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
     streamsByTvg.set(stream.tvg_id, arr);
   }
 
-  const actions = [];
-  for (const channel of snapshot.channels || []) {
+  const violationIds = new Set(violations.map(({ channel }) => channel.tvgId));
+  const desiredChannels = (snapshot.channels || []).filter((channel) => !violationIds.has(channel.tvgId));
+  const waiting = desiredChannels.filter((channel) => !(streamsByTvg.get(channel.tvgId) || []).length);
+  const duplicates = desiredChannels.filter((channel) => (byTvg.get(channel.tvgId) || []).length > 1);
+
+  if (apply && waiting.length) {
+    throw new Error(`Dispatcharr apply blocked: ${waiting.length} desired channel(s) are waiting for imported streams. Provision/refresh the JustOne M3Us first, wait for Dispatcharr import to finish, then preview again.`);
+  }
+  if (apply && duplicates.length) {
+    throw new Error(`Dispatcharr apply blocked: ${duplicates.length} duplicate JustOne-managed channel identity/identities already exist.`);
+  }
+
+  const actions = violations.map(({ channel, country }) => ({
+    action: "policy-violation",
+    tvgId: channel.tvgId,
+    name: channel.name,
+    country: country || "unknown",
+  }));
+
+  for (const channel of desiredChannels) {
     const available = [...(streamsByTvg.get(channel.tvgId) || [])]
       .sort((a, b) => rankFromName(a.name) - rankFromName(b.name) || a.id - b.id);
     if (!available.length) {
@@ -385,15 +431,42 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
     }
   }
 
-  const desiredIds = new Set((snapshot.channels || []).map((ch) => ch.tvgId));
+  const desiredIds = new Set(desiredChannels.map((ch) => ch.tvgId));
+  const allowedCountries = new Set(config.dlhd.staticCountries || []);
   for (const ch of managed) {
-    if (!desiredIds.has(ch.tvg_id)) actions.push({ action: "orphan", id: ch.id, tvgId: ch.tvg_id, name: ch.name });
+    if (desiredIds.has(ch.tvg_id)) continue;
+    const tvgId = String(ch.tvg_id || "");
+    if (tvgId.startsWith("justone.event.")) {
+      actions.push({ action: "delete-stale-event", id: ch.id, tvgId, name: ch.name });
+      if (apply) await client.request(`/api/channels/channels/${ch.id}/`, { method: "DELETE" });
+      continue;
+    }
+
+    const country = explicitManagedCountry(ch);
+    if (country && allowedCountries.size && !allowedCountries.has(country)) {
+      actions.push({ action: "delete-policy-static", id: ch.id, tvgId, name: ch.name, country });
+      if (apply) await client.request(`/api/channels/channels/${ch.id}/`, { method: "DELETE" });
+      continue;
+    }
+    actions.push({ action: "orphan-static", id: ch.id, tvgId, name: ch.name });
   }
+
+  const counts = actions.reduce((acc, row) => ((acc[row.action] = (acc[row.action] || 0) + 1), acc), {});
+  const readyForApply = !violations.length && !waiting.length && !duplicates.length;
+  const blockers = [];
+  if (violations.length) blockers.push(`${violations.length} country-policy violation(s)`);
+  if (waiting.length) blockers.push(`${waiting.length} channel(s) waiting for Dispatcharr stream import`);
+  if (duplicates.length) blockers.push(`${duplicates.length} duplicate managed channel identity/identities`);
 
   return {
     apply,
-    counts: actions.reduce((acc, row) => ((acc[row.action] = (acc[row.action] || 0) + 1), acc), {}),
+    readyForApply,
+    blockers,
+    counts,
     actions,
+    note: readyForApply
+      ? "Channel reconciliation is ready to apply. Stale JustOne events will be removed; unknown static orphans remain non-destructive."
+      : "Do not apply channel reconciliation yet. Resolve the reported blockers first.",
   };
 }
 
