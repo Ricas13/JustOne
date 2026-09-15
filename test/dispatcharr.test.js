@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planDispatcharrInputs, provisionDispatcharrInputs, rankFromName } from "../src/dispatcharr.js";
+import { planDispatcharrInputs, provisionDispatcharrInputs, rankFromName, reconcileDispatcharr } from "../src/dispatcharr.js";
 
 test("Dispatcharr reconciler reads JustOne stream rank", () => {
   assert.equal(rankFromName("BBC One [JO:007] [HD]"), 7);
@@ -38,6 +38,27 @@ class FakeClient {
     if (/^\/api\/m3u\/refresh\/\d+\/$/.test(path) && method === "POST") return { success: true };
     if (path === "/api/epg/import/" && method === "POST") return { success: true };
     throw new Error(`unexpected request ${method} ${path}`);
+  }
+}
+
+class FakeReconcileClient {
+  constructor({ channels = [], streams = [], groups = [], logos = [] } = {}) {
+    this.channels = structuredClone(channels);
+    this.streams = structuredClone(streams);
+    this.groups = structuredClone(groups);
+    this.logos = structuredClone(logos);
+    this.calls = [];
+  }
+  async list(path) {
+    if (path === "/api/channels/channels/") return this.channels;
+    if (path.startsWith("/api/channels/streams/")) return this.streams;
+    if (path === "/api/channels/groups/") return this.groups;
+    if (path === "/api/channels/logos/") return this.logos;
+    throw new Error(`unexpected list ${path}`);
+  }
+  async request(path, { method = "GET", body } = {}) {
+    this.calls.push({ path, method, body });
+    throw new Error(`unexpected request in preview ${method} ${path}`);
   }
 }
 
@@ -84,9 +105,6 @@ test("Dispatcharr input preview updates only JustOne-managed accounts and report
 test("provision apply creates inputs and queues M3U/EPG refresh jobs", async () => {
   const client = new FakeClient();
   const previous = process.env.DISPATCHARR_APPLY_ENABLED;
-  // config is loaded before this test, so use preview-only function for mutation safety gate
-  // and temporarily exercise the apply path by calling with a settings-compatible fake only
-  // when repository config permits apply in the test environment.
   if (previous !== "true") {
     await assert.rejects(
       () => provisionDispatcharrInputs(state, { apply: true, refresh: true, client }),
@@ -97,4 +115,59 @@ test("provision apply creates inputs and queues M3U/EPG refresh jobs", async () 
   const result = await provisionDispatcharrInputs(state, { apply: true, refresh: true, client });
   assert.equal(result.refreshActions.filter((row) => row.type === "m3u-refresh").length, 2);
   assert.equal(result.refreshActions.filter((row) => row.type === "epg-refresh").length, 1);
+});
+
+test("channel preview blocks foreign static references even when their provider group looks allowed", async () => {
+  const snapshot = {
+    channels: [
+      { referenceKind:"channel", tvgId:"justone.channel.bbc-one", name:"BBC One UK", group:"TV | UK", number:1000, variants:[{url:"x"}] },
+      { referenceKind:"channel", tvgId:"justone.channel.eurosport-greece", name:"EuroSport 1 Greece", group:"TV | PT", number:2000, variants:[{url:"y"}] },
+    ],
+  };
+  const client = new FakeReconcileClient({
+    streams: [
+      { id:11, tvg_id:"justone.channel.bbc-one", name:"BBC One [JO:000]" },
+      { id:12, tvg_id:"justone.channel.eurosport-greece", name:"Eurosport [JO:000]" },
+    ],
+    groups: [{ id:1, name:"TV | UK" }],
+  });
+  const result = await reconcileDispatcharr(snapshot, { apply:false, client });
+  assert.equal(result.readyForApply, false);
+  assert.equal(result.counts["policy-violation"], 1);
+  assert.ok(result.actions.some((row) => row.action === "policy-violation" && row.country === "GR"));
+  assert.equal(result.actions.some((row) => row.action === "create" && row.tvgId === "justone.channel.eurosport-greece"), false);
+});
+
+test("channel preview is not ready while desired JustOne streams have not been imported", async () => {
+  const snapshot = {
+    channels: [
+      { referenceKind:"event", tvgId:"justone.event.new-game", name:"New Game", group:"Events | Football", number:90000, variants:[{url:"x"}] },
+    ],
+  };
+  const result = await reconcileDispatcharr(snapshot, { apply:false, client:new FakeReconcileClient() });
+  assert.equal(result.readyForApply, false);
+  assert.equal(result.counts["waiting-for-streams"], 1);
+  assert.match(result.blockers.join(" "), /waiting for Dispatcharr stream import/i);
+});
+
+test("channel preview expires stale events but keeps unknown static orphans non-destructive", async () => {
+  const snapshot = {
+    channels: [
+      { referenceKind:"event", tvgId:"justone.event.current", name:"Current Game", group:"Events | Football", number:90000, variants:[{url:"x"}] },
+    ],
+  };
+  const client = new FakeReconcileClient({
+    channels: [
+      { id:21, tvg_id:"justone.event.old", name:"Old Game", streams:[31] },
+      { id:22, tvg_id:"justone.channel.unknown", name:"Mystery Channel", streams:[32] },
+      { id:23, tvg_id:"justone.channel.tnt-argentina", name:"TNT Sports Argentina", streams:[33] },
+    ],
+    streams: [{ id:30, tvg_id:"justone.event.current", name:"Current Game [JO:000]" }],
+    groups: [{ id:1, name:"Events | Football" }],
+  });
+  const result = await reconcileDispatcharr(snapshot, { apply:false, client });
+  assert.equal(result.readyForApply, true);
+  assert.ok(result.actions.some((row) => row.action === "delete-stale-event" && row.id === 21));
+  assert.ok(result.actions.some((row) => row.action === "orphan-static" && row.id === 22));
+  assert.ok(result.actions.some((row) => row.action === "delete-policy-static" && row.id === 23 && row.country === "AR"));
 });
