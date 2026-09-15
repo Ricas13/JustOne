@@ -204,6 +204,14 @@ function staticCountryCompatible(row, ref) {
   return !rowCountry || !refCountry || rowCountry === refCountry;
 }
 
+function tvgIdName(value) {
+  return String(value || "")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._-]+/g, " ")
+    .trim();
+}
+
 export function isEventLikeRow(row) {
   const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
   return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value) || Boolean(meaningfulBracket(value));
@@ -235,11 +243,7 @@ export function createDlhdMatcher(reference, aliases = {}) {
   }
 
   function namesFor(row) {
-    // tvg-id is often the cleanest identifier in giant provider lists even when
-    // the visible channel name has provider prefixes, stale branding or noise.
-    // It still goes through exact-key aliases and static country checks; adding
-    // it here does not make fuzzy static matching more permissive.
-    const rawNames = [row?.tvgName, row?.name, row?.tvgId].filter(Boolean);
+    const rawNames = [row?.tvgName, row?.name].filter(Boolean);
     const aliasName = aliases[normalize(strippedChannelName(rawNames[0] || ""))];
     if (aliasName) rawNames.push(aliasName);
     return [...new Set(rawNames)];
@@ -247,12 +251,21 @@ export function createDlhdMatcher(reference, aliases = {}) {
 
   function match(row) {
     const rawNames = namesFor(row);
+    const staticNames = [...rawNames, tvgIdName(row?.tvgId)].filter(Boolean);
     const matches = new Map();
-    for (const value of rawNames) {
+
+    // TVG IDs are used only for exact static identity lookup. They never feed
+    // the event fuzzy matcher, so opaque IDs cannot accidentally create events.
+    for (const value of staticNames) {
       for (const key of keyVariants(value)) {
         for (const ref of staticIndex.get(key) || []) {
           if (staticCountryCompatible(row, ref)) matches.set(ref.id, ref);
         }
+      }
+    }
+
+    for (const value of rawNames) {
+      for (const key of keyVariants(value)) {
         // Event aliases intentionally do not country-filter because one event
         // may legitimately be carried by a channel from any territory.
         for (const ref of eventTitleIndex.get(key) || []) matches.set(ref.id, ref);
