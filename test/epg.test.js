@@ -45,10 +45,7 @@ test("generated JustOne guide is never accepted as an upstream XMLTV source", ()
     </programme>
   </tv>`;
   assert.equal(isGeneratedJustOneGuide(body), true);
-  const parsed = parseXmlTv(body);
-  assert.equal(parsed.generatedByJustOne, true);
-  assert.equal(parsed.channels.size, 0);
-  assert.equal(parsed.programmes.size, 0);
+  assert.throws(() => parseXmlTv(body), /refusing generated JustOne guide as upstream XMLTV/i);
 });
 
 test("static channels without real provider EPG do not get synthetic placeholder programmes", () => {
