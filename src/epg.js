@@ -1,12 +1,27 @@
 import { normalize, stripTags, text, xmlDecode, xmlEscape } from "./util.js";
 
+export function isGeneratedJustOneGuide(body) {
+  const source = String(body || "");
+  const tvTag = /<tv\b[^>]*>/i.exec(source)?.[0] || "";
+  const match = /\bgenerator-info-name\s*=\s*(?:"([^"]+)"|'([^']+)')/i.exec(tvTag);
+  return normalize(match?.[1] ?? match?.[2] ?? "") === "justone catalog";
+}
+
 export function parseXmlTv(body) {
   const source = String(body || "");
   const channels = new Map();
   const names = new Map();
   const programmes = new Map();
-  let match;
 
+  // Never feed JustOne's own generated canonical guide back into the upstream
+  // matcher. Older builds could contain synthetic placeholder programmes; if a
+  // provider XMLTV fetch failed, parsing guide.xml here made those placeholders
+  // self-perpetuating across future refreshes.
+  if (isGeneratedJustOneGuide(source)) {
+    return { channels, names, programmes, generatedByJustOne: true };
+  }
+
+  let match;
   const channelRe = /<channel\b[^>]*\bid=(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/channel>/gi;
   while ((match = channelRe.exec(source))) {
     const id = xmlDecode(match[1] ?? match[2] ?? "");
@@ -33,7 +48,7 @@ export function parseXmlTv(body) {
     programmes.set(id, arr);
   }
 
-  return { channels, names, programmes };
+  return { channels, names, programmes, generatedByJustOne: false };
 }
 
 export function parseXmlTvTime(value) {
