@@ -13,12 +13,11 @@ export function parseXmlTv(body) {
   const names = new Map();
   const programmes = new Map();
 
-  // Never feed JustOne's own generated canonical guide back into the upstream
-  // matcher. Older builds could contain synthetic placeholder programmes; if a
-  // provider XMLTV fetch failed, parsing guide.xml here made those placeholders
-  // self-perpetuating across future refreshes.
+  // Canonical JustOne XMLTV is output, never input. Throwing here is deliberate:
+  // catalog refresh catches the rejection and therefore cannot silently append
+  // guide.xml to the upstream guide set after an XMLTV provider failure.
   if (isGeneratedJustOneGuide(source)) {
-    return { channels, names, programmes, generatedByJustOne: true };
+    throw new Error("refusing generated JustOne guide as upstream XMLTV");
   }
 
   let match;
