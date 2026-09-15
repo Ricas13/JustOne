@@ -40,20 +40,30 @@ const STATIC_ALIAS_GROUPS = [
   ["foxny", "fox ny", "wnyw", "fox 5 ny", "fox 5 new york", "wnyw 5"],
   ["cw pix 11", "pix 11", "pix11", "wpix", "wpix 11"],
   ["my9tv", "my 9", "my9", "wwor", "wwor 9"],
+  ["fox", "fox network", "fox east", "fox national"],
+  ["cw", "cw network", "the cw"],
+  ["cbs", "cbs network"],
+  ["crime investigation", "crime plus investigation", "crime and investigation", "crime investigation network", "c i", "ci"],
   ["mgm", "mgm usa epix", "mgm plus", "mgm plus usa epix", "epix"],
   ["showtime 2", "showtime 2 sho2", "sho2"],
   ["showtime family zone", "showtime family zone sho family zone", "sho family zone"],
   ["showtime next", "showtime next sho next", "sho next"],
   ["tmc channel", "the movie channel", "tmc"],
   ["heroes and icons", "heroes and icons h and i", "h and i"],
-  ["investigation discovery", "investigation discovery id", "discovery id"],
+  ["investigation discovery", "investigation discovery id", "discovery id", "id network", "id"],
+  ["racer tv", "racer network", "mavtv", "mav tv"],
+  ["sky sports action", "sky sports nfl"],
+  ["spectrum sportsnet", "spectrum sports net"],
+  ["sky cinema select", "sky select"],
+  ["sky cinema animation", "sky animation"],
+  ["sky cinema sci fi horror", "sky cinema sci fi and horror", "sky cinema sci fi & horror", "sky sci fi horror", "sky scifi horror"],
+  ["tudn", "tudn network"],
+  ["tvi reality", "tvi reality 24 7", "tvi reality 24/7"],
   ["eleven sports 1", "dazn eleven 1", "dazn 1", "dazn 01"],
   ["eleven sports 2", "dazn eleven 2", "dazn 2", "dazn 02"],
   ["eleven sports 3", "dazn eleven 3", "dazn 3", "dazn 03"],
   ["eleven sports 4", "dazn eleven 4", "dazn 4", "dazn 04"],
   ["eleven sports 5", "dazn eleven 5", "dazn 5", "dazn 05"],
-  ["cw", "cw network", "the cw"],
-  ["cbs", "cbs network"],
 ];
 
 const STATIC_ALIAS_INDEX = (() => {
@@ -110,7 +120,9 @@ function canonicalToken(token) {
 
 function normalizedBase(value) {
   let base = normalize(strippedChannelName(cleanEventDecorations(value)));
-  base = base.replace(/\bgalavisi n\b/g, "galavision");
+  base = base
+    .replace(/\bgalavisi n\b/g, "galavision")
+    .replace(/\bgalavisi o n\b/g, "galavision");
   if (!base) return "";
   let tokens = base.split(" ").filter(Boolean);
   while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
@@ -192,6 +204,14 @@ function staticCountryCompatible(row, ref) {
   return !rowCountry || !refCountry || rowCountry === refCountry;
 }
 
+function tvgIdName(value) {
+  return String(value || "")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._-]+/g, " ")
+    .trim();
+}
+
 export function isEventLikeRow(row) {
   const value = `${row?.group || ""} ${row?.tvgName || ""} ${row?.name || ""}`;
   return EVENT_GROUP_RE.test(value) || EVENT_LIKE_RE.test(value) || Boolean(meaningfulBracket(value));
@@ -226,17 +246,26 @@ export function createDlhdMatcher(reference, aliases = {}) {
     const rawNames = [row?.tvgName, row?.name].filter(Boolean);
     const aliasName = aliases[normalize(strippedChannelName(rawNames[0] || ""))];
     if (aliasName) rawNames.push(aliasName);
-    return rawNames;
+    return [...new Set(rawNames)];
   }
 
   function match(row) {
     const rawNames = namesFor(row);
+    const staticNames = [...rawNames, tvgIdName(row?.tvgId)].filter(Boolean);
     const matches = new Map();
-    for (const value of rawNames) {
+
+    // TVG IDs are used only for exact static identity lookup. They never feed
+    // the event fuzzy matcher, so opaque IDs cannot accidentally create events.
+    for (const value of staticNames) {
       for (const key of keyVariants(value)) {
         for (const ref of staticIndex.get(key) || []) {
           if (staticCountryCompatible(row, ref)) matches.set(ref.id, ref);
         }
+      }
+    }
+
+    for (const value of rawNames) {
+      for (const key of keyVariants(value)) {
         // Event aliases intentionally do not country-filter because one event
         // may legitimately be carried by a channel from any territory.
         for (const ref of eventTitleIndex.get(key) || []) matches.set(ref.id, ref);
