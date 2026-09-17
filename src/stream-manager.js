@@ -48,6 +48,26 @@ function errorLabel(error) {
   return String(error?.message || error || "upstream failure");
 }
 
+const TS_PACKET_SIZE = 188;
+const TS_SYNC_CHECK_PACKETS = 3;
+
+function findTsSyncOffset(value) {
+  const data = Buffer.from(value || []);
+  const required = TS_PACKET_SIZE * TS_SYNC_CHECK_PACKETS;
+  if (data.length < required) return -1;
+  for (let offset = 0; offset < TS_PACKET_SIZE; offset += 1) {
+    let ok = true;
+    for (let packet = 0; packet < TS_SYNC_CHECK_PACKETS; packet += 1) {
+      if (data[offset + packet * TS_PACKET_SIZE] !== 0x47) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return offset;
+  }
+  return -1;
+}
+
 export class StreamManager {
   constructor({
     fetchImpl = globalThis.fetch,
@@ -233,9 +253,13 @@ export class StreamManager {
     relay.clients.add(client);
     if (relay.headers) {
       this.#sendHeaders(client, relay.headers);
-      for (const chunk of relay.replay) {
-        if (res.destroyed || res.writableEnded) break;
-        try { res.write(chunk); } catch { break; }
+      const replay = relay.replay.length
+        ? Buffer.concat(relay.replay, relay.replayBytes)
+        : Buffer.alloc(0);
+      const syncOffset = findTsSyncOffset(replay);
+      const alignedReplay = syncOffset >= 0 ? replay.subarray(syncOffset) : replay;
+      if (alignedReplay.length && !res.destroyed && !res.writableEnded) {
+        try { res.write(alignedReplay); } catch {}
       }
     }
 
@@ -509,7 +533,7 @@ export class StreamManager {
       const reader = response.body.getReader();
       const chunks = [];
       let buffered = 0;
-      const target = Math.max(1, Number(this.options.startupBufferBytes || 1));
+      const target = Math.max(TS_PACKET_SIZE * TS_SYNC_CHECK_PACKETS, Number(this.options.startupBufferBytes || 1));
       while (buffered < target) {
         const part = await reader.read();
         if (part.done) break;
@@ -533,10 +557,16 @@ export class StreamManager {
         try { await reader.cancel(); } catch {}
         throw new UpstreamError(`upstream returned non-media content-type ${contentType}`, { code: "invalid_media" });
       }
+      const firstChunk = Buffer.concat(chunks, buffered);
+      const syncOffset = findTsSyncOffset(firstChunk);
+      if (syncOffset < 0) {
+        try { await reader.cancel(); } catch {}
+        throw new UpstreamError("upstream did not contain valid MPEG-TS sync packets", { code: "invalid_mpegts" });
+      }
       return {
         controller,
         reader,
-        firstChunk: Buffer.concat(chunks, buffered),
+        firstChunk: syncOffset ? firstChunk.subarray(syncOffset) : firstChunk,
         contentType,
       };
     } catch (error) {
