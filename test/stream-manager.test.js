@@ -348,3 +348,105 @@ test("client disconnect during startup releases the provider slot promptly", asy
     return status.activeRelays === 0 && status.sources[0].activeStreams === 0 && upstreamClosed;
   }, 700);
 });
+
+
+test("idle grace yields a one-connection account immediately when a different channel is requested", async (t) => {
+  const stats = { aClosed: false, bRequests: 0 };
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [
+    { id: "a", tvgId: "justone.a", name: "Channel A", variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/a", quality: "HD" }] },
+    { id: "b", tvgId: "justone.b", name: "Channel B", variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/b", quality: "HD" }] },
+  ] };
+  const handler = (req, res) => {
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    const chunk = Buffer.from((req.url === "/a" ? "A" : "B").repeat(188));
+    res.write(chunk);
+    const timer = setInterval(() => res.write(chunk), 20);
+    if (req.url === "/b") stats.bRequests += 1;
+    res.once("close", () => {
+      clearInterval(timer);
+      if (req.url === "/a") stats.aClosed = true;
+    });
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { relayGraceMs: 1000, startupQueueTimeoutMs: 600 },
+  });
+  t.after(() => h.cleanup());
+
+  const a = await openStream(`${h.proxyBase}/stream/a.ts`);
+  await a.reader.cancel();
+
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.relays.some((row) => row.channelId === "a" && row.viewers === 0 && row.status === "grace");
+  });
+
+  const started = Date.now();
+  const b = await openStream(`${h.proxyBase}/stream/b.ts`);
+  assert.ok(Date.now() - started < 600, "new channel should not wait for the full idle grace period");
+  assert.equal(stats.bRequests, 1);
+  await waitFor(() => stats.aClosed);
+  const status = await h.manager.status();
+  assert.equal(status.sources[0].activeStreams, 1);
+  assert.equal(status.relays.find((row) => row.channelId === "b")?.account, "Account 1");
+  await b.reader.cancel();
+});
+
+test("failover window bounds slow replacement startup attempts", async (t) => {
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "line2", name: "Line 2", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [
+      { sourceId: "line1", order: 0, url: "UPSTREAM/first", quality: "HD" },
+      { sourceId: "line2", order: 1, url: "UPSTREAM/slow", quality: "HD" },
+    ],
+  }] };
+  const handler = (req, res) => {
+    if (req.url === "/first") {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      res.end(Buffer.from("A".repeat(188)));
+      return;
+    }
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    res.flushHeaders();
+    // Deliberately never send media bytes; the failover budget must abort this attempt.
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: {
+      startupBufferBytes: 188,
+      startupTimeoutMs: 1200,
+      failoverWindowMs: 180,
+      failoverKeepaliveMs: 30,
+    },
+  });
+  t.after(() => h.cleanup());
+
+  const response = await fetch(`${h.proxyBase}/stream/bbc.ts`);
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const first = await reader.read();
+  assert.equal(first.done, false);
+
+  const started = Date.now();
+  const finalStatus = await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.activeRelays === 0
+      && status.recentEvents.some((row) => row.type === "failover-exhausted")
+      ? status
+      : null;
+  }, 800);
+  assert.ok(Date.now() - started < 700, "failover must respect the configured total window");
+  assert.ok(finalStatus.recentEvents.some((row) => row.type === "upstream-failure" && row.account === "Account 2"));
+  try { await reader.cancel(); } catch {}
+});
