@@ -11,7 +11,7 @@ const DEFAULTS = {
   startupBufferBytes: 256 * 1024,
   replayBufferBytes: 1024 * 1024,
   failoverKeepaliveMs: 500,
-  userAgent: "JustOne Stream Proxy/1.0",
+  userAgent: "VLC/3.0.20 LibVLC/3.0.20",
 };
 
 class UpstreamError extends Error {
@@ -469,6 +469,13 @@ export class StreamManager {
       if (!buffered) {
         try { await reader.cancel(); } catch {}
         throw new UpstreamError("upstream closed before first media bytes", { code: "empty" });
+      }
+      if (buffered < target) {
+        try { await reader.cancel(); } catch {}
+        throw new UpstreamError(
+          `upstream ended during startup buffer (${buffered}/${target} bytes)`,
+          { code: "short_startup" }
+        );
       }
       const contentType = cleanContentType(response.headers.get("content-type"));
       if (/^(?:text\/html|application\/json|text\/plain)\b/i.test(contentType)) {
