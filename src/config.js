@@ -49,7 +49,7 @@ export const config = {
     includeSchedule: boolEnv("DLHD_INCLUDE_SCHEDULE", true),
     includeUpcoming: boolEnv("DLHD_INCLUDE_UPCOMING", true),
     failClosed: boolEnv("DLHD_FAIL_CLOSED", true),
-    staticCountries: csvEnv("DLHD_STATIC_COUNTRIES", "GB,PT,US"),
+    staticCountries: csvEnv("DLHD_STATIC_COUNTRIES", "ALL"),
   },
   dispatcharr: {
     url: cleanUrl(process.env.DISPATCHARR_URL),
