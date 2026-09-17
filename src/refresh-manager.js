@@ -65,14 +65,11 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
           const finalized = finalizeSnapshot(raw, state, { providerOrders });
           result = finalized.snapshot;
 
-          // refreshCatalog builds static EPG from real provider XMLTV. The final
-          // pass then replaces every event XMLTV row with the final JustOne event
-          // identity: concise event title, event-only time slot and event artwork.
+          // refreshCatalog builds static EPG from provider XMLTV and fills uncovered
+          // linear time slots from the DLHD schedule. The final pass synchronizes
+          // only genuine standalone event-channel metadata/artwork.
           const guide = syncGuideEvents(await loadGuide(), result.channels);
           await saveGuide(guide);
-          if (finalized.addedEvents.length) {
-            console.log(`[refresh ${id}] linked-channel fallback added ${finalized.addedEvents.length} playable DLHD event(s)`);
-          }
           console.log(`[refresh ${id}] event metadata synchronized for ${result.channels.filter((x) => x.referenceKind === "event").length} event channel(s)`);
           await saveSnapshot(result);
 
@@ -104,7 +101,7 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
             sourceMode: result.sourceMode || sourceMode,
             matchedReferences: result.dlhdStatus?.matchedReferences ?? null,
             totalReferences: result.dlhdStatus?.totalReferences ?? null,
-            linkedChannelFallbackEvents: result.dlhdStatus?.linkedChannelFallbackEvents ?? 0,
+            linearScheduleEvents: result.dlhdStatus?.linearScheduleEvents ?? result.dlhdReference?.linearEvents?.length ?? 0,
             lineupOrdering: result.lineupOrdering || null,
           },
         };
