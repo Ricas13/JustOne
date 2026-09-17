@@ -314,3 +314,37 @@ test("failover sends TS keepalives while replacement upstream is still starting"
   assert.equal(status.relays[0].failovers, 1);
   await reader.cancel();
 });
+
+
+test("client disconnect during startup releases the provider slot promptly", async (t) => {
+  let upstreamClosed = false;
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/slow", quality: "HD" }],
+  }] };
+  const handler = (req, res) => {
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    res.flushHeaders();
+    req.once("close", () => { upstreamClosed = true; });
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupTimeoutMs: 2000, relayGraceMs: 40, startupBufferBytes: 188 },
+  });
+  t.after(() => h.cleanup());
+
+  const request = http.get(`${h.proxyBase}/stream/bbc.ts`);
+  request.on("error", () => {});
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  request.destroy();
+
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.activeRelays === 0 && status.sources[0].activeStreams === 0 && upstreamClosed;
+  }, 700);
+});
