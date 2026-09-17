@@ -1,6 +1,6 @@
 # JustOne Catalog
 
-JustOne is an **IPTV catalogue/control plane**. It does not proxy, remux, transcode or play video. There is no FFmpeg playback path in JustOne.
+JustOne is an **IPTV catalogue/control plane** with an optional internal MPEG-TS byte proxy. It does not remux or transcode video, and there is still no FFmpeg playback path.
 
 ## Desired lineup
 
@@ -38,16 +38,18 @@ Provider B / line 1 (huge M3U) ─────┤
                              JustOne Catalog
                        stream / match / discard
                                     │
-                      matched channels/events only
+                     canonical channels + variants
                                     │
-                   Docker-internal M3Us + XMLTV
+                         Native stream allocator
+                    maxStreams / sharing / failover
                                     │
-                                    ▼
-                              Dispatcharr
+                         opaque internal M3U
                                     │
                                     ▼
                                 Jellyfin
 ```
+
+Dispatcharr integration remains available as a legacy/rollback path while the native proxy is being proven.
 
 For events, JustOne first matches the event title. It can also use the specific real channels DLHD associates with the event, while generic names such as `Event Stream`, `Event SD Stream`, `Event PPV`, `Channel Not Listed` and `MultiFeed` are deliberately not reused across events.
 
@@ -91,7 +93,7 @@ Provider B / account 1 / backup HD
 ...
 ```
 
-Dispatcharr remains responsible for live connection limits, buffering detection and failover.
+When the native proxy is enabled, JustOne enforces each source's `maxStreams`, shares one upstream connection between viewers of the same canonical channel, waits for real media bytes before committing a startup source, and fails over through the existing variant order when an upstream errors, stalls or ends. Dispatcharr can remain configured as a compatibility/rollback path.
 
 ## Admin at `https://resolver.vpn4u.cc`
 
@@ -129,27 +131,52 @@ Direct host access remains loopback-only:
 http://127.0.0.1:8090/admin
 ```
 
-## M3U/XMLTV remain internal-only
+## M3U/XMLTV/streams remain internal-only
 
-M3U and XMLTV output stays on port `8091` inside `media_net` only.
+M3U, XMLTV and native proxy streams stay on port `8091` inside `media_net` only.
 
 There is deliberately:
 
 - no host port mapping for `8091`
 - no Traefik router for `8091`
-- no public M3U endpoint
+- no public M3U or native stream endpoint
+- no provider URL in the proxy M3U
 
 Typical internal URLs are:
 
 ```text
 http://justone-catalog:8091/m3u/source/<source-id>.m3u
 http://justone-catalog:8091/m3u/master.m3u
+http://justone-catalog:8091/m3u/proxy.m3u
+http://justone-catalog:8091/stream/<channel-id>.ts
 http://justone-catalog:8091/epg/guide.xml
 ```
 
-`GET /api/internal-outputs` returns the generated internal URLs.
+`GET /api/internal-outputs` returns the generated internal URLs. When the native proxy is enabled, `INTERNAL_KEY` is mandatory and is appended to the internal bearer URLs.
 
 Do **not** publish `8091` through Docker, Traefik or Cloudflare.
+
+## Native stream proxy
+
+The proxy is intentionally staged so existing Dispatcharr playback is not replaced in one step.
+
+1. Set a long random `INTERNAL_KEY`.
+2. Set `STREAM_PROXY_ENABLED=true` and keep `STREAM_PROXY_MASTER_ENABLED=false`.
+3. Use the `proxy` URL returned by `GET /api/internal-outputs` (or the **Copy proxy M3U** button) as a test Jellyfin tuner.
+4. Verify playback and the **Live stream proxy** admin panel. It shows the canonical channel, provider/account, viewer count, bitrate, quality, failover count, and each account's active/max upstream connections.
+5. After the proxy feed is proven, set `STREAM_PROXY_MASTER_ENABLED=true`. From then on `/m3u/master.m3u` emits one opaque JustOne relay URL per canonical channel.
+
+The proxy is a byte relay, not a transcoder. Its stability controls are:
+
+- **startup validation:** Jellyfin does not receive HTTP 200 until an upstream has returned real media bytes
+- **shared relays:** multiple Jellyfin viewers of one channel consume one provider connection
+- **connection limits:** `maxStreams` is enforced per configured provider account
+- **idle grace:** short Jellyfin probe/disconnect/reconnect cycles reuse the same upstream relay
+- **stall detection:** an upstream that stops producing bytes is aborted
+- **failover:** failed variants are cooled down and the next available ordered account/variant is tried
+- **credential isolation:** provider stream URLs and credentials are never emitted in the proxy M3U or live status API
+
+The first version supports direct HTTP MPEG-TS-style live streams. HLS manifests (`.m3u8`) are deliberately not rewritten yet; if a candidate is HLS it is treated as unsupported and the allocator tries the next candidate.
 
 ## Easy playlist management
 
@@ -270,6 +297,7 @@ Admin/API listener (`8090`):
 - `GET /api/catalog`
 - `GET /api/dlhd`
 - `GET /api/internal-outputs`
+- `GET /api/streams`
 - `GET/POST /api/sources`
 - `POST /api/sources/bulk`
 - `PATCH/DELETE /api/sources/:id`
@@ -284,8 +312,10 @@ Internal listener (`8091`, `media_net` only):
 
 - `GET /m3u/source/:sourceId.m3u`
 - `GET /m3u/master.m3u`
+- `GET /m3u/proxy.m3u`
+- `GET|HEAD /stream/:channelId.ts`
 - `GET /epg/guide.xml`
 
 ## Still deliberately absent
 
-JustOne still contains no DLHD playback resolver, video proxy, FFmpeg remuxing, playback state machine, warm standby or stream-health probing. DLHD determines **what should exist**; your IPTV providers and Dispatcharr determine **how it plays**.
+JustOne still contains no DLHD playback resolver, FFmpeg remuxing/transcoding, HLS manifest/segment rewriting, warm-standby upstream, timeshift buffer or DVR engine. The native proxy deliberately remains a small live MPEG-TS relay/allocator rather than becoming another full IPTV server.
