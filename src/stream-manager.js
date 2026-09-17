@@ -324,7 +324,7 @@ export class StreamManager {
           );
           keepaliveTimer.unref?.();
         }
-        connection = await this.#openCandidate(candidate);
+        connection = await this.#openCandidate(candidate, relay);
         if (relay.stopRequested) break;
 
         relay.current = {
@@ -431,8 +431,9 @@ export class StreamManager {
     else this.sourceUsage.set(key, used - 1);
   }
 
-  async #openCandidate(candidate) {
+  async #openCandidate(candidate, relay = null) {
     const controller = new AbortController();
+    if (relay) relay.abortController = controller;
     let timer;
     try {
       timer = setTimeout(() => controller.abort(), Math.max(1, this.options.startupTimeoutMs));
@@ -549,8 +550,9 @@ export class StreamManager {
   #rememberReplay(relay, data) {
     const limit = Math.max(0, Number(this.options.replayBufferBytes || 0));
     if (!limit || !data.length) return;
-    relay.replay.push(data);
-    relay.replayBytes += data.length;
+    const kept = data.length > limit ? data.subarray(data.length - limit) : data;
+    relay.replay.push(kept);
+    relay.replayBytes += kept.length;
     while (relay.replay.length > 1 && relay.replayBytes > limit) {
       const removed = relay.replay.shift();
       relay.replayBytes -= removed.length;
