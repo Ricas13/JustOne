@@ -54,6 +54,9 @@ export const config = {
     notFoundCooldownMs: intEnv("STREAM_NOT_FOUND_COOLDOWN_MS", 300000),
     sourceFailureCooldownMs: intEnv("STREAM_SOURCE_FAILURE_COOLDOWN_MS", 60000),
     maxClientBufferBytes: intEnv("STREAM_MAX_CLIENT_BUFFER_BYTES", 8 * 1024 * 1024),
+    startupBufferBytes: intEnv("STREAM_STARTUP_BUFFER_BYTES", 256 * 1024),
+    replayBufferBytes: intEnv("STREAM_REPLAY_BUFFER_BYTES", 1024 * 1024),
+    failoverKeepaliveMs: intEnv("STREAM_FAILOVER_KEEPALIVE_MS", 500),
   },
   dlhd: {
     enabled: boolEnv("DLHD_FILTER_ENABLED", true),
