@@ -7,8 +7,8 @@ if (!config.adminKey) {
   console.error("ADMIN_KEY is required because the admin/API listener may be exposed through Traefik.");
   process.exit(1);
 }
-if (config.streamProxy.enabled && !config.internalKey) {
-  console.error("INTERNAL_KEY is required when STREAM_PROXY_ENABLED=true so internal M3U and stream URLs remain bearer-protected.");
+if (config.streamProxy.enabled && !config.streamProxy.key) {
+  console.error("STREAM_PROXY_KEY (or legacy INTERNAL_KEY) is required when STREAM_PROXY_ENABLED=true so proxy M3U and stream URLs remain bearer-protected.");
   process.exit(1);
 }
 
