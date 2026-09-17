@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalIdentity, countryOf, isBackup, qualityOf, strippedChannelName } from "../src/identity.js";
+import { canonicalIdentity, countryGroup, countryName, countryOf, isBackup, qualityOf, strippedChannelName } from "../src/identity.js";
 
 test("quality and backup variants collapse to one canonical channel", () => {
   const names = ["UK: BBC One FHD", "BBC One HD", "BBC One Backup HD", "BBC One SD"];
@@ -26,4 +26,16 @@ test("explicit foreign channel identity outranks a target-country provider group
   assert.equal(countryOf({ name:"MTV Poland", group:"USA Entertainment" }), "PL");
   assert.equal(countryOf({ name:"Star TV Turkey", group:"PT General" }), "TR");
   assert.equal(countryOf({ name:"ESPN 1 NL", group:"USA Sports" }), "NL");
+});
+
+
+test("global country detection recognises additional DLHD countries without treating interior short words as country codes", () => {
+  assert.equal(countryOf({ name:"Canal+ Foot France" }), "FR");
+  assert.equal(countryOf({ name:"beIN Sports 2 Malaysia" }), "MY");
+  assert.equal(countryOf({ name:"ON Sport Max Egypt" }), "EG");
+  assert.equal(countryOf({ name:"Win+ Futbol Colombia" }), "CO");
+  assert.equal(countryOf({ name:"Sports In Motion", group:"General" }), "");
+  assert.equal(countryName("FR"), "France");
+  assert.equal(countryGroup("FR"), "TV | France");
+  assert.equal(countryGroup("GB"), "TV | UK");
 });
