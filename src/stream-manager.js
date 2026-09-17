@@ -429,6 +429,7 @@ export class StreamManager {
   }
 
   #selectAndReserve(relay, state, attempted = new Set()) {
+    const saturated = [];
     for (const row of this.#eligibleCandidates(relay, state)) {
       const key = this.#variantKey(relay, row.candidate);
       if (!relay.everStarted && attempted.has(key)) continue;
@@ -436,11 +437,17 @@ export class StreamManager {
       const used = this.sourceUsage.get(sourceId) || 0;
       const maxStreams = Math.max(1, Number(row.source.maxStreams || row.candidate.maxStreams || 1));
       if (used >= maxStreams) {
-        this.#preemptIdleRelay(sourceId, relay.channelId);
+        saturated.push(sourceId);
         continue;
       }
       this.sourceUsage.set(sourceId, used + 1);
       return row;
+    }
+
+    // Preserve reconnect grace whenever another account is genuinely free.
+    // Only reclaim an idle relay after every eligible candidate was saturated.
+    for (const sourceId of saturated) {
+      if (this.#preemptIdleRelay(sourceId, relay.channelId)) break;
     }
     return null;
   }
