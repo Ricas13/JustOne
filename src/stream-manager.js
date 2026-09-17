@@ -31,11 +31,6 @@ function iso(ms) {
   return ms ? new Date(ms).toISOString() : null;
 }
 
-function cleanContentType(value) {
-  const raw = String(value || "").trim();
-  return raw || "video/mp2t";
-}
-
 function looksLikeHls(response, candidate) {
   const type = String(response.headers.get("content-type") || "").toLowerCase();
   const url = String(candidate?.url || "").toLowerCase();
@@ -552,11 +547,6 @@ export class StreamManager {
           { code: "short_startup" }
         );
       }
-      const contentType = cleanContentType(response.headers.get("content-type"));
-      if (/^(?:text\/html|application\/json|text\/plain)\b/i.test(contentType)) {
-        try { await reader.cancel(); } catch {}
-        throw new UpstreamError(`upstream returned non-media content-type ${contentType}`, { code: "invalid_media" });
-      }
       const firstChunk = Buffer.concat(chunks, buffered);
       const syncOffset = findTsSyncOffset(firstChunk);
       if (syncOffset < 0) {
@@ -567,7 +557,7 @@ export class StreamManager {
         controller,
         reader,
         firstChunk: syncOffset ? firstChunk.subarray(syncOffset) : firstChunk,
-        contentType,
+        contentType: "video/mp2t",
       };
     } catch (error) {
       controller.abort();
