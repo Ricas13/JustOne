@@ -71,7 +71,21 @@ for (const [code, name, aliases, codes] of COUNTRY_DEFINITIONS) {
   }
 }
 COUNTRY_NAME_ALIASES.sort((a, b) => b[0].length - a[0].length);
-const COUNTRY_EDGE_ALIAS_LIST = [...COUNTRY_EDGE_ALIASES].sort((a, b) => b.length - a.length);
+const COUNTRY_EDGE_PREFIXES = new Map();
+const COUNTRY_EDGE_SUFFIXES = new Map();
+for (const alias of COUNTRY_EDGE_ALIASES) {
+  const tokens = alias.split(" ").filter(Boolean);
+  if (!tokens.length) continue;
+  const prefixRows = COUNTRY_EDGE_PREFIXES.get(tokens[0]) || [];
+  prefixRows.push(alias);
+  COUNTRY_EDGE_PREFIXES.set(tokens[0], prefixRows);
+  const suffixRows = COUNTRY_EDGE_SUFFIXES.get(tokens[tokens.length - 1]) || [];
+  suffixRows.push(alias);
+  COUNTRY_EDGE_SUFFIXES.set(tokens[tokens.length - 1], suffixRows);
+}
+for (const rows of [...COUNTRY_EDGE_PREFIXES.values(), ...COUNTRY_EDGE_SUFFIXES.values()]) {
+  rows.sort((a, b) => b.length - a.length);
+}
 
 const PREFIX_RE = new RegExp(
   `^\\s*(?:${[...COUNTRY_CODE_TOKEN.keys()].sort((a,b)=>b.length-a.length).join("|")})\\s*[:|\\-]\\s*`,
@@ -104,16 +118,24 @@ function countryFromId(value) {
 export function stripCountryDecoration(value) {
   let base = normalize(value);
   if (!base) return "";
-  const aliases = COUNTRY_EDGE_ALIAS_LIST;
+
   let changed = true;
   while (changed) {
     changed = false;
-    for (const alias of aliases) {
+    const tokens = base.split(" ").filter(Boolean);
+    if (tokens.length <= 1) break;
+
+    for (const alias of COUNTRY_EDGE_PREFIXES.get(tokens[0]) || []) {
       if (base.startsWith(`${alias} `) && base.length > alias.length) {
         base = base.slice(alias.length + 1).trim();
         changed = true;
         break;
       }
+    }
+    if (changed) continue;
+
+    const last = tokens[tokens.length - 1];
+    for (const alias of COUNTRY_EDGE_SUFFIXES.get(last) || []) {
       if (base.endsWith(` ${alias}`) && base.length > alias.length) {
         base = base.slice(0, -(alias.length + 1)).trim();
         changed = true;
