@@ -172,14 +172,47 @@ async function loadDlhdReference(previous) {
     }
   }
 
-  const fresh = buildDlhdReference({
+  const mode = [channelsMode, scheduleMode].filter((x) => x !== "disabled").join("+") || "none";
+  const freshStatic = buildDlhdReference({
     channels: channelsRaw || [],
-    schedule: scheduleRaw || { events: [] },
-    mode: [channelsMode, scheduleMode].filter((x) => x !== "disabled").join("+") || "none",
+    schedule: { events: [] },
+    mode,
   });
-  const channels = config.dlhd.include247 ? (channelsRaw ? fresh.channels : old.channels || []) : [];
-  let events = config.dlhd.includeSchedule ? (scheduleRaw ? fresh.events : old.events || []) : [];
-  let linearEvents = config.dlhd.includeSchedule ? (scheduleRaw ? fresh.linearEvents || [] : old.linearEvents || []) : [];
+  const channels = config.dlhd.include247
+    ? (channelsRaw ? freshStatic.channels : old.channels || [])
+    : [];
+
+  // Classify schedule rows against the effective static catalogue, including a
+  // last-known-good static list when the 24/7 endpoint is temporarily down.
+  // This prevents a partial DLHD outage from turning every linear event into a
+  // standalone event channel.
+  const effectiveStaticInput = channels.map((channel) => ({
+    id: channel.dlhdId || channel.id,
+    name: channel.name,
+    logo: channel.logo,
+  }));
+  const storedSchedule = [
+    ...(old.events || []),
+    ...(old.linearEvents || []),
+  ].map((event) => ({
+    id: event.dlhdId || event.id,
+    title: event.name,
+    category: event.category,
+    time: event.time,
+    start: event.start,
+    end: event.end,
+    upcoming: event.upcoming === true,
+    channels: event.linkedChannels || [],
+  }));
+  const scheduleReference = config.dlhd.includeSchedule
+    ? buildDlhdReference({
+        channels: effectiveStaticInput,
+        schedule: scheduleRaw || { events: storedSchedule },
+        mode,
+      })
+    : { events: [], linearEvents: [] };
+  let events = scheduleReference.events || [];
+  let linearEvents = scheduleReference.linearEvents || [];
   if (!config.dlhd.includeUpcoming) {
     events = events.filter((event) => !event.upcoming);
     linearEvents = linearEvents.filter((event) => !event.upcoming);
@@ -195,7 +228,7 @@ async function loadDlhdReference(previous) {
   }
 
   return {
-    reference: { generatedAt: new Date().toISOString(), mode: fresh.mode, channels, events, linearEvents },
+    reference: { generatedAt: new Date().toISOString(), mode, channels, events, linearEvents },
     status: {
       enabled: true,
       channels: channels.length,
@@ -207,7 +240,7 @@ async function loadDlhdReference(previous) {
       channelsError,
       scheduleError,
       retainedChannels: !channelsRaw && channels.length > 0,
-      retainedSchedule: !scheduleRaw && events.length > 0,
+      retainedSchedule: !scheduleRaw && scheduleReferenceCount > 0,
     },
   };
 }
