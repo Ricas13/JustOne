@@ -94,13 +94,23 @@ function q(value) {
   return String(value ?? "").replace(/["\r\n]/g, " ").trim();
 }
 
-export function buildM3u(snapshot, { sourceId = null, guideUrl = "", publicGuideUrl = "" } = {}) {
+export function buildM3u(snapshot, { sourceId = null, guideUrl = "", publicGuideUrl = "", streamUrlForChannel = null } = {}) {
   const xmltv = guideUrl || publicGuideUrl;
   const header = xmltv
     ? `#EXTM3U url-tvg="${q(xmltv)}" x-tvg-url="${q(xmltv)}"`
     : "#EXTM3U";
   const lines = [header];
   for (const channel of snapshot.channels || []) {
+    if (!sourceId && typeof streamUrlForChannel === "function") {
+      const streamUrl = streamUrlForChannel(channel);
+      if (!streamUrl) continue;
+      lines.push(
+        `#EXTINF:-1 tvg-id="${q(channel.tvgId)}" tvg-name="${q(channel.name)}" tvg-logo="${q(channel.logo)}" tvg-chno="${q(channel.number)}" group-title="${q(channel.group)}",${q(channel.name)}`
+      );
+      lines.push(streamUrl);
+      continue;
+    }
+
     const variants = (channel.variants || []).filter((v) => !sourceId || v.sourceId === sourceId);
     for (const variant of variants) {
       const rank = String(variant.order + 1).padStart(3, "0");
