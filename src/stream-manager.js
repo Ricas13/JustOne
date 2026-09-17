@@ -195,6 +195,7 @@ export class StreamManager {
       clients: new Set(),
       status: "starting",
       current: null,
+      reservedSourceId: null,
       createdAt: now,
       startedAt: 0,
       upstreamStartedAt: 0,
@@ -273,6 +274,12 @@ export class StreamManager {
       }
 
       const state = await this.loadState();
+      if (relay.everStarted && failoverStartedAt
+        && this.now() - failoverStartedAt >= this.options.failoverWindowMs) {
+        this.#event("failover-exhausted", relay, null, "failover deadline exceeded");
+        this.#failClients(relay, null, "upstream unavailable");
+        break;
+      }
       const selection = this.#selectAndReserve(relay, state, startupAttempted);
       if (!selection) {
         if (!relay.everStarted) {
@@ -301,7 +308,8 @@ export class StreamManager {
           break;
         }
         relay.status = "failover";
-        if (this.now() - relay.lastKeepaliveAt >= this.options.failoverKeepaliveMs) {
+        if (this.options.failoverKeepaliveMs > 0
+          && this.now() - relay.lastKeepaliveAt >= this.options.failoverKeepaliveMs) {
           this.#broadcastKeepalive(relay);
         }
         await sleep(250);
@@ -313,6 +321,7 @@ export class StreamManager {
       startupAttempted.add(variantKey);
       relay.attempts += 1;
       relay.status = relay.everStarted ? "failover" : "starting";
+      relay.reservedSourceId = String(source.id);
 
       let connection = null;
       let keepaliveTimer = null;
@@ -324,7 +333,15 @@ export class StreamManager {
           );
           keepaliveTimer.unref?.();
         }
-        connection = await this.#openCandidate(candidate, relay);
+        let openTimeoutMs = this.options.startupTimeoutMs;
+        if (relay.everStarted && failoverStartedAt) {
+          const remaining = this.options.failoverWindowMs - (this.now() - failoverStartedAt);
+          if (remaining <= 0) {
+            throw new UpstreamError("failover deadline exceeded", { code: "failover_timeout" });
+          }
+          openTimeoutMs = Math.max(1, Math.min(openTimeoutMs, remaining));
+        }
+        connection = await this.#openCandidate(candidate, relay, openTimeoutMs);
         if (relay.stopRequested) break;
 
         relay.current = {
@@ -391,6 +408,7 @@ export class StreamManager {
         connection?.controller?.abort();
         if (relay.abortController === connection?.controller) relay.abortController = null;
         this.#releaseSource(source.id);
+        if (relay.reservedSourceId === String(source.id)) relay.reservedSourceId = null;
         if (relay.current?.sourceId === String(source.id)) relay.current = null;
       }
     }
@@ -417,11 +435,36 @@ export class StreamManager {
       const sourceId = String(row.source.id);
       const used = this.sourceUsage.get(sourceId) || 0;
       const maxStreams = Math.max(1, Number(row.source.maxStreams || row.candidate.maxStreams || 1));
-      if (used >= maxStreams) continue;
+      if (used >= maxStreams) {
+        this.#preemptIdleRelay(sourceId, relay.channelId);
+        continue;
+      }
       this.sourceUsage.set(sourceId, used + 1);
       return row;
     }
     return null;
+  }
+
+  #preemptIdleRelay(sourceId, requestingChannelId) {
+    const key = String(sourceId);
+    for (const other of this.relays.values()) {
+      if (other.ended || other.stopRequested || other.clients.size || !other.graceTimer) continue;
+      const occupiedBy = String(other.current?.sourceId || other.reservedSourceId || "");
+      if (occupiedBy !== key) continue;
+
+      other.stopRequested = true;
+      clearTimeout(other.graceTimer);
+      other.graceTimer = null;
+      other.abortController?.abort();
+      this.#event(
+        "idle-relay-preempted",
+        other,
+        null,
+        `released idle account capacity for channel ${requestingChannelId}`
+      );
+      return true;
+    }
+    return false;
   }
 
   #releaseSource(sourceId) {
@@ -431,12 +474,12 @@ export class StreamManager {
     else this.sourceUsage.set(key, used - 1);
   }
 
-  async #openCandidate(candidate, relay = null) {
+  async #openCandidate(candidate, relay = null, timeoutMs = this.options.startupTimeoutMs) {
     const controller = new AbortController();
     if (relay) relay.abortController = controller;
     let timer;
     try {
-      timer = setTimeout(() => controller.abort(), Math.max(1, this.options.startupTimeoutMs));
+      timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
       timer.unref?.();
       const response = await this.fetchImpl(candidate.url, {
         method: "GET",
@@ -672,6 +715,7 @@ export class StreamManager {
     relay.ended = true;
     relay.status = "ended";
     relay.current = null;
+    relay.reservedSourceId = null;
     if (this.relays.get(relay.channelId) === relay) this.relays.delete(relay.channelId);
   }
 }
