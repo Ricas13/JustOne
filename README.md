@@ -168,12 +168,15 @@ The proxy is intentionally staged so existing Dispatcharr playback is not replac
 
 The proxy is a byte relay, not a transcoder. Its stability controls are:
 
-- **startup validation:** Jellyfin does not receive HTTP 200 until an upstream has returned real media bytes
+- **startup validation:** Jellyfin does not receive HTTP 200 until an upstream has filled a small real-media startup buffer
+- **replay buffer:** new viewers receive a bounded recent TS window instead of joining at an arbitrary packet boundary
 - **shared relays:** multiple Jellyfin viewers of one channel consume one provider connection
 - **connection limits:** `maxStreams` is enforced per configured provider account
 - **idle grace:** short Jellyfin probe/disconnect/reconnect cycles reuse the same upstream relay
 - **stall detection:** an upstream that stops producing bytes is aborted
 - **failover:** failed variants are cooled down and the next available ordered account/variant is tried
+- **failover keepalive:** valid MPEG-TS null packets keep the established Jellyfin HTTP stream alive while a replacement upstream is opening
+- **provider compatibility:** upstream requests use a VLC user agent by default and can be overridden with `STREAM_USER_AGENT`
 - **credential isolation:** provider stream URLs and credentials are never emitted in the proxy M3U or live status API
 
 The first version supports direct HTTP MPEG-TS-style live streams. HLS manifests (`.m3u8`) are deliberately not rewritten yet; if a candidate is HLS it is treated as unsupported and the allocator tries the next candidate.
