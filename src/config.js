@@ -57,6 +57,7 @@ export const config = {
     startupBufferBytes: intEnv("STREAM_STARTUP_BUFFER_BYTES", 256 * 1024),
     replayBufferBytes: intEnv("STREAM_REPLAY_BUFFER_BYTES", 1024 * 1024),
     failoverKeepaliveMs: intEnv("STREAM_FAILOVER_KEEPALIVE_MS", 500),
+    userAgent: String(process.env.STREAM_USER_AGENT || "VLC/3.0.20 LibVLC/3.0.20"),
   },
   dlhd: {
     enabled: boolEnv("DLHD_FILTER_ENABLED", true),
