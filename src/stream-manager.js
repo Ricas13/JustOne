@@ -417,6 +417,11 @@ export class StreamManager {
         if (relay.stopRequested) break;
         this.#markFailure(relay, candidate, source, error);
         if (!relay.everStarted) continue;
+        // Do not let a viewer joining during/after failover replay stale bytes
+        // from the failed upstream. Existing viewers keep their open stream and
+        // receive TS keepalives while the replacement source is selected.
+        relay.replay = [];
+        relay.replayBytes = 0;
         if (!relay.clients.size) break;
         if (!failoverStartedAt) failoverStartedAt = this.now();
       } finally {
