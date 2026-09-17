@@ -48,3 +48,10 @@ test("country decoration stripping removes complete edge countries without damag
   assert.equal(stripCountryDecoration("South Park"), "south park");
   assert.equal(stripCountryDecoration("North Sports Network"), "north sports network");
 });
+
+
+test("explicit edge country codes outrank ambiguous country-name words", () => {
+  assert.equal(countryOf({ name:"Georgia Bulldogs USA" }), "US");
+  assert.equal(countryOf({ name:"Jordan Sports USA" }), "US");
+  assert.equal(countryOf({ name:"Georgia Public TV" }), "GE");
+});
