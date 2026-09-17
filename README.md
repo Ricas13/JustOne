@@ -153,7 +153,7 @@ http://justone-catalog:8091/stream/<channel-id>.ts
 http://justone-catalog:8091/epg/guide.xml
 ```
 
-`GET /api/internal-outputs` returns the generated internal URLs. When the native proxy is enabled, `INTERNAL_KEY` is mandatory and is appended to the internal bearer URLs.
+`GET /api/internal-outputs` returns the generated internal URLs. Proxy M3U/stream URLs use `STREAM_PROXY_KEY`; `INTERNAL_KEY` remains the independent legacy internal-output key. If `STREAM_PROXY_KEY` is empty, `INTERNAL_KEY` is accepted as a compatibility fallback.
 
 Do **not** publish `8091` through Docker, Traefik or Cloudflare.
 
@@ -161,7 +161,7 @@ Do **not** publish `8091` through Docker, Traefik or Cloudflare.
 
 The proxy is staged only to make migration safe. The finished setup points Jellyfin directly at JustOne.
 
-1. Set a long random `INTERNAL_KEY`.
+1. Set a long random `STREAM_PROXY_KEY`. Leave any existing `INTERNAL_KEY` unchanged during migration so legacy Dispatcharr URLs continue working.
 2. Set `STREAM_PROXY_ENABLED=true` and keep `STREAM_PROXY_MASTER_ENABLED=false`.
 3. Use the `proxy` URL returned by `GET /api/internal-outputs` (or the **Copy proxy M3U** button) as a test Jellyfin tuner.
 4. Verify playback and the **Live stream proxy** admin panel. It shows the canonical channel, provider/account, viewer count, bitrate, quality, failover count, and each account's active/max upstream connections.
@@ -173,9 +173,9 @@ The proxy is a byte relay, not a transcoder. Its stability controls are:
 - **replay buffer:** new viewers receive a bounded recent TS window instead of joining at an arbitrary packet boundary
 - **shared relays:** multiple Jellyfin viewers of one channel consume one provider connection
 - **connection limits:** `maxStreams` is enforced per configured provider account
-- **idle grace:** short Jellyfin probe/disconnect/reconnect cycles reuse the same upstream relay
+- **idle grace with capacity preemption:** short Jellyfin probe/disconnect/reconnect cycles reuse the same upstream relay, but a different channel can immediately reclaim an idle grace-held account when capacity is otherwise full
 - **stall detection:** an upstream that stops producing bytes is aborted
-- **failover:** failed variants are cooled down and the next available ordered account/variant is tried
+- **failover:** failed variants are cooled down and the next available ordered account/variant is tried within the configured total failover window
 - **failover keepalive:** valid MPEG-TS null packets keep the established Jellyfin HTTP stream alive while a replacement upstream is opening
 - **provider compatibility:** upstream requests use a VLC user agent by default and can be overridden with `STREAM_USER_AGENT`
 - **credential isolation:** provider stream URLs and credentials are never emitted in the proxy M3U or live status API
