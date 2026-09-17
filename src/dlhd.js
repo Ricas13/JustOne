@@ -1,12 +1,7 @@
-import { countryGroup, countryOf, strippedChannelName } from "./identity.js";
+import { countryGroup, countryOf, isCountryWord, strippedChannelName } from "./identity.js";
 import { hash, normalize, slug, stripTags, text } from "./util.js";
 
-const COUNTRY_WORDS = new Set([
-  "uk","gb","usa","us","united","kingdom","states","portugal","pt","spain","es","france","fr","germany","de",
-  "italy","it","canada","ca","australia","au","romania","poland","sweden","norway","denmark","finland","ireland",
-  "netherlands","nl","belgium","ch","switzerland","austria","greece","turkey","serbia","croatia","israel","mexico",
-  "brazil","argentina","new","zealand","nz","india","japan","korea","china","russia","bulgaria","slovakia","cz"
-]);
+
 const NUMBER_WORDS = new Map([
   ["one","1"],["two","2"],["three","3"],["four","4"],["five","5"],
   ["six","6"],["seven","7"],["eight","8"],["nine","9"],["ten","10"],
@@ -335,8 +330,8 @@ function keyVariants(value) {
   let base = normalize(strippedChannelName(value));
   if (!base) return [];
   let tokens = base.split(" ").filter(Boolean);
-  while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
-  while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[tokens.length-1])) tokens.pop();
+  while (tokens.length > 1 && isCountryWord(tokens[0])) tokens.shift();
+  while (tokens.length > 1 && isCountryWord(tokens[tokens.length-1])) tokens.pop();
   tokens = tokens.map(canonicalToken);
   base = tokens.join(" ");
   const out = new Set([base, base.replace(/\s+/g,"")]);
@@ -350,7 +345,7 @@ function keyVariants(value) {
   return [...out].filter(Boolean);
 }
 function significantTokens(value) {
-  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !COUNTRY_WORDS.has(x) && !["live","channel","sports","sport","tv"].includes(x)) || []);
+  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !isCountryWord(x) && !["live","channel","sports","sport","tv"].includes(x)) || []);
 }
 function fuzzyEventMatch(a,b) {
   const aa = significantTokens(a), bb = significantTokens(b);
