@@ -620,7 +620,12 @@ export class StreamManager {
   #rememberReplay(relay, data) {
     const limit = Math.max(0, Number(this.options.replayBufferBytes || 0));
     if (!limit || !data.length) return;
-    const kept = data.length > limit ? data.subarray(data.length - limit) : data;
+    // Copy a truncated suffix instead of retaining a subarray view into a much
+    // larger upstream chunk. That keeps the replay buffer's real retained memory
+    // bounded by replayBufferBytes as well as its logical byte count.
+    const kept = data.length > limit
+      ? Buffer.from(data.subarray(data.length - limit))
+      : data;
     relay.replay.push(kept);
     relay.replayBytes += kept.length;
     while (relay.replay.length > 1 && relay.replayBytes > limit) {
