@@ -4,10 +4,21 @@ import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
 import { provisionDispatcharrInputs } from "./dispatcharr.js";
 import { reconcileDispatcharr } from "./dispatcharr-epg.js";
+import { StreamManager } from "./stream-manager.js";
 import { loadGuide, loadSnapshot, loadState, newId, saveState } from "./store.js";
 import { duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "./sources.js";
 import { json, readJsonBody, text } from "./util.js";
 import { ADMIN_HTML } from "./ui.js";
+
+export const streamManager = new StreamManager({
+  loadSnapshot,
+  loadState,
+  options: config.streamProxy,
+});
+
+function relayUrlForChannel(channel) {
+  return withInternalKey(`${config.internalBaseUrl}/stream/${encodeURIComponent(channel.id)}.ts`);
+}
 
 function adminAllowed(req) {
   if (!config.adminKey) return true;
@@ -91,7 +102,7 @@ export function createAdminServer() {
       if (req.method === "GET" && path === "/") {
         return json(res, 200, {
           name: "JustOne Catalog",
-          purpose: "DLHD-filtered IPTV metadata/catalogue + Dispatcharr reconciliation; never proxies video",
+          purpose: "DLHD-filtered IPTV catalogue with optional native stream proxy and Dispatcharr compatibility",
           endpoints: ["/health", "/admin", "/api/catalog"],
         });
       }
@@ -103,19 +114,28 @@ export function createAdminServer() {
           channels: snapshot.channels.length,
           dlhd: snapshot.dlhdStatus || null,
           refresh: refreshManager.status(),
+          streamProxy: { enabled: config.streamProxy.enabled, masterEnabled: config.streamProxy.enabled && config.streamProxy.masterEnabled },
         });
       }
       if (req.method === "GET" && path === "/admin") {
         return sendText(res, 200, ADMIN_HTML, "text/html; charset=utf-8");
       }
 
-      if (path.startsWith("/m3u/") || path === "/epg/guide.xml") {
+      if (path.startsWith("/m3u/") || path.startsWith("/stream/") || path === "/epg/guide.xml") {
         return json(res, 404, { error: "output is available only on the internal listener" });
       }
 
       if (path.startsWith("/api/") && !adminAllowed(req)) return json(res, 401, { error: "admin authentication required" });
       if (req.method === "GET" && path === "/api/state") return json(res, 200, await loadState());
       if (req.method === "GET" && path === "/api/catalog") return json(res, 200, await loadSnapshot());
+      if (req.method === "GET" && path === "/api/streams") {
+        const status = await streamManager.status();
+        return json(res, 200, {
+          enabled: config.streamProxy.enabled,
+          masterEnabled: config.streamProxy.enabled && config.streamProxy.masterEnabled,
+          ...status,
+        });
+      }
       if (req.method === "GET" && path === "/api/dlhd") {
         const snap = await loadSnapshot();
         return json(res, 200, { status: snap.dlhdStatus || null, reference: snap.dlhdReference || null });
@@ -125,6 +145,8 @@ export function createAdminServer() {
         return json(res, 200, {
           guide: withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`),
           master: withInternalKey(`${config.internalBaseUrl}/m3u/master.m3u`),
+          proxy: config.streamProxy.enabled ? withInternalKey(`${config.internalBaseUrl}/m3u/proxy.m3u`) : null,
+          masterMode: config.streamProxy.enabled && config.streamProxy.masterEnabled ? "proxy" : "variants",
           sources: (state.sources || []).filter((s) => s.enabled !== false).map((s) => ({
             id: s.id,
             name: s.name,
@@ -236,18 +258,52 @@ export function createInternalServer() {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       const path = url.pathname;
       if (!internalAllowed(req, url)) return json(res, 401, { error: "invalid internal key" });
-      if (req.method === "GET" && path === "/health") return json(res, 200, { ok: true, scope: "internal-output" });
+      if (req.method === "GET" && path === "/health") {
+        return json(res, 200, {
+          ok: true,
+          scope: "internal-output",
+          streamProxy: {
+            enabled: config.streamProxy.enabled,
+            masterEnabled: config.streamProxy.enabled && config.streamProxy.masterEnabled,
+          },
+        });
+      }
 
       if (req.method === "GET" && path === "/m3u/master.m3u") {
         const snapshot = await loadSnapshot();
         const guide = withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`);
-        return sendText(res, 200, buildM3u(snapshot, { guideUrl: guide }), "audio/x-mpegurl; charset=utf-8");
+        const proxied = config.streamProxy.enabled && config.streamProxy.masterEnabled;
+        return sendText(
+          res,
+          200,
+          buildM3u(snapshot, {
+            guideUrl: guide,
+            ...(proxied ? { streamUrlForChannel: relayUrlForChannel } : {}),
+          }),
+          "audio/x-mpegurl; charset=utf-8"
+        );
+      }
+      if (req.method === "GET" && path === "/m3u/proxy.m3u") {
+        if (!config.streamProxy.enabled) return json(res, 404, { error: "stream proxy is disabled" });
+        const snapshot = await loadSnapshot();
+        const guide = withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`);
+        return sendText(
+          res,
+          200,
+          buildM3u(snapshot, { guideUrl: guide, streamUrlForChannel: relayUrlForChannel }),
+          "audio/x-mpegurl; charset=utf-8"
+        );
       }
       const sourceMatch = /^\/m3u\/source\/([^/]+)\.m3u$/.exec(path);
       if (req.method === "GET" && sourceMatch) {
         const snapshot = await loadSnapshot();
         const guide = withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`);
         return sendText(res, 200, buildM3u(snapshot, { sourceId: decodeURIComponent(sourceMatch[1]), guideUrl: guide }), "audio/x-mpegurl; charset=utf-8");
+      }
+      const streamMatch = /^\/stream\/(.+)\.ts$/.exec(path);
+      if ((req.method === "GET" || req.method === "HEAD") && streamMatch) {
+        if (!config.streamProxy.enabled) return json(res, 404, { error: "stream proxy is disabled" });
+        return await streamManager.handle(decodeURIComponent(streamMatch[1]), req, res);
       }
       if (req.method === "GET" && path === "/epg/guide.xml") {
         return sendText(res, 200, await loadGuide(), "application/xml; charset=utf-8");
