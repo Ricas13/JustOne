@@ -220,3 +220,97 @@ test("mid-stream upstream end fails over without changing the Jellyfin URL", asy
   assert.equal(status.relays[0].failovers, 1);
   await reader.cancel();
 });
+
+
+test("source that dies before filling startup buffer is rejected before Jellyfin gets it", async (t) => {
+  const good = {};
+  const state = { sources: [
+    { id: "short", name: "Short", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "good", name: "Good", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [
+      { sourceId: "short", order: 0, url: "UPSTREAM/short", quality: "HD" },
+      { sourceId: "good", order: 1, url: "UPSTREAM/good", quality: "HD" },
+    ],
+  }] };
+  const handler = (req, res) => {
+    if (req.url === "/short") {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      res.end(Buffer.from("S".repeat(188)));
+      return;
+    }
+    liveHandler("G", good)(req, res);
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 376 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  const status = await h.manager.status();
+  assert.equal(status.relays[0].account, "Account 2");
+  assert.equal(status.relays[0].attempts, 2);
+  assert.ok(status.recentEvents.some((row) =>
+    row.type === "upstream-failure" &&
+    row.account === "Account 1" &&
+    row.message.includes("startup buffer")
+  ));
+  await stream.reader.cancel();
+});
+
+test("failover sends TS keepalives while replacement upstream is still starting", async (t) => {
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "line2", name: "Line 2", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [
+      { sourceId: "line1", order: 0, url: "UPSTREAM/first", quality: "HD" },
+      { sourceId: "line2", order: 1, url: "UPSTREAM/second", quality: "HD" },
+    ],
+  }] };
+  const handler = (req, res) => {
+    if (req.url === "/first") {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      res.write(Buffer.from("A".repeat(188)));
+      return setTimeout(() => res.end(), 40);
+    }
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    setTimeout(() => {
+      res.write(Buffer.from("B".repeat(188)));
+      const timer = setInterval(() => res.write(Buffer.from("B".repeat(188))), 20);
+      res.once("close", () => clearInterval(timer));
+    }, 300);
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 188, failoverKeepaliveMs: 50, startupTimeoutMs: 1000 },
+  });
+  t.after(() => h.cleanup());
+
+  const response = await fetch(`${h.proxyBase}/stream/bbc.ts`);
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  let body = Buffer.alloc(0);
+  const seen = await waitFor(async () => {
+    const part = await reader.read();
+    if (!part.done) body = Buffer.concat([body, Buffer.from(part.value)]);
+    const keepalive = body.includes(Buffer.from([0x47, 0x1f, 0xff]));
+    const replacement = body.includes(Buffer.from("BBBB"));
+    return keepalive && replacement;
+  }, 2000);
+  assert.equal(seen, true);
+
+  const status = await h.manager.status();
+  assert.equal(status.relays[0].account, "Account 2");
+  assert.equal(status.relays[0].failovers, 1);
+  await reader.cancel();
+});
