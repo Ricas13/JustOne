@@ -8,6 +8,9 @@ const DEFAULTS = {
   notFoundCooldownMs: 300000,
   sourceFailureCooldownMs: 60000,
   maxClientBufferBytes: 8 * 1024 * 1024,
+  startupBufferBytes: 256 * 1024,
+  replayBufferBytes: 1024 * 1024,
+  failoverKeepaliveMs: 500,
   userAgent: "JustOne Stream Proxy/1.0",
 };
 
@@ -209,6 +212,10 @@ export class StreamManager {
       abortController: null,
       graceTimer: null,
       task: null,
+      replay: [],
+      replayBytes: 0,
+      keepaliveCc: 0,
+      lastKeepaliveAt: 0,
     };
   }
 
@@ -223,7 +230,13 @@ export class StreamManager {
     res.socket?.setNoDelay?.(true);
     const client = { res, headersSent: false, connectedAt: this.now() };
     relay.clients.add(client);
-    if (relay.headers) this.#sendHeaders(client, relay.headers);
+    if (relay.headers) {
+      this.#sendHeaders(client, relay.headers);
+      for (const chunk of relay.replay) {
+        if (res.destroyed || res.writableEnded) break;
+        try { res.write(chunk); } catch { break; }
+      }
+    }
 
     let detached = false;
     const detach = () => {
@@ -288,6 +301,9 @@ export class StreamManager {
           break;
         }
         relay.status = "failover";
+        if (this.now() - relay.lastKeepaliveAt >= this.options.failoverKeepaliveMs) {
+          this.#broadcastKeepalive(relay);
+        }
         await sleep(250);
         continue;
       }
@@ -299,7 +315,15 @@ export class StreamManager {
       relay.status = relay.everStarted ? "failover" : "starting";
 
       let connection = null;
+      let keepaliveTimer = null;
       try {
+        if (relay.everStarted && this.options.failoverKeepaliveMs > 0) {
+          keepaliveTimer = setInterval(
+            () => this.#broadcastKeepalive(relay),
+            Math.max(100, this.options.failoverKeepaliveMs)
+          );
+          keepaliveTimer.unref?.();
+        }
         connection = await this.#openCandidate(candidate);
         if (relay.stopRequested) break;
 
@@ -360,6 +384,7 @@ export class StreamManager {
         if (!relay.clients.size) break;
         if (!failoverStartedAt) failoverStartedAt = this.now();
       } finally {
+        if (keepaliveTimer) clearInterval(keepaliveTimer);
         if (connection?.reader) {
           try { await connection.reader.cancel(); } catch {}
         }
@@ -431,16 +456,30 @@ export class StreamManager {
       }
 
       const reader = response.body.getReader();
-      const first = await reader.read();
-      if (first.done || !first.value?.byteLength) {
+      const chunks = [];
+      let buffered = 0;
+      const target = Math.max(1, Number(this.options.startupBufferBytes || 1));
+      while (buffered < target) {
+        const part = await reader.read();
+        if (part.done) break;
+        if (!part.value?.byteLength) continue;
+        chunks.push(Buffer.from(part.value));
+        buffered += part.value.byteLength;
+      }
+      if (!buffered) {
         try { await reader.cancel(); } catch {}
         throw new UpstreamError("upstream closed before first media bytes", { code: "empty" });
+      }
+      const contentType = cleanContentType(response.headers.get("content-type"));
+      if (/^(?:text\/html|application\/json|text\/plain)\b/i.test(contentType)) {
+        try { await reader.cancel(); } catch {}
+        throw new UpstreamError(`upstream returned non-media content-type ${contentType}`, { code: "invalid_media" });
       }
       return {
         controller,
         reader,
-        firstChunk: first.value,
-        contentType: cleanContentType(response.headers.get("content-type")),
+        firstChunk: Buffer.concat(chunks, buffered),
+        contentType,
       };
     } catch (error) {
       controller.abort();
@@ -475,6 +514,7 @@ export class StreamManager {
     const data = Buffer.from(chunk);
     relay.bytes += data.length;
     this.#updateRate(relay);
+    this.#rememberReplay(relay, data);
 
     for (const client of [...relay.clients]) {
       const { res } = client;
@@ -497,6 +537,33 @@ export class StreamManager {
       }
     }
     this.#scheduleGraceIfIdle(relay);
+  }
+
+  #rememberReplay(relay, data) {
+    const limit = Math.max(0, Number(this.options.replayBufferBytes || 0));
+    if (!limit || !data.length) return;
+    relay.replay.push(data);
+    relay.replayBytes += data.length;
+    while (relay.replay.length > 1 && relay.replayBytes > limit) {
+      const removed = relay.replay.shift();
+      relay.replayBytes -= removed.length;
+    }
+  }
+
+  #broadcastKeepalive(relay) {
+    if (!relay.clients.size) return;
+    const packet = Buffer.alloc(188, 0xff);
+    packet[0] = 0x47;
+    packet[1] = 0x1f;
+    packet[2] = 0xff;
+    packet[3] = 0x10 | (relay.keepaliveCc & 0x0f);
+    relay.keepaliveCc = (relay.keepaliveCc + 1) & 0x0f;
+    relay.lastKeepaliveAt = this.now();
+    for (const client of [...relay.clients]) {
+      const { res } = client;
+      if (res.destroyed || res.writableEnded || !client.headersSent) continue;
+      try { res.write(packet); } catch { relay.clients.delete(client); }
+    }
   }
 
   #sendHeaders(client, headers) {
