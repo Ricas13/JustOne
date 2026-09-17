@@ -497,3 +497,43 @@ test("a free account is preferred over preempting another channel's idle grace r
   assert.equal(status.sources.find((row) => row.id === "line2").activeStreams, 1);
   await b.reader.cancel();
 });
+
+
+test("media-looking garbage is rejected before Jellyfin receives HTTP 200", async (t) => {
+  const state = { sources: [
+    { id: "bad", name: "Bad", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "good", name: "Good", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [
+      { sourceId: "bad", order: 0, url: "UPSTREAM/bad", quality: "HD" },
+      { sourceId: "good", order: 1, url: "UPSTREAM/good", quality: "HD" },
+    ],
+  }] };
+  const handler = (req, res) => {
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    if (req.url === "/bad") {
+      res.end(Buffer.alloc(188 * 3, 0x41));
+      return;
+    }
+    const chunk = tsChunk("G");
+    res.write(chunk);
+    const timer = setInterval(() => res.write(chunk), 20);
+    res.once("close", () => clearInterval(timer));
+  };
+  const h = await createHarness({ snapshot, state, upstreamHandler: handler });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  assert.equal(stream.first[0], 0x47);
+  const status = await h.manager.status();
+  assert.equal(status.relays[0].account, "Account 2");
+  assert.equal(status.relays[0].attempts, 2);
+  assert.ok(status.recentEvents.some((row) =>
+    row.type === "upstream-failure"
+    && row.account === "Account 1"
+    && row.message.includes("MPEG-TS sync")
+  ));
+  await stream.reader.cancel();
+});
