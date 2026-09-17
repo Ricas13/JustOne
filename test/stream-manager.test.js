@@ -562,3 +562,48 @@ test("valid MPEG-TS is accepted even when a provider mislabels the content type"
   assert.equal(stream.first[0], 0x47);
   await stream.reader.cancel();
 });
+
+
+test("viewer joining after failover receives replay only from the replacement source", async (t) => {
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "line2", name: "Line 2", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [
+      { sourceId: "line1", order: 0, url: "UPSTREAM/first", quality: "HD" },
+      { sourceId: "line2", order: 1, url: "UPSTREAM/second", quality: "HD" },
+    ],
+  }] };
+
+  const handler = (req, res) => {
+    if (req.url === "/first") {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      res.end(tsChunk("A"));
+      return;
+    }
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    const chunk = tsChunk("B");
+    res.write(chunk);
+    const timer = setInterval(() => res.write(chunk), 20);
+    res.once("close", () => clearInterval(timer));
+  };
+
+  const h = await createHarness({ snapshot, state, upstreamHandler: handler });
+  t.after(() => h.cleanup());
+
+  const firstViewer = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.relays[0]?.failovers === 1
+      && status.relays[0]?.account === "Account 2";
+  });
+
+  const secondViewer = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  assert.ok(secondViewer.first.includes(Buffer.from("BBBB")));
+  assert.equal(secondViewer.first.includes(Buffer.from("AAAA")), false);
+
+  await firstViewer.reader.cancel();
+  await secondViewer.reader.cancel();
+});
