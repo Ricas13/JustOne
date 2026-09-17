@@ -45,6 +45,10 @@ export const config = {
   streamProxy: {
     enabled: boolEnv("STREAM_PROXY_ENABLED", false),
     masterEnabled: boolEnv("STREAM_PROXY_MASTER_ENABLED", false),
+    // Keep proxy bearer auth separate from the legacy internal-output key so
+    // enabling the proxy cannot break an existing Dispatcharr rollback path.
+    // INTERNAL_KEY remains a compatibility fallback for earlier deployments.
+    key: String(process.env.STREAM_PROXY_KEY || process.env.INTERNAL_KEY || ""),
     startupTimeoutMs: intEnv("STREAM_STARTUP_TIMEOUT_MS", 8000),
     startupQueueTimeoutMs: intEnv("STREAM_STARTUP_QUEUE_TIMEOUT_MS", 1500),
     stallTimeoutMs: intEnv("STREAM_STALL_TIMEOUT_MS", 15000),
@@ -87,5 +91,12 @@ export function withInternalKey(url) {
     u.port = String(config.internalPort + 1);
   }
   if (config.internalKey) u.searchParams.set("key", config.internalKey);
+  return u.toString();
+}
+
+
+export function withStreamProxyKey(url) {
+  const u = new URL(url);
+  if (config.streamProxy.key) u.searchParams.set("key", config.streamProxy.key);
   return u.toString();
 }
