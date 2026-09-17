@@ -55,11 +55,17 @@ const COUNTRY_DEFINITIONS = [
 const COUNTRY_BY_CODE = new Map(COUNTRY_DEFINITIONS.map(([code, name, aliases, codes]) => [code, { code, name, aliases, codes }]));
 const COUNTRY_CODE_TOKEN = new Map();
 const COUNTRY_NAME_ALIASES = [];
+const COUNTRY_WORD_TOKENS = new Set();
 for (const [code, name, aliases, codes] of COUNTRY_DEFINITIONS) {
-  for (const token of codes) COUNTRY_CODE_TOKEN.set(normalize(token), code);
+  for (const token of codes) {
+    const key = normalize(token);
+    COUNTRY_CODE_TOKEN.set(key, code);
+    COUNTRY_WORD_TOKENS.add(key);
+  }
   for (const alias of [name, ...aliases]) {
     const key = normalize(alias);
     if (key) COUNTRY_NAME_ALIASES.push([key, code]);
+    for (const token of key.split(" ").filter(Boolean)) COUNTRY_WORD_TOKENS.add(token);
   }
 }
 COUNTRY_NAME_ALIASES.sort((a, b) => b[0].length - a[0].length);
@@ -82,11 +88,12 @@ function countryFromName(value) {
 
 function countryFromId(value) {
   const tokens = String(value || "").toLowerCase().split(/[._-]+/).map(normalize).filter(Boolean);
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const code = COUNTRY_CODE_TOKEN.get(tokens[i]);
-    if (code) return code;
-  }
-  return "";
+  if (!tokens.length) return "";
+  return COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]) || COUNTRY_CODE_TOKEN.get(tokens[0]) || "";
+}
+
+export function isCountryWord(value) {
+  return COUNTRY_WORD_TOKENS.has(normalize(value));
 }
 
 export function countryName(code) {
