@@ -145,7 +145,7 @@ async function freshDlhdSchedule() {
 
 async function loadDlhdReference(previous) {
   if (!config.dlhd.enabled) return { reference: null, status: { enabled: false } };
-  const old = previous.dlhdReference || { channels: [], events: [] };
+  const old = previous.dlhdReference || { channels: [], events: [], linearEvents: [] };
   let channelsRaw = null;
   let scheduleRaw = null;
   let channelsMode = "disabled";
@@ -179,9 +179,15 @@ async function loadDlhdReference(previous) {
   });
   const channels = config.dlhd.include247 ? (channelsRaw ? fresh.channels : old.channels || []) : [];
   let events = config.dlhd.includeSchedule ? (scheduleRaw ? fresh.events : old.events || []) : [];
-  if (!config.dlhd.includeUpcoming) events = events.filter((event) => !event.upcoming);
+  let linearEvents = config.dlhd.includeSchedule ? (scheduleRaw ? fresh.linearEvents || [] : old.linearEvents || []) : [];
+  if (!config.dlhd.includeUpcoming) {
+    events = events.filter((event) => !event.upcoming);
+    linearEvents = linearEvents.filter((event) => !event.upcoming);
+  }
 
-  const missingRequired = (config.dlhd.include247 && !channels.length) || (config.dlhd.includeSchedule && !events.length);
+  const scheduleReferenceCount = events.length + linearEvents.length;
+  const missingRequired = (config.dlhd.include247 && !channels.length)
+    || (config.dlhd.includeSchedule && !scheduleReferenceCount);
   if (missingRequired && config.dlhd.failClosed) {
     const detail = [channelsError && `channels: ${channelsError}`, scheduleError && `schedule: ${scheduleError}`]
       .filter(Boolean).join("; ");
@@ -189,11 +195,13 @@ async function loadDlhdReference(previous) {
   }
 
   return {
-    reference: { generatedAt: new Date().toISOString(), mode: fresh.mode, channels, events },
+    reference: { generatedAt: new Date().toISOString(), mode: fresh.mode, channels, events, linearEvents },
     status: {
       enabled: true,
       channels: channels.length,
       events: events.length,
+      linearEvents: linearEvents.length,
+      scheduleEvents: events.length + linearEvents.length,
       channelsMode: channelsRaw ? channelsMode : "last-known-good",
       scheduleMode: scheduleRaw ? scheduleMode : "last-known-good",
       channelsError,
@@ -551,10 +559,10 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   const matchedRefIds = new Set();
   let rawSourceRows = 0;
   let matchedInputRows = 0;
-  const allowedCountries = new Set(config.dlhd.staticCountries || []);
+  const allowedCountries = new Set((config.dlhd.staticCountries || []).filter((value) => value !== "ALL"));
   const enabledSources = (state.sources || []).filter((s) => s.enabled !== false);
 
-  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; countries=${[...allowedCountries].join(",") || "all"}`);
+  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; static countries=${[...allowedCountries].join(",") || "all DLHD countries"}`);
   report(onProgress, { phase: "loading-dlhd", currentSource: null, sourceMode, sourcesTotal: enabledSources.length });
 
   const { reference: dlhdReference, status: dlhdStatus } = await loadDlhdReference(previous);
@@ -562,12 +570,13 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
 
   if (dlhdStatus?.channelsError) console.warn(`DLHD channels refresh warning: ${dlhdStatus.channelsError}`);
   if (dlhdStatus?.scheduleError) console.warn(`DLHD schedule refresh warning: ${dlhdStatus.scheduleError}`);
-  console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} events (${dlhdReference?.mode || "disabled"})`);
+  console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} standalone events + ${dlhdReference?.linearEvents?.length || 0} scheduled-on-channel events (${dlhdReference?.mode || "disabled"})`);
   report(onProgress, {
     phase: "scanning-sources",
     sourceMode,
     dlhdChannels: dlhdReference?.channels?.length || 0,
     dlhdEvents: dlhdReference?.events?.length || 0,
+    dlhdLinearEvents: dlhdReference?.linearEvents?.length || 0,
   });
 
   for (let i = 0; i < enabledSources.length; i++) {
@@ -723,7 +732,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     dlhdStatus.outputEvents = outputEvents;
   }
 
-  const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {});
+  const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {}, { dlhdReference });
   const snapshot = {
     generatedAt: new Date().toISOString(),
     sourceMode,
