@@ -13,7 +13,7 @@ const DECORATION_RE = /(?:\[[^\]]*\]|\([^)]*(?:uhd|4k|fhd|hd|sd|backup|alt|1080|
 const COUNTRY_DEFINITIONS = [
   ["GB","United Kingdom",["united kingdom","england","scotland","wales"],["uk","gb"]],
   ["PT","Portugal",["portugal"],["pt"]],
-  ["US","United States",["united states","america"],["usa","us"]],
+  ["US","United States",["united states"],["usa","us"]],
   ["ES","Spain",["spain"],["es"]], ["FR","France",["france"],["fr"]], ["DE","Germany",["germany"],["de"]],
   ["IT","Italy",["italy"],["it"]], ["CA","Canada",["canada"],["ca"]], ["AU","Australia",["australia"],["au"]],
   ["GR","Greece",["greece"],["gr"]], ["NL","Netherlands",["netherlands","holland"],["nl"]], ["PL","Poland",["poland"],["pl"]],
