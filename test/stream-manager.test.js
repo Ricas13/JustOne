@@ -537,3 +537,28 @@ test("media-looking garbage is rejected before Jellyfin receives HTTP 200", asyn
   ));
   await stream.reader.cancel();
 });
+
+
+test("valid MPEG-TS is accepted even when a provider mislabels the content type", async (t) => {
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+  const handler = (_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    const chunk = tsChunk("T");
+    res.write(chunk);
+    const timer = setInterval(() => res.write(chunk), 20);
+    res.once("close", () => clearInterval(timer));
+  };
+  const h = await createHarness({ snapshot, state, upstreamHandler: handler });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  assert.equal(stream.response.headers.get("content-type"), "video/mp2t");
+  assert.equal(stream.first[0], 0x47);
+  await stream.reader.cancel();
+});
