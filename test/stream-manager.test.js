@@ -11,12 +11,21 @@ async function close(server) {
   if (!server.listening) return;
   await new Promise((resolve) => server.close(resolve));
 }
+
+function tsChunk(label, packets = 3) {
+  const fill = Buffer.from(String(label || "X"))[0] || 0x58;
+  const out = Buffer.alloc(188 * packets, fill);
+  for (let packet = 0; packet < packets; packet += 1) {
+    out[packet * 188] = 0x47;
+  }
+  return out;
+}
 function liveHandler(label, stats, { endAfterFirst = false } = {}) {
   return (req, res) => {
     stats.requests = (stats.requests || 0) + 1;
     stats.active = (stats.active || 0) + 1;
     res.writeHead(200, { "content-type": "video/mp2t" });
-    const chunk = Buffer.from(label.repeat(188));
+    const chunk = tsChunk(label);
     res.write(chunk);
     if (endAfterFirst) {
       stats.active -= 1;
@@ -238,7 +247,7 @@ test("source that dies before filling startup buffer is rejected before Jellyfin
   const handler = (req, res) => {
     if (req.url === "/short") {
       res.writeHead(200, { "content-type": "video/mp2t" });
-      res.end(Buffer.from("S".repeat(188)));
+      res.end(tsChunk("S", 1));
       return;
     }
     liveHandler("G", good)(req, res);
@@ -278,13 +287,13 @@ test("failover sends TS keepalives while replacement upstream is still starting"
   const handler = (req, res) => {
     if (req.url === "/first") {
       res.writeHead(200, { "content-type": "video/mp2t" });
-      res.write(Buffer.from("A".repeat(188)));
+      res.write(tsChunk("A"));
       return setTimeout(() => res.end(), 40);
     }
     res.writeHead(200, { "content-type": "video/mp2t" });
     setTimeout(() => {
-      res.write(Buffer.from("B".repeat(188)));
-      const timer = setInterval(() => res.write(Buffer.from("B".repeat(188))), 20);
+      res.write(tsChunk("B"));
+      const timer = setInterval(() => res.write(tsChunk("B")), 20);
       res.once("close", () => clearInterval(timer));
     }, 300);
   };
@@ -361,7 +370,7 @@ test("idle grace yields a one-connection account immediately when a different ch
   ] };
   const handler = (req, res) => {
     res.writeHead(200, { "content-type": "video/mp2t" });
-    const chunk = Buffer.from((req.url === "/a" ? "A" : "B").repeat(188));
+    const chunk = tsChunk(req.url === "/a" ? "A" : "B");
     res.write(chunk);
     const timer = setInterval(() => res.write(chunk), 20);
     if (req.url === "/b") stats.bRequests += 1;
@@ -412,7 +421,7 @@ test("failover window bounds slow replacement startup attempts", async (t) => {
   const handler = (req, res) => {
     if (req.url === "/first") {
       res.writeHead(200, { "content-type": "video/mp2t" });
-      res.end(Buffer.from("A".repeat(188)));
+      res.end(tsChunk("A"));
       return;
     }
     res.writeHead(200, { "content-type": "video/mp2t" });
