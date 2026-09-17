@@ -450,3 +450,41 @@ test("failover window bounds slow replacement startup attempts", async (t) => {
   assert.ok(finalStatus.recentEvents.some((row) => row.type === "upstream-failure" && row.account === "Account 2"));
   try { await reader.cancel(); } catch {}
 });
+
+
+test("a free account is preferred over preempting another channel's idle grace relay", async (t) => {
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "line2", name: "Line 2", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const variants = (suffix) => [
+    { sourceId: "line1", order: 0, url: `UPSTREAM/one/${suffix}`, quality: "HD" },
+    { sourceId: "line2", order: 1, url: `UPSTREAM/two/${suffix}`, quality: "HD" },
+  ];
+  const snapshot = { channels: [
+    { id: "a", tvgId: "justone.a", name: "Channel A", variants: variants("a") },
+    { id: "b", tvgId: "justone.b", name: "Channel B", variants: variants("b") },
+  ] };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: (req, res) => liveHandler(req.url.startsWith("/one/") ? "1" : "2", {})(req, res),
+    options: { relayGraceMs: 1000, startupQueueTimeoutMs: 600 },
+  });
+  t.after(() => h.cleanup());
+
+  const a = await openStream(`${h.proxyBase}/stream/a.ts`);
+  await a.reader.cancel();
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.relays.some((row) => row.channelId === "a" && row.status === "grace" && row.account === "Account 1");
+  });
+
+  const b = await openStream(`${h.proxyBase}/stream/b.ts`);
+  const status = await h.manager.status();
+  assert.equal(status.relays.find((row) => row.channelId === "b")?.account, "Account 2");
+  assert.ok(status.relays.some((row) => row.channelId === "a" && row.status === "grace"));
+  assert.equal(status.sources.find((row) => row.id === "line1").activeStreams, 1);
+  assert.equal(status.sources.find((row) => row.id === "line2").activeStreams, 1);
+  await b.reader.cancel();
+});
