@@ -161,11 +161,14 @@ Do **not** publish `8091` through Docker, Traefik or Cloudflare.
 
 The proxy is staged only to make migration safe. The finished setup points Jellyfin directly at JustOne.
 
+> **Migration warning:** JustOne and Dispatcharr do not share live account-occupancy state. While both are actively serving streams from the same IPTV credentials, each can independently believe a line is free and the provider's real connection limit can be exceeded. Test the JustOne tuner during a quiet window or with a dedicated provider line, then remove Dispatcharr from Jellyfin's playback path once JustOne is proven.
+
 1. Set a long random `STREAM_PROXY_KEY`. Leave any existing `INTERNAL_KEY` unchanged during migration so legacy Dispatcharr URLs continue working.
 2. Set `STREAM_PROXY_ENABLED=true` and keep `STREAM_PROXY_MASTER_ENABLED=false`.
-3. Use the `proxy` URL returned by `GET /api/internal-outputs` (or the **Copy proxy M3U** button) as a test Jellyfin tuner.
+3. In Jellyfin, add the `proxy` URL returned by `GET /api/internal-outputs` (or the **Copy proxy M3U** button) as the M3U tuner and use the returned `guide` URL as the XMLTV guide.
 4. Verify playback and the **Live stream proxy** admin panel. It shows the canonical channel, provider/account, viewer count, bitrate, quality, failover count, and each account's active/max upstream connections.
 5. After the proxy feed is proven, set `STREAM_PROXY_MASTER_ENABLED=true`. From then on `/m3u/master.m3u` emits one opaque JustOne relay URL per canonical channel.
+6. Point Jellyfin permanently at the returned `master` URL and remove Dispatcharr from Jellyfin's playback path.
 
 The proxy is a byte relay, not a transcoder. Its stability controls are:
 
