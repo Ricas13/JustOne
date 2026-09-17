@@ -1,5 +1,5 @@
 import http from "node:http";
-import { config, withInternalKey } from "./config.js";
+import { config, withInternalKey, withStreamProxyKey } from "./config.js";
 import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
 import { provisionDispatcharrInputs } from "./dispatcharr.js";
@@ -17,16 +17,22 @@ export const streamManager = new StreamManager({
 });
 
 function relayUrlForChannel(channel) {
-  return withInternalKey(`${config.internalBaseUrl}/stream/${encodeURIComponent(channel.id)}.ts`);
+  return withStreamProxyKey(`${config.internalBaseUrl}/stream/${encodeURIComponent(channel.id)}.ts`);
 }
 
 function adminAllowed(req) {
   if (!config.adminKey) return true;
   return req.headers.authorization === `Bearer ${config.adminKey}` || req.headers["x-admin-key"] === config.adminKey;
 }
+function keyAllowed(req, url, key, headerName) {
+  if (!key) return true;
+  return url.searchParams.get("key") === key || req.headers[headerName] === key;
+}
 function internalAllowed(req, url) {
-  if (!config.internalKey) return true;
-  return url.searchParams.get("key") === config.internalKey || req.headers["x-internal-key"] === config.internalKey;
+  return keyAllowed(req, url, config.internalKey, "x-internal-key");
+}
+function streamAllowed(req, url) {
+  return keyAllowed(req, url, config.streamProxy.key, "x-stream-key");
 }
 function sendText(res, status, body, contentType) {
   const data = Buffer.from(body);
@@ -144,8 +150,10 @@ export function createAdminServer() {
         const state = await loadState();
         return json(res, 200, {
           guide: withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`),
-          master: withInternalKey(`${config.internalBaseUrl}/m3u/master.m3u`),
-          proxy: config.streamProxy.enabled ? withInternalKey(`${config.internalBaseUrl}/m3u/proxy.m3u`) : null,
+          master: config.streamProxy.enabled && config.streamProxy.masterEnabled
+            ? withStreamProxyKey(`${config.internalBaseUrl}/m3u/master.m3u`)
+            : withInternalKey(`${config.internalBaseUrl}/m3u/master.m3u`),
+          proxy: config.streamProxy.enabled ? withStreamProxyKey(`${config.internalBaseUrl}/m3u/proxy.m3u`) : null,
           masterMode: config.streamProxy.enabled && config.streamProxy.masterEnabled ? "proxy" : "variants",
           sources: (state.sources || []).filter((s) => s.enabled !== false).map((s) => ({
             id: s.id,
@@ -257,7 +265,14 @@ export function createInternalServer() {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       const path = url.pathname;
-      if (!internalAllowed(req, url)) return json(res, 401, { error: "invalid internal key" });
+      const proxyProtected = path === "/m3u/proxy.m3u"
+        || path.startsWith("/stream/")
+        || (path === "/m3u/master.m3u" && config.streamProxy.enabled && config.streamProxy.masterEnabled);
+      if (proxyProtected) {
+        if (!streamAllowed(req, url)) return json(res, 401, { error: "invalid stream proxy key" });
+      } else if (!internalAllowed(req, url)) {
+        return json(res, 401, { error: "invalid internal key" });
+      }
       if (req.method === "GET" && path === "/health") {
         return json(res, 200, {
           ok: true,
