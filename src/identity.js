@@ -55,17 +55,19 @@ const COUNTRY_DEFINITIONS = [
 const COUNTRY_BY_CODE = new Map(COUNTRY_DEFINITIONS.map(([code, name, aliases, codes]) => [code, { code, name, aliases, codes }]));
 const COUNTRY_CODE_TOKEN = new Map();
 const COUNTRY_NAME_ALIASES = [];
-const COUNTRY_WORD_TOKENS = new Set();
+const COUNTRY_EDGE_ALIASES = new Set();
 for (const [code, name, aliases, codes] of COUNTRY_DEFINITIONS) {
   for (const token of codes) {
     const key = normalize(token);
     COUNTRY_CODE_TOKEN.set(key, code);
-    COUNTRY_WORD_TOKENS.add(key);
+    COUNTRY_EDGE_ALIASES.add(key);
   }
   for (const alias of [name, ...aliases]) {
     const key = normalize(alias);
-    if (key) COUNTRY_NAME_ALIASES.push([key, code]);
-    for (const token of key.split(" ").filter(Boolean)) COUNTRY_WORD_TOKENS.add(token);
+    if (key) {
+      COUNTRY_NAME_ALIASES.push([key, code]);
+      COUNTRY_EDGE_ALIASES.add(key);
+    }
   }
 }
 COUNTRY_NAME_ALIASES.sort((a, b) => b[0].length - a[0].length);
@@ -92,8 +94,27 @@ function countryFromId(value) {
   return COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]) || COUNTRY_CODE_TOKEN.get(tokens[0]) || "";
 }
 
-export function isCountryWord(value) {
-  return COUNTRY_WORD_TOKENS.has(normalize(value));
+export function stripCountryDecoration(value) {
+  let base = normalize(value);
+  if (!base) return "";
+  const aliases = [...COUNTRY_EDGE_ALIASES].sort((a, b) => b.length - a.length);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const alias of aliases) {
+      if (base.startsWith(`${alias} `) && base.length > alias.length) {
+        base = base.slice(alias.length + 1).trim();
+        changed = true;
+        break;
+      }
+      if (base.endsWith(` ${alias}`) && base.length > alias.length) {
+        base = base.slice(0, -(alias.length + 1)).trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+  return base;
 }
 
 export function countryName(code) {
