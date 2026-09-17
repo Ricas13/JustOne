@@ -559,7 +559,8 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   const matchedRefIds = new Set();
   let rawSourceRows = 0;
   let matchedInputRows = 0;
-  const allowedCountries = new Set((config.dlhd.staticCountries || []).filter((value) => value !== "ALL"));
+  const configuredCountries = config.dlhd.staticCountries || [];
+  const allowedCountries = new Set(configuredCountries.includes("ALL") ? [] : configuredCountries);
   const enabledSources = (state.sources || []).filter((s) => s.enabled !== false);
 
   console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; static countries=${[...allowedCountries].join(",") || "all DLHD countries"}`);
@@ -668,7 +669,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     const targetEventRefs = targetRefs.filter((ref) => ref.kind === "event");
     const matchedChannels = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "channel").length;
     const matchedEvents = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "event").length;
-    dlhdStatus.staticCountries = [...allowedCountries];
+    dlhdStatus.staticCountries = allowedCountries.size ? [...allowedCountries] : ["ALL"];
     dlhdStatus.referenceChannels = dlhdReference.channels?.length || 0;
     dlhdStatus.referenceEvents = dlhdReference.events?.length || 0;
     dlhdStatus.targetChannelReferences = targetChannelRefs.length;
