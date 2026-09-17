@@ -21,47 +21,49 @@ test("event presentation keeps the actual fixture as channel title", () => {
   assert.equal(eventPresentation("WTA 250 Sao Paulo").title, "WTA 250 Sao Paulo");
 });
 
-test("finalizer orders UK then PT then USA then grouped events and materializes linked events", () => {
+test("finalizer orders UK then PT then USA then the remaining countries and never materializes linked events", () => {
   const variant = (sourceId, url) => ({ sourceId, url, name:"HD", quality:"HD", backup:false, order:0 });
   const snapshot = {
     channels: [
       { id:"us", key:"us", tvgId:"justone.us", name:"ABC USA", group:"TV | US", dlhdRefId:"usref", dlhdId:"51", referenceKind:"channel", aliasNames:["ABC USA"], variants:[variant("a","http://a/us")] },
       { id:"pt", key:"pt", tvgId:"justone.pt", name:"RTP 1 Portugal", group:"TV | PT", dlhdRefId:"ptref", dlhdId:"79", referenceKind:"channel", aliasNames:["RTP 1 Portugal"], variants:[variant("a","http://a/pt")] },
       { id:"gb", key:"gb", tvgId:"justone.gb", name:"TNT Sports 1 UK", group:"TV | GB", dlhdRefId:"gbref", dlhdId:"31", referenceKind:"channel", aliasNames:["TNT Sports 1 UK"], variants:[variant("a","http://a/gb")] },
+      { id:"de", key:"de", tvgId:"justone.de", name:"Sky Sport Mix DE", group:"TV | Germany", dlhdRefId:"deref", dlhdId:"131", referenceKind:"channel", aliasNames:["Sky Sport Mix DE"], variants:[variant("a","http://a/de")] },
+      { id:"fr", key:"fr", tvgId:"justone.fr", name:"Canal+ Foot France", group:"TV | France", dlhdRefId:"frref", dlhdId:"132", referenceKind:"channel", aliasNames:["Canal+ Foot France"], variants:[variant("a","http://a/fr")] },
       { id:"direct", key:"direct", tvgId:"justone.event.direct", name:"WTA 250 Sao Paulo", group:"Events | Events", dlhdRefId:"direct", referenceKind:"event", variants:[variant("a","http://a/tennis")], event:{ start:2000, end:3000, category:"Events", originalName:"WTA 250 Sao Paulo" } },
     ],
     dlhdReference: {
       channels: [],
       events: [
         { id:"direct", key:"direct", tvgId:"justone.event.direct", name:"WTA 250 Sao Paulo", category:"Events", start:2000, end:3000, linkedChannels:[] },
-        { id:"fallback", key:"fallback", tvgId:"justone.event.fallback", name:"Soccer : Southampton vs Ipswich Town", category:"Events", start:1000, end:4000, aliases:["Soccer : Southampton vs Ipswich Town","TNT Sports 1 UK"], linkedChannels:[{ id:"31", name:"TNT Sports 1 UK" }] },
+      ],
+      linearEvents: [
+        { id:"linear", name:"Southampton vs Ipswich Town", category:"Football", start:1000, end:4000, linkedStaticChannels:[{ id:"gbref", name:"TNT Sports 1 UK" }] },
       ],
     },
     dlhdStatus: {
-      matchedChannelReferences:3,
+      matchedChannelReferences:5,
       matchedEventReferences:1,
-      matchedReferences:4,
-      outputMappings:4,
-      unmatchedReferences:[{ id:"fallback", kind:"event", name:"Soccer : Southampton vs Ipswich Town" }],
+      matchedReferences:6,
+      outputMappings:6,
+      unmatchedReferences:[],
     },
   };
 
   const { snapshot: result, addedEvents } = finalizeSnapshot(snapshot, { overrides:{} });
-  assert.equal(addedEvents.length, 1);
-  assert.equal(result.channels.length, 5);
-  assert.deepEqual(result.channels.slice(0,3).map((x)=>x.group), ["TV | UK","TV | PT","TV | USA"]);
-  assert.deepEqual(result.channels.slice(0,3).map((x)=>x.number), [1000,2000,3000]);
-  assert.equal(result.channels[3].group, "Events | Football");
-  assert.equal(result.channels[3].name, "Southampton vs Ipswich Town");
-  assert.equal(result.channels[4].group, "Events | Tennis");
-  assert.deepEqual(result.channels.slice(3).map((x)=>x.number), [90000,90001]);
-  assert.equal(result.channels[3].linkedChannelFallback, true);
-  assert.equal(result.channels[3].variants[0].url, "http://a/gb");
-  assert.match(result.channels[3].logo, /:8092\/artwork\/event\/channel\/fallback\.png/);
-  assert.match(result.channels[3].event.programmeArtwork, /:8092\/artwork\/event\/program\/fallback\.png/);
-  assert.equal(result.dlhdStatus.matchedEventReferences, 2);
-  assert.equal(result.dlhdStatus.linkedChannelFallbackEvents, 1);
-  assert.equal(result.dlhdStatus.unmatchedReferences.length, 0);
+  assert.equal(addedEvents.length, 0);
+  assert.equal(result.channels.length, 6);
+  assert.deepEqual(result.channels.slice(0,5).map((x)=>x.group), [
+    "TV | UK", "TV | PT", "TV | USA", "TV | France", "TV | Germany",
+  ]);
+  assert.deepEqual(result.channels.slice(0,5).map((x)=>x.number), [1000,2000,3000,4000,4001]);
+  assert.equal(result.channels[5].group, "Events | Tennis");
+  assert.equal(result.channels[5].number, 90000);
+  assert.match(result.channels[5].logo, /:8092\/artwork\/event\/channel\/direct\.png/);
+  assert.match(result.channels[5].event.programmeArtwork, /:8092\/artwork\/event\/program\/direct\.png/);
+  assert.equal(result.dlhdStatus.matchedEventReferences, 1);
+  assert.equal(result.dlhdStatus.linkedChannelFallbackEvents, 0);
+  assert.equal(result.dlhdStatus.linearScheduleEvents, 1);
 });
 
 test("event guide contains exactly one event-only programme with poster artwork", () => {
