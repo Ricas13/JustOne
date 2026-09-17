@@ -71,6 +71,7 @@ for (const [code, name, aliases, codes] of COUNTRY_DEFINITIONS) {
   }
 }
 COUNTRY_NAME_ALIASES.sort((a, b) => b[0].length - a[0].length);
+const COUNTRY_EDGE_ALIAS_LIST = [...COUNTRY_EDGE_ALIASES].sort((a, b) => b.length - a.length);
 
 const PREFIX_RE = new RegExp(
   `^\\s*(?:${[...COUNTRY_CODE_TOKEN.keys()].sort((a,b)=>b.length-a.length).join("|")})\\s*[:|\\-]\\s*`,
@@ -97,7 +98,7 @@ function countryFromId(value) {
 export function stripCountryDecoration(value) {
   let base = normalize(value);
   if (!base) return "";
-  const aliases = [...COUNTRY_EDGE_ALIASES].sort((a, b) => b.length - a.length);
+  const aliases = COUNTRY_EDGE_ALIAS_LIST;
   let changed = true;
   while (changed) {
     changed = false;
