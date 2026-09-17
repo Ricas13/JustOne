@@ -145,7 +145,7 @@ async function freshDlhdSchedule() {
 
 async function loadDlhdReference(previous) {
   if (!config.dlhd.enabled) return { reference: null, status: { enabled: false } };
-  const old = previous.dlhdReference || { channels: [], events: [] };
+  const old = previous.dlhdReference || { channels: [], events: [], linearEvents: [] };
   let channelsRaw = null;
   let scheduleRaw = null;
   let channelsMode = "disabled";
@@ -172,16 +172,55 @@ async function loadDlhdReference(previous) {
     }
   }
 
-  const fresh = buildDlhdReference({
+  const mode = [channelsMode, scheduleMode].filter((x) => x !== "disabled").join("+") || "none";
+  const freshStatic = buildDlhdReference({
     channels: channelsRaw || [],
-    schedule: scheduleRaw || { events: [] },
-    mode: [channelsMode, scheduleMode].filter((x) => x !== "disabled").join("+") || "none",
+    schedule: { events: [] },
+    mode,
   });
-  const channels = config.dlhd.include247 ? (channelsRaw ? fresh.channels : old.channels || []) : [];
-  let events = config.dlhd.includeSchedule ? (scheduleRaw ? fresh.events : old.events || []) : [];
-  if (!config.dlhd.includeUpcoming) events = events.filter((event) => !event.upcoming);
+  const channels = config.dlhd.include247
+    ? (channelsRaw ? freshStatic.channels : old.channels || [])
+    : [];
 
-  const missingRequired = (config.dlhd.include247 && !channels.length) || (config.dlhd.includeSchedule && !events.length);
+  // Classify schedule rows against the effective static catalogue, including a
+  // last-known-good static list when the 24/7 endpoint is temporarily down.
+  // This prevents a partial DLHD outage from turning every linear event into a
+  // standalone event channel.
+  const effectiveStaticInput = channels.map((channel) => ({
+    id: channel.dlhdId || channel.id,
+    name: channel.name,
+    logo: channel.logo,
+  }));
+  const storedSchedule = [
+    ...(old.events || []),
+    ...(old.linearEvents || []),
+  ].map((event) => ({
+    id: event.dlhdId || event.id,
+    title: event.name,
+    category: event.category,
+    time: event.time,
+    start: event.start,
+    end: event.end,
+    upcoming: event.upcoming === true,
+    channels: event.linkedChannels || [],
+  }));
+  const scheduleReference = config.dlhd.includeSchedule
+    ? buildDlhdReference({
+        channels: effectiveStaticInput,
+        schedule: scheduleRaw || { events: storedSchedule },
+        mode,
+      })
+    : { events: [], linearEvents: [] };
+  let events = scheduleReference.events || [];
+  let linearEvents = scheduleReference.linearEvents || [];
+  if (!config.dlhd.includeUpcoming) {
+    events = events.filter((event) => !event.upcoming);
+    linearEvents = linearEvents.filter((event) => !event.upcoming);
+  }
+
+  const scheduleReferenceCount = events.length + linearEvents.length;
+  const missingRequired = (config.dlhd.include247 && !channels.length)
+    || (config.dlhd.includeSchedule && !scheduleReferenceCount);
   if (missingRequired && config.dlhd.failClosed) {
     const detail = [channelsError && `channels: ${channelsError}`, scheduleError && `schedule: ${scheduleError}`]
       .filter(Boolean).join("; ");
@@ -189,17 +228,19 @@ async function loadDlhdReference(previous) {
   }
 
   return {
-    reference: { generatedAt: new Date().toISOString(), mode: fresh.mode, channels, events },
+    reference: { generatedAt: new Date().toISOString(), mode, channels, events, linearEvents },
     status: {
       enabled: true,
       channels: channels.length,
       events: events.length,
+      linearEvents: linearEvents.length,
+      scheduleEvents: events.length + linearEvents.length,
       channelsMode: channelsRaw ? channelsMode : "last-known-good",
       scheduleMode: scheduleRaw ? scheduleMode : "last-known-good",
       channelsError,
       scheduleError,
       retainedChannels: !channelsRaw && channels.length > 0,
-      retainedSchedule: !scheduleRaw && events.length > 0,
+      retainedSchedule: !scheduleRaw && scheduleReferenceCount > 0,
     },
   };
 }
@@ -299,8 +340,9 @@ async function cacheState(source) {
 function shouldKeepEpgCandidate(row, allowedCountries) {
   if (!row?.tvgId) return false;
   if (isEventLikeRow(row)) return true;
+  if (!allowedCountries.size) return true;
   const cc = countryOf(row);
-  return !allowedCountries.size || (cc && allowedCountries.has(cc));
+  return Boolean(cc && allowedCountries.has(cc));
 }
 
 async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto") {
@@ -551,10 +593,11 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   const matchedRefIds = new Set();
   let rawSourceRows = 0;
   let matchedInputRows = 0;
-  const allowedCountries = new Set(config.dlhd.staticCountries || []);
+  const configuredCountries = config.dlhd.staticCountries || [];
+  const allowedCountries = new Set(configuredCountries.includes("ALL") ? [] : configuredCountries);
   const enabledSources = (state.sources || []).filter((s) => s.enabled !== false);
 
-  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; countries=${[...allowedCountries].join(",") || "all"}`);
+  console.log(`Catalog refresh: ${enabledSources.length} enabled source(s); sourceMode=${sourceMode}; static countries=${[...allowedCountries].join(",") || "all DLHD countries"}`);
   report(onProgress, { phase: "loading-dlhd", currentSource: null, sourceMode, sourcesTotal: enabledSources.length });
 
   const { reference: dlhdReference, status: dlhdStatus } = await loadDlhdReference(previous);
@@ -562,12 +605,13 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
 
   if (dlhdStatus?.channelsError) console.warn(`DLHD channels refresh warning: ${dlhdStatus.channelsError}`);
   if (dlhdStatus?.scheduleError) console.warn(`DLHD schedule refresh warning: ${dlhdStatus.scheduleError}`);
-  console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} events (${dlhdReference?.mode || "disabled"})`);
+  console.log(`DLHD reference: ${dlhdReference?.channels?.length || 0} channels + ${dlhdReference?.events?.length || 0} standalone events + ${dlhdReference?.linearEvents?.length || 0} scheduled-on-channel events (${dlhdReference?.mode || "disabled"})`);
   report(onProgress, {
     phase: "scanning-sources",
     sourceMode,
     dlhdChannels: dlhdReference?.channels?.length || 0,
     dlhdEvents: dlhdReference?.events?.length || 0,
+    dlhdLinearEvents: dlhdReference?.linearEvents?.length || 0,
   });
 
   for (let i = 0; i < enabledSources.length; i++) {
@@ -659,7 +703,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     const targetEventRefs = targetRefs.filter((ref) => ref.kind === "event");
     const matchedChannels = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "channel").length;
     const matchedEvents = [...matchedRefIds].filter((id) => refById.get(id)?.kind === "event").length;
-    dlhdStatus.staticCountries = [...allowedCountries];
+    dlhdStatus.staticCountries = allowedCountries.size ? [...allowedCountries] : ["ALL"];
     dlhdStatus.referenceChannels = dlhdReference.channels?.length || 0;
     dlhdStatus.referenceEvents = dlhdReference.events?.length || 0;
     dlhdStatus.targetChannelReferences = targetChannelRefs.length;
@@ -723,7 +767,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     dlhdStatus.outputEvents = outputEvents;
   }
 
-  const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {});
+  const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {}, { dlhdReference });
   const snapshot = {
     generatedAt: new Date().toISOString(),
     sourceMode,

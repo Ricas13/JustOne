@@ -144,6 +144,26 @@ function xmltvTime(ms) {
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`;
 }
 
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  if (![aStart, aEnd, bStart, bEnd].every((value) => Number.isFinite(Number(value)))) return false;
+  return Number(aStart) < Number(bEnd) && Number(bStart) < Number(aEnd);
+}
+
+function generatedLinearProgramme(event, channel) {
+  if (!Number.isFinite(Number(event?.start))) return null;
+  const start = Number(event.start);
+  const end = Number.isFinite(Number(event.end)) ? Number(event.end) : start + 3 * 60 * 60 * 1000;
+  const logo = text(event.logo || channel.logo || "");
+  return [
+    `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
+    `    <title>${xmlEscape(event.name || "Live Event")}</title>`,
+    event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
+    `    <desc>${xmlEscape("DLHD schedule reference for this linear channel.")}</desc>`,
+    logo ? `    <icon src="${xmlEscape(logo)}" />` : "",
+    "  </programme>",
+  ].filter(Boolean).join("\n");
+}
+
 function generatedEventProgramme(channel) {
   const event = channel.event;
   if (!event || !Number.isFinite(Number(event.start))) return null;
@@ -159,18 +179,37 @@ function generatedEventProgramme(channel) {
   ].filter(Boolean).join("\n");
 }
 
-export function enrichAndBuildGuide(channels, docs, overrides = {}) {
+export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdReference = null } = {}) {
   const hits = new Map();
+  const linearEventsByChannel = new Map();
+  for (const event of dlhdReference?.linearEvents || []) {
+    for (const linked of event.linkedStaticChannels || []) {
+      const key = String(linked.id || "");
+      if (!key) continue;
+      const rows = linearEventsByChannel.get(key) || [];
+      rows.push(event);
+      linearEventsByChannel.set(key, rows);
+    }
+  }
+  for (const rows of linearEventsByChannel.values()) {
+    rows.sort((a, b) => Number(a.start || 0) - Number(b.start || 0) || String(a.name || "").localeCompare(String(b.name || "")));
+  }
+
   for (const channel of channels) {
     const hit = findHit(channel, docs);
     if (hit) hits.set(channel.id, hit);
     const override = overrides[channel.id] || overrides[channel.key] || {};
+    const dlhdLogo = text(channel.logo || "");
     if (override.logo) channel.logo = override.logo;
+    else if (dlhdLogo) channel.logo = dlhdLogo;
     else if (hit?.meta?.icon) channel.logo = hit.meta.icon;
     if (!channel.logo) channel.logo = channel.variants.find((v) => v.logo)?.logo || "";
+    const linearEventCount = linearEventsByChannel.get(String(channel.dlhdRefId || ""))?.length || 0;
     channel.epg = channel.referenceKind === "event"
       ? { generated: "dlhd-schedule" }
-      : (hit ? { guideId: hit.doc.id, sourceId: hit.sourceId } : null);
+      : (hit
+        ? { guideId: hit.doc.id, sourceId: hit.sourceId, dlhdScheduleFallbacks: linearEventCount }
+        : (linearEventCount ? { generated: "dlhd-linear-schedule", dlhdScheduleFallbacks: linearEventCount } : null));
   }
 
   const out = [
@@ -192,10 +231,24 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}) {
       continue;
     }
     const hit = hits.get(channel.id);
-    if (!hit) continue;
-    const fallbackImage = channel.logo || hit.meta?.icon || "";
-    for (const programme of hit.doc.parsed.programmes.get(hit.sourceId) || []) {
+    const upstreamProgrammes = hit ? (hit.doc.parsed.programmes.get(hit.sourceId) || []) : [];
+    const fallbackImage = channel.logo || hit?.meta?.icon || "";
+    for (const programme of upstreamProgrammes) {
       out.push(remapProgramme(programme, channel.tvgId, fallbackImage));
+    }
+
+    // DLHD schedule events that belong to an ordinary 24/7 channel are used as
+    // EPG gap-fill only. If real XMLTV already covers that time slot, keep the
+    // provider programme and do not create a duplicate.
+    const hints = upstreamProgrammes.map(programmeHint);
+    for (const event of linearEventsByChannel.get(String(channel.dlhdRefId || "")) || []) {
+      const eventStart = Number(event.start);
+      const eventEnd = Number.isFinite(Number(event.end)) ? Number(event.end) : eventStart + 3 * 60 * 60 * 1000;
+      if (!Number.isFinite(eventStart)) continue;
+      const covered = hints.some((programme) => rangesOverlap(eventStart, eventEnd, programme.start, programme.stop));
+      if (covered) continue;
+      const generated = generatedLinearProgramme(event, channel);
+      if (generated) out.push(generated);
     }
   }
 

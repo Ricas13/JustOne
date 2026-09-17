@@ -1,5 +1,5 @@
 import { withInternalKey } from "./config.js";
-import { countryOf } from "./identity.js";
+import { countryGroup, countryName, countryOf } from "./identity.js";
 import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
 
@@ -94,94 +94,6 @@ function eventArtworkUrls(channel) {
   };
 }
 
-function variantKey(variant) {
-  return `${variant.sourceId || ""}|${variant.url || ""}`;
-}
-
-function copyVariants(channels) {
-  const seen = new Set();
-  const out = [];
-  for (const channel of channels) {
-    for (const variant of channel.variants || []) {
-      const key = variantKey(variant);
-      if (!variant.url || seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...variant });
-    }
-  }
-  return out.sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || String(a.name || "").localeCompare(String(b.name || "")))
-    .map((variant, order) => ({ ...variant, order }));
-}
-
-function linkedPlaybackChannels(eventRef, staticChannels) {
-  const byDlhdId = new Map();
-  const byName = new Map();
-  for (const channel of staticChannels) {
-    if (channel.dlhdId) byDlhdId.set(String(channel.dlhdId), channel);
-    for (const value of [channel.name, ...(channel.aliasNames || [])]) {
-      const key = normalize(value);
-      if (key && !byName.has(key)) byName.set(key, channel);
-    }
-  }
-
-  const found = [];
-  const seen = new Set();
-  for (const linked of eventRef.linkedChannels || []) {
-    const channel = byDlhdId.get(String(linked.id || "")) || byName.get(normalize(linked.name || ""));
-    if (!channel || seen.has(channel.id) || !(channel.variants || []).length) continue;
-    seen.add(channel.id);
-    found.push(channel);
-  }
-  return found;
-}
-
-function materializeLinkedEvents(snapshot) {
-  const current = snapshot.channels || [];
-  const existingEventRefIds = new Set(current.filter((ch) => ch.referenceKind === "event").map((ch) => ch.dlhdRefId).filter(Boolean));
-  const staticChannels = current.filter((ch) => ch.referenceKind !== "event");
-  const added = [];
-  let mappings = 0;
-
-  for (const ref of snapshot.dlhdReference?.events || []) {
-    if (existingEventRefIds.has(ref.id)) continue;
-    const linked = linkedPlaybackChannels(ref, staticChannels);
-    if (!linked.length) continue;
-    const variants = copyVariants(linked);
-    if (!variants.length) continue;
-
-    const type = eventTypeFor(ref);
-    const channel = {
-      key: ref.key,
-      id: ref.id,
-      tvgId: ref.tvgId,
-      name: ref.name,
-      group: `Events | ${type}`,
-      logo: "",
-      aliasNames: [...new Set([ref.name, ...(ref.aliases || []), ...linked.flatMap((ch) => ch.aliasNames || [])].filter(Boolean))],
-      variants,
-      referenceKind: "event",
-      dlhdRefId: ref.id,
-      dlhdId: ref.dlhdId || null,
-      linkedChannelFallback: true,
-      linkedChannelIds: linked.map((ch) => ch.id),
-      event: {
-        start: ref.start,
-        end: ref.end,
-        time: ref.time,
-        category: type,
-        originalCategory: ref.category,
-        originalName: ref.name,
-        linkedChannels: ref.linkedChannels || [],
-      },
-    };
-    mappings += variants.length;
-    existingEventRefIds.add(ref.id);
-    added.push(channel);
-  }
-
-  return { added, mappings };
-}
-
 function layoutChannels(channels, overrides = {}, providerOrders = null) {
   for (const channel of channels) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
@@ -205,12 +117,7 @@ function layoutChannels(channels, overrides = {}, providerOrders = null) {
       channel.event.programmeArtwork = artwork.programme;
       channel.logo = text(override.logo || artwork.channel);
     } else {
-      if (!override.group) {
-        const cc = staticCountry(channel);
-        if (cc === "GB") channel.group = "TV | UK";
-        else if (cc === "PT") channel.group = "TV | PT";
-        else if (cc === "US") channel.group = "TV | USA";
-      }
+      if (!override.group) channel.group = countryGroup(staticCountry(channel));
       const providerOrder = providerOrderForChannel(channel, providerOrders);
       if (providerOrder) channel.providerOrder = providerOrder;
       else delete channel.providerOrder;
@@ -219,8 +126,20 @@ function layoutChannels(channels, overrides = {}, providerOrders = null) {
 
   const staticRows = channels.filter((ch) => ch.referenceKind !== "event").sort((a, b) => {
     const ac = staticCountry(a), bc = staticCountry(b);
-    const countryDifference = (COUNTRY_RANK.get(ac) ?? 99) - (COUNTRY_RANK.get(bc) ?? 99);
-    if (countryDifference) return countryDifference;
+    const aRank = COUNTRY_RANK.get(ac) ?? 3;
+    const bRank = COUNTRY_RANK.get(bc) ?? 3;
+    if (aRank !== bRank) return aRank - bRank;
+
+    // UK, Portugal and USA retain their curated provider order. Every other
+    // country follows as a stable country block, alphabetically by country then
+    // channel name. Unknown/International channels sort last.
+    if (aRank === 3) {
+      const aCountry = countryName(ac) || (ac ? ac : "ZZZ International");
+      const bCountry = countryName(bc) || (bc ? bc : "ZZZ International");
+      const byCountry = aCountry.localeCompare(bCountry);
+      if (byCountry) return byCountry;
+    }
+
     const ap = Number(a.providerOrder?.position);
     const bp = Number(b.providerOrder?.position);
     const aPosition = Number.isFinite(ap) ? ap : Number.MAX_SAFE_INTEGER;
@@ -236,13 +155,17 @@ function layoutChannels(channels, overrides = {}, providerOrders = null) {
   });
 
   const nextByCountry = new Map([["GB", 1000], ["PT", 2000], ["US", 3000]]);
+  let nextInternational = 4000;
   for (const channel of staticRows) {
     const override = overrides[channel.id] || overrides[channel.key] || {};
     if (Number(override.number) > 0) { channel.number = Number(override.number); continue; }
     const cc = staticCountry(channel);
-    const next = nextByCountry.get(cc) ?? 4000;
-    channel.number = next;
-    nextByCountry.set(cc, next + 1);
+    if (nextByCountry.has(cc)) {
+      channel.number = nextByCountry.get(cc);
+      nextByCountry.set(cc, channel.number + 1);
+    } else {
+      channel.number = nextInternational++;
+    }
   }
   let eventNumber = 90000;
   for (const channel of eventRows) {
@@ -307,8 +230,6 @@ export function augmentGuideWithEvents(guideXml, channels) {
 export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null } = {}) {
   const cloned = structuredClone(snapshot || {});
   cloned.channels = cloned.channels || [];
-  const fallback = materializeLinkedEvents(cloned);
-  cloned.channels.push(...fallback.added);
   cloned.channels = layoutChannels(cloned.channels, state.overrides || {}, providerOrders);
 
   const staticCount = cloned.channels.filter((ch) => ch.referenceKind !== "event").length;
@@ -330,9 +251,9 @@ export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null }
   cloned.lineupOrdering = orderingSummary;
 
   if (cloned.dlhdStatus) {
-    cloned.dlhdStatus.linkedChannelFallbackEvents = fallback.added.length;
-    cloned.dlhdStatus.linkedChannelFallbackMappings = fallback.mappings;
-    cloned.dlhdStatus.outputMappings = Number(cloned.dlhdStatus.outputMappings || 0) + fallback.mappings;
+    cloned.dlhdStatus.linkedChannelFallbackEvents = 0;
+    cloned.dlhdStatus.linkedChannelFallbackMappings = 0;
+    cloned.dlhdStatus.linearScheduleEvents = cloned.dlhdReference?.linearEvents?.length || 0;
     cloned.dlhdStatus.outputStaticChannels = staticCount;
     cloned.dlhdStatus.outputEvents = eventCount;
     cloned.dlhdStatus.matchedChannelReferences = matchedStaticIds.size;
@@ -342,7 +263,7 @@ export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null }
     cloned.dlhdStatus.unmatchedReferences = (cloned.dlhdStatus.unmatchedReferences || []).filter((ref) => !matched.has(ref.id));
   }
 
-  return { snapshot: cloned, addedEvents: fallback.added };
+  return { snapshot: cloned, addedEvents: [] };
 }
 
 export { EVENT_TYPE_ORDER };

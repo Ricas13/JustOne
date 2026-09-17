@@ -1,12 +1,7 @@
-import { countryOf, strippedChannelName } from "./identity.js";
+import { countryGroup, countryOf, stripCountryDecoration, strippedChannelName } from "./identity.js";
 import { hash, normalize, slug, stripTags, text } from "./util.js";
 
-const COUNTRY_WORDS = new Set([
-  "uk","gb","usa","us","united","kingdom","states","portugal","pt","spain","es","france","fr","germany","de",
-  "italy","it","canada","ca","australia","au","romania","poland","sweden","norway","denmark","finland","ireland",
-  "netherlands","nl","belgium","ch","switzerland","austria","greece","turkey","serbia","croatia","israel","mexico",
-  "brazil","argentina","new","zealand","nz","india","japan","korea","china","russia","bulgaria","slovakia","cz"
-]);
+
 const NUMBER_WORDS = new Map([
   ["one","1"],["two","2"],["three","3"],["four","4"],["five","5"],
   ["six","6"],["seven","7"],["eight","8"],["nine","9"],["ten","10"],
@@ -250,23 +245,79 @@ export function buildDlhdReference({ channels = [], schedule = { events:[] }, mo
   const staticRows = channels.map((ch)=>{
     const name = text(ch.name);
     const country = countryOf({ name });
-    const group = country === "GB" ? "TV | UK" : country === "PT" ? "TV | PT" : country === "US" ? "TV | USA" : "";
     return {
-      kind:"channel", dlhdId:text(ch.id), name, logo:text(ch.logo), aliases:[name], country, group,
+      kind:"channel", dlhdId:text(ch.id), name, logo:text(ch.logo), aliases:[name], country, group:countryGroup(country),
       ...referenceIdentity("channel", name, ch.id || name),
     };
   }).filter((row)=>row.name);
-  const eventRows = (schedule.events || []).map((evt)=>{
-    const specificAliases = (evt.channels||[]).map((ch)=>text(ch.name)).filter((name)=>name && !GENERIC_EVENT_ALIAS_RE.test(normalize(name)));
-    const identity = referenceIdentity("event", evt.title, `${evt.id}|${evt.start||evt.time||""}`);
-    return {
-      kind:"event", dlhdId:text(evt.id), name:text(evt.title), logo:text((evt.channels||[]).find((ch)=>ch.logo)?.logo || ""),
-      group:`Events | ${text(evt.category || "Other")}`, aliases:[text(evt.title), ...specificAliases], linkedChannels:evt.channels||[],
-      start:evt.start, end:evt.end, time:evt.time, category:text(evt.category), upcoming:evt.upcoming===true,
+
+  const staticById = new Map(staticRows.filter((row)=>row.dlhdId).map((row)=>[String(row.dlhdId), row]));
+  const staticByName = new Map();
+  for (const row of staticRows) {
+    for (const value of [row.name, ...(row.aliases || [])]) {
+      const key = normalize(value);
+      if (key && !staticByName.has(key)) staticByName.set(key, row);
+    }
+  }
+
+  const standaloneEvents = [];
+  const linearEvents = [];
+  for (const evt of schedule.events || []) {
+    const title = text(evt.title);
+    if (!title) continue;
+    const linkedChannels = evt.channels || [];
+    const linkedStaticChannels = [];
+    const seenStatic = new Set();
+    for (const linked of linkedChannels) {
+      const hit = staticById.get(String(linked.id || "")) || staticByName.get(normalize(linked.name || ""));
+      if (!hit || seenStatic.has(hit.id)) continue;
+      seenStatic.add(hit.id);
+      linkedStaticChannels.push({
+        id: hit.id,
+        dlhdId: hit.dlhdId,
+        tvgId: hit.tvgId,
+        name: hit.name,
+        country: hit.country,
+        group: hit.group,
+      });
+    }
+
+    const specificAliases = linkedChannels
+      .map((ch)=>text(ch.name))
+      .filter((name)=>name && !GENERIC_EVENT_ALIAS_RE.test(normalize(name)));
+    const identity = referenceIdentity("event", title, `${evt.id}|${evt.start||evt.time||""}`);
+    const row = {
+      kind:"event",
+      dlhdId:text(evt.id),
+      name:title,
+      logo:text(linkedChannels.find((ch)=>ch.logo)?.logo || ""),
+      group:`Events | ${text(evt.category || "Other")}`,
+      aliases:[title, ...specificAliases],
+      linkedChannels,
+      linkedStaticChannels,
+      start:evt.start,
+      end:evt.end,
+      time:evt.time,
+      category:text(evt.category),
+      upcoming:evt.upcoming===true,
       ...identity,
     };
-  }).filter((row)=>row.name);
-  return { generatedAt:new Date().toISOString(), mode, channels:staticRows, events:eventRows };
+
+    // A scheduled event carried by a normal DLHD 24/7 channel belongs in that
+    // channel's EPG, not as a duplicate temporary Live TV channel. Standalone
+    // schedule entries (PPV/Event Stream/etc.) remain event references and must
+    // match a provider event stream of their own.
+    if (linkedStaticChannels.length) linearEvents.push(row);
+    else standaloneEvents.push(row);
+  }
+
+  return {
+    generatedAt:new Date().toISOString(),
+    mode,
+    channels:staticRows,
+    events:standaloneEvents,
+    linearEvents,
+  };
 }
 
 function canonicalToken(token) {
@@ -276,12 +327,9 @@ function canonicalToken(token) {
   return token;
 }
 function keyVariants(value) {
-  let base = normalize(strippedChannelName(value));
+  let base = stripCountryDecoration(strippedChannelName(value));
   if (!base) return [];
-  let tokens = base.split(" ").filter(Boolean);
-  while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[0])) tokens.shift();
-  while (tokens.length > 1 && COUNTRY_WORDS.has(tokens[tokens.length-1])) tokens.pop();
-  tokens = tokens.map(canonicalToken);
+  let tokens = base.split(" ").filter(Boolean).map(canonicalToken);
   base = tokens.join(" ");
   const out = new Set([base, base.replace(/\s+/g,"")]);
   const withoutRegion = tokens.filter((token)=>!new Set(["east","west"]).has(token));
@@ -294,7 +342,7 @@ function keyVariants(value) {
   return [...out].filter(Boolean);
 }
 function significantTokens(value) {
-  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !COUNTRY_WORDS.has(x) && !["live","channel","sports","sport","tv"].includes(x)) || []);
+  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !["live","channel","sports","sport","tv"].includes(x)) || []);
 }
 function fuzzyEventMatch(a,b) {
   const aa = significantTokens(a), bb = significantTokens(b);

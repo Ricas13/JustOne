@@ -329,8 +329,13 @@ function snapshotStaticCountry(channel) {
   return countryOf({ group: channel?.group || "" });
 }
 
+function configuredStaticCountries() {
+  const configured = config.dlhd.staticCountries || [];
+  return new Set(configured.includes("ALL") ? [] : configured);
+}
+
 function staticPolicyViolations(snapshot) {
-  const allowed = new Set(config.dlhd.staticCountries || []);
+  const allowed = configuredStaticCountries();
   if (!allowed.size) return [];
   return (snapshot.channels || [])
     .filter((channel) => channel.referenceKind !== "event")
@@ -432,7 +437,7 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
   }
 
   const desiredIds = new Set(desiredChannels.map((ch) => ch.tvgId));
-  const allowedCountries = new Set(config.dlhd.staticCountries || []);
+  const allowedCountries = configuredStaticCountries();
   for (const ch of managed) {
     if (desiredIds.has(ch.tvg_id)) continue;
     const tvgId = String(ch.tvg_id || "");

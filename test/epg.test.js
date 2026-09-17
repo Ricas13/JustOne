@@ -79,3 +79,47 @@ test("static channels without real provider EPG do not get synthetic placeholder
   assert.doesNotMatch(xml, /<programme\b/);
   assert.doesNotMatch(xml, /Dawn Patrol|Rise and shine/i);
 });
+
+test("DLHD channel logo remains authoritative over XMLTV and provider logos", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="canal.fr"><display-name>Canal+ Foot France</display-name><icon src="https://xmltv/logo.png"/></channel>
+  </tv>`);
+  const channels = [{
+    id:"canal", key:"canal", tvgId:"justone.canal", name:"Canal+ Foot France",
+    logo:"https://dlhd/logo.png", aliasNames:[], dlhdRefId:"channel-canal",
+    variants:[{ originalTvgId:"canal.fr", logo:"https://provider/logo.png" }],
+  }];
+  enrichAndBuildGuide(channels, [{ id:"guide", name:"Guide", parsed }], {});
+  assert.equal(channels[0].logo, "https://dlhd/logo.png");
+});
+
+test("DLHD events on normal channels fill XMLTV gaps but never duplicate an existing programme slot", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="sky.uk"><display-name>Sky Sports Football UK</display-name></channel>
+    <programme start="20260918180000 +0000" stop="20260918200000 +0000" channel="sky.uk"><title>Existing Match</title></programme>
+  </tv>`);
+  const channels = [{
+    id:"sky", key:"sky", tvgId:"justone.sky", name:"Sky Sports Football UK",
+    logo:"https://dlhd/sky.png", aliasNames:[], dlhdRefId:"channel-sky",
+    referenceKind:"channel", variants:[{ originalTvgId:"sky.uk" }],
+  }];
+  const dlhdReference = {
+    linearEvents: [
+      {
+        id:"covered", name:"Arsenal vs Chelsea", category:"Football",
+        start:Date.UTC(2026,8,18,18,30), end:Date.UTC(2026,8,18,19,30),
+        linkedStaticChannels:[{ id:"channel-sky" }],
+      },
+      {
+        id:"gap", name:"Benfica vs Porto", category:"Football",
+        start:Date.UTC(2026,8,18,20,30), end:Date.UTC(2026,8,18,22,30),
+        linkedStaticChannels:[{ id:"channel-sky" }],
+      },
+    ],
+  };
+  const xml = enrichAndBuildGuide(channels, [{ id:"guide", name:"Guide", parsed }], {}, { dlhdReference });
+  assert.match(xml, /<title>Existing Match<\/title>/);
+  assert.doesNotMatch(xml, /<title>Arsenal vs Chelsea<\/title>/);
+  assert.match(xml, /<title>Benfica vs Porto<\/title>/);
+  assert.equal((xml.match(/channel="justone\.sky"/g) || []).length, 2);
+});

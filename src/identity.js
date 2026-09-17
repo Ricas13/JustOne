@@ -8,61 +8,155 @@ const QUALITY_PATTERNS = [
 ];
 
 const BACKUP_RE = /\b(?:backup|back[- ]?up|secondary|alternate|alternative|alt|reserve|spare|mirror)\b/i;
-const PREFIX_RE = /^\s*(?:uk|gb|us|usa|pt|fr|de|es|it|ca|au)\s*[:|\-]\s*/i;
 const DECORATION_RE = /(?:\[[^\]]*\]|\([^)]*(?:uhd|4k|fhd|hd|sd|backup|alt|1080|720|576|480)[^)]*\))/gi;
 
-const COUNTRY_RULES = [
-  ["GB", /\b(?:uk|gb|united kingdom|england|scotland|wales)\b/],
-  ["US", /\b(?:us|usa|united states)\b/],
-  ["PT", /\b(?:pt|portugal)\b/],
-  ["ES", /\b(?:es|spain)\b/],
-  ["FR", /\b(?:fr|france)\b/],
-  ["DE", /\b(?:de|germany)\b/],
-  ["IT", /\b(?:it|italy)\b/],
-  ["CA", /\b(?:ca|canada)\b/],
-  ["AU", /\b(?:au|australia)\b/],
-  ["GR", /\b(?:gr|greece)\b/],
-  ["NL", /\b(?:nl|netherlands|holland)\b/],
-  ["PL", /\b(?:pl|poland)\b/],
-  ["DK", /\b(?:dk|denmark)\b/],
-  ["BG", /\b(?:bg|bulgaria)\b/],
-  ["TR", /\b(?:tr|turkey|turkiye)\b/],
-  ["AR", /\b(?:ar|argentina)\b/],
-  ["IE", /\b(?:ie|ireland)\b/],
-  ["RO", /\b(?:ro|romania)\b/],
-  ["SE", /\b(?:se|sweden)\b/],
-  ["NO", /\b(?:no|norway)\b/],
-  ["FI", /\b(?:fi|finland)\b/],
-  ["IL", /\b(?:il|israel)\b/],
-  ["MX", /\b(?:mx|mexico)\b/],
-  ["BR", /\b(?:br|brazil)\b/],
-  ["NZ", /\b(?:nz|new zealand)\b/],
-  ["JP", /\b(?:jp|japan)\b/],
-  ["KR", /\b(?:kr|south korea|korea)\b/],
-  ["CN", /\b(?:cn|china)\b/],
-  ["RU", /\b(?:ru|russia)\b/],
-  ["SK", /\b(?:sk|slovakia)\b/],
-  ["CZ", /\b(?:cz|czech republic|czechia)\b/],
-  ["RS", /\b(?:rs|serbia)\b/],
-  ["HR", /\b(?:hr|croatia)\b/],
-  ["BE", /\b(?:be|belgium)\b/],
-  ["CH", /\b(?:switzerland)\b/],
-  ["AT", /\b(?:austria)\b/],
-  ["AE", /\b(?:ae|united arab emirates|uae)\b/],
-  ["SA", /\b(?:sa|saudi arabia)\b/],
-  ["QA", /\b(?:qa|qatar)\b/],
+const COUNTRY_DEFINITIONS = [
+  ["GB","United Kingdom",["united kingdom","england","scotland","wales"],["uk","gb"]],
+  ["PT","Portugal",["portugal"],["pt"]],
+  ["US","United States",["united states"],["usa","us"]],
+  ["ES","Spain",["spain"],["es"]], ["FR","France",["france"],["fr"]], ["DE","Germany",["germany"],["de"]],
+  ["IT","Italy",["italy"],["it"]], ["CA","Canada",["canada"],["ca"]], ["AU","Australia",["australia"],["au"]],
+  ["GR","Greece",["greece"],["gr"]], ["NL","Netherlands",["netherlands","holland"],["nl"]], ["PL","Poland",["poland"],["pl"]],
+  ["DK","Denmark",["denmark"],["dk"]], ["BG","Bulgaria",["bulgaria"],["bg"]], ["TR","Turkey",["turkey","turkiye"],["tr"]],
+  ["AR","Argentina",["argentina"],["ar"]], ["IE","Ireland",["ireland"],["ie"]], ["RO","Romania",["romania"],["ro"]],
+  ["SE","Sweden",["sweden"],["se"]], ["NO","Norway",["norway"],["no"]], ["FI","Finland",["finland"],["fi"]],
+  ["IL","Israel",["israel"],["il"]], ["MX","Mexico",["mexico"],["mx"]], ["BR","Brazil",["brazil","brasil"],["br"]],
+  ["NZ","New Zealand",["new zealand"],["nz"]], ["JP","Japan",["japan"],["jp"]], ["KR","South Korea",["south korea","korea"],["kr"]],
+  ["CN","China",["china"],["cn"]], ["RU","Russia",["russia"],["ru"]], ["SK","Slovakia",["slovakia"],["sk"]],
+  ["CZ","Czechia",["czech republic","czechia","czech"],["cz"]], ["RS","Serbia",["serbia"],["rs"]], ["HR","Croatia",["croatia"],["hr"]],
+  ["BE","Belgium",["belgium"],["be"]], ["CH","Switzerland",["switzerland"],["ch"]], ["AT","Austria",["austria"],["at"]],
+  ["AE","United Arab Emirates",["united arab emirates","uae"],["ae"]], ["SA","Saudi Arabia",["saudi arabia"],["sa"]],
+  ["QA","Qatar",["qatar"],["qa"]], ["MY","Malaysia",["malaysia"],["my"]], ["IN","India",["india"],["in"]],
+  ["ZA","South Africa",["south africa"],["za"]], ["EG","Egypt",["egypt"],["eg"]], ["CO","Colombia",["colombia"],["co"]],
+  ["UY","Uruguay",["uruguay"],["uy"]], ["PE","Peru",["peru"],["pe"]], ["HU","Hungary",["hungary"],["hu"]],
+  ["CY","Cyprus",["cyprus"],["cy"]], ["SI","Slovenia",["slovenia"],["si"]], ["BA","Bosnia and Herzegovina",["bosnia and herzegovina","bosnia"],["ba"]],
+  ["ME","Montenegro",["montenegro"],["me"]], ["MK","North Macedonia",["north macedonia","macedonia"],["mk"]], ["AL","Albania",["albania"],["al"]],
+  ["UA","Ukraine",["ukraine"],["ua"]], ["BY","Belarus",["belarus"],["by"]], ["LT","Lithuania",["lithuania"],["lt"]],
+  ["LV","Latvia",["latvia"],["lv"]], ["EE","Estonia",["estonia"],["ee"]], ["IS","Iceland",["iceland"],["is"]],
+  ["LU","Luxembourg",["luxembourg"],["lu"]], ["MT","Malta",["malta"],["mt"]], ["CL","Chile",["chile"],["cl"]],
+  ["EC","Ecuador",["ecuador"],["ec"]], ["VE","Venezuela",["venezuela"],["ve"]], ["BO","Bolivia",["bolivia"],["bo"]],
+  ["PY","Paraguay",["paraguay"],["py"]], ["CR","Costa Rica",["costa rica"],["cr"]], ["PA","Panama",["panama"],["pa"]],
+  ["DO","Dominican Republic",["dominican republic"],["do"]], ["PR","Puerto Rico",["puerto rico"],["pr"]], ["JM","Jamaica",["jamaica"],["jm"]],
+  ["TT","Trinidad and Tobago",["trinidad and tobago","trinidad"],["tt"]], ["GH","Ghana",["ghana"],["gh"]], ["NG","Nigeria",["nigeria"],["ng"]],
+  ["KE","Kenya",["kenya"],["ke"]], ["MA","Morocco",["morocco"],["ma"]], ["DZ","Algeria",["algeria"],["dz"]],
+  ["TN","Tunisia",["tunisia"],["tn"]], ["SN","Senegal",["senegal"],["sn"]], ["CI","Ivory Coast",["ivory coast","cote d ivoire"],["ci"]],
+  ["CM","Cameroon",["cameroon"],["cm"]], ["ET","Ethiopia",["ethiopia"],["et"]], ["TZ","Tanzania",["tanzania"],["tz"]],
+  ["UG","Uganda",["uganda"],["ug"]], ["ZW","Zimbabwe",["zimbabwe"],["zw"]], ["PK","Pakistan",["pakistan"],["pk"]],
+  ["BD","Bangladesh",["bangladesh"],["bd"]], ["LK","Sri Lanka",["sri lanka"],["lk"]], ["NP","Nepal",["nepal"],["np"]],
+  ["ID","Indonesia",["indonesia"],["id"]], ["PH","Philippines",["philippines"],["ph"]], ["TH","Thailand",["thailand"],["th"]],
+  ["VN","Vietnam",["vietnam","viet nam"],["vn"]], ["SG","Singapore",["singapore"],["sg"]], ["HK","Hong Kong",["hong kong"],["hk"]],
+  ["TW","Taiwan",["taiwan"],["tw"]], ["IR","Iran",["iran"],["ir"]], ["IQ","Iraq",["iraq"],["iq"]],
+  ["JO","Jordan",["jordan"],["jo"]], ["LB","Lebanon",["lebanon"],["lb"]], ["KW","Kuwait",["kuwait"],["kw"]],
+  ["OM","Oman",["oman"],["om"]], ["BH","Bahrain",["bahrain"],["bh"]], ["GE","Georgia",["georgia"],["ge"]],
+  ["AM","Armenia",["armenia"],["am"]], ["AZ","Azerbaijan",["azerbaijan"],["az"]], ["KZ","Kazakhstan",["kazakhstan"],["kz"]],
+  ["UZ","Uzbekistan",["uzbekistan"],["uz"]],
 ];
 
-const COUNTRY_SUFFIX_MAP = {
-  uk:"GB", gb:"GB", us:"US", usa:"US", pt:"PT", es:"ES", fr:"FR", de:"DE", it:"IT", ca:"CA", au:"AU",
-  gr:"GR", nl:"NL", pl:"PL", dk:"DK", bg:"BG", tr:"TR", ar:"AR", ie:"IE", ro:"RO", se:"SE", no:"NO",
-  fi:"FI", il:"IL", mx:"MX", br:"BR", nz:"NZ", jp:"JP", kr:"KR", cn:"CN", ru:"RU", sk:"SK", cz:"CZ",
-  rs:"RS", hr:"HR", be:"BE", ch:"CH", at:"AT", ae:"AE", sa:"SA", qa:"QA",
-};
+const COUNTRY_BY_CODE = new Map(COUNTRY_DEFINITIONS.map(([code, name, aliases, codes]) => [code, { code, name, aliases, codes }]));
+const COUNTRY_CODE_TOKEN = new Map();
+const COUNTRY_NAME_ALIASES = [];
+const COUNTRY_EDGE_ALIASES = new Set();
+for (const [code, name, aliases, codes] of COUNTRY_DEFINITIONS) {
+  for (const token of codes) {
+    const key = normalize(token);
+    COUNTRY_CODE_TOKEN.set(key, code);
+    COUNTRY_EDGE_ALIASES.add(key);
+  }
+  for (const alias of [name, ...aliases]) {
+    const key = normalize(alias);
+    if (key) {
+      COUNTRY_NAME_ALIASES.push([key, code]);
+      COUNTRY_EDGE_ALIASES.add(key);
+    }
+  }
+}
+COUNTRY_NAME_ALIASES.sort((a, b) => b[0].length - a[0].length);
+const COUNTRY_EDGE_PREFIXES = new Map();
+const COUNTRY_EDGE_SUFFIXES = new Map();
+for (const alias of COUNTRY_EDGE_ALIASES) {
+  const tokens = alias.split(" ").filter(Boolean);
+  if (!tokens.length) continue;
+  const prefixRows = COUNTRY_EDGE_PREFIXES.get(tokens[0]) || [];
+  prefixRows.push(alias);
+  COUNTRY_EDGE_PREFIXES.set(tokens[0], prefixRows);
+  const suffixRows = COUNTRY_EDGE_SUFFIXES.get(tokens[tokens.length - 1]) || [];
+  suffixRows.push(alias);
+  COUNTRY_EDGE_SUFFIXES.set(tokens[tokens.length - 1], suffixRows);
+}
+for (const rows of [...COUNTRY_EDGE_PREFIXES.values(), ...COUNTRY_EDGE_SUFFIXES.values()]) {
+  rows.sort((a, b) => b.length - a.length);
+}
 
-function countryFromText(value) {
+const PREFIX_RE = new RegExp(
+  `^\\s*(?:${[...COUNTRY_CODE_TOKEN.keys()].sort((a,b)=>b.length-a.length).join("|")})\\s*[:|\\-]\\s*`,
+  "i",
+);
+
+function countryFromName(value) {
   const hay = normalize(value);
-  return COUNTRY_RULES.find(([, re]) => re.test(hay))?.[0] || "";
+  if (!hay) return "";
+  const tokens = hay.split(" ").filter(Boolean);
+
+  // An explicit country code at an edge is the strongest signal. This avoids
+  // treating a channel such as "Georgia Bulldogs USA" as the country Georgia.
+  const boundaryCode = COUNTRY_CODE_TOKEN.get(tokens[0]) || COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]);
+  if (boundaryCode) return boundaryCode;
+
+  const padded = ` ${hay} `;
+  for (const [alias, code] of COUNTRY_NAME_ALIASES) {
+    if (padded.includes(` ${alias} `)) return code;
+  }
+  return "";
+}
+
+function countryFromId(value) {
+  const tokens = String(value || "").toLowerCase().split(/[._-]+/).map(normalize).filter(Boolean);
+  if (!tokens.length) return "";
+  return COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]) || COUNTRY_CODE_TOKEN.get(tokens[0]) || "";
+}
+
+export function stripCountryDecoration(value) {
+  let base = normalize(value);
+  if (!base) return "";
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const tokens = base.split(" ").filter(Boolean);
+    if (tokens.length <= 1) break;
+
+    for (const alias of COUNTRY_EDGE_PREFIXES.get(tokens[0]) || []) {
+      if (base.startsWith(`${alias} `) && base.length > alias.length) {
+        base = base.slice(alias.length + 1).trim();
+        changed = true;
+        break;
+      }
+    }
+    if (changed) continue;
+
+    const last = tokens[tokens.length - 1];
+    for (const alias of COUNTRY_EDGE_SUFFIXES.get(last) || []) {
+      if (base.endsWith(` ${alias}`) && base.length > alias.length) {
+        base = base.slice(0, -(alias.length + 1)).trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+  return base;
+}
+
+export function countryName(code) {
+  return COUNTRY_BY_CODE.get(String(code || "").toUpperCase())?.name || "";
+}
+
+export function countryGroup(code) {
+  const cc = String(code || "").toUpperCase();
+  if (cc === "GB") return "TV | UK";
+  if (cc === "PT") return "TV | PT";
+  if (cc === "US") return "TV | USA";
+  const name = countryName(cc);
+  return name ? `TV | ${name}` : "TV | International";
 }
 
 export function qualityOf(value) {
@@ -103,23 +197,20 @@ export function canonicalIdentity(row, aliases = {}) {
 }
 
 export function countryOf(row = {}) {
-  // An explicit country in the channel name/tvg-name outranks a broad provider
-  // group. This prevents a row grouped as "PT" from making a reference named
-  // "Eurosport 1 Greece" look Portuguese.
-  const byName = countryFromText(`${row.name || ""} ${row.tvgName || ""}`);
+  // Explicit country information in a channel name/tvg-name outranks broad
+  // provider grouping. Two-letter codes are only interpreted as boundary
+  // tokens or separated tvg-id tokens, avoiding false positives such as "in".
+  const byName = countryFromName(`${row.name || ""} ${row.tvgName || ""}`);
   if (byName) return byName;
 
-  const id = String(row.tvgId || "").toLowerCase();
-  const suffix = /(?:^|[._-])(uk|gb|us|usa|pt|es|fr|de|it|ca|au|gr|nl|pl|dk|bg|tr|ar|ie|ro|se|no|fi|il|mx|br|nz|jp|kr|cn|ru|sk|cz|rs|hr|be|ch|at|ae|sa|qa)(?:$|[._-])/i.exec(id)?.[1]?.toLowerCase();
-  if (suffix && COUNTRY_SUFFIX_MAP[suffix]) return COUNTRY_SUFFIX_MAP[suffix];
+  const byId = countryFromId(row.tvgId);
+  if (byId) return byId;
 
-  return countryFromText(row.group || "");
+  return countryFromName(row.group || "");
 }
 
 export function canonicalGroup(row) {
-  const cc = countryOf(row);
-  if (cc) return `TV | ${cc}`;
-  return text(row.group || "TV | International");
+  return countryGroup(countryOf(row));
 }
 
 export function variantRank(variant, qualityOrder) {

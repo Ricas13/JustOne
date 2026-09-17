@@ -36,17 +36,53 @@ test("24/7 parser does not borrow an adjacent card title", () => {
   ]);
 });
 
-test("DLHD static references retain explicit country metadata", () => {
+test("DLHD static references retain global country metadata and friendly groups", () => {
   const reference = buildDlhdReference({ channels: [
     { id:"35", name:"BBC One UK" },
     { id:"80", name:"RTP 1 Portugal" },
     { id:"99", name:"ESPN USA" },
+    { id:"120", name:"Canal+ Foot France" },
+    { id:"121", name:"beIN Sports 2 Malaysia" },
   ] });
   assert.deepEqual(reference.channels.map((x) => [x.country, x.group]), [
     ["GB", "TV | UK"],
     ["PT", "TV | PT"],
     ["US", "TV | USA"],
+    ["FR", "TV | France"],
+    ["MY", "TV | Malaysia"],
   ]);
+});
+
+test("events carried by a normal DLHD channel become linear schedule metadata, not duplicate event channels", () => {
+  const schedule = {
+    events: [{
+      id:"evt-1", title:"Arsenal vs Chelsea", category:"Football", start:1000, end:2000,
+      channels:[{ id:"66", name:"Sky Sports Football UK" }],
+    }],
+  };
+  const reference = buildDlhdReference({
+    channels: [{ id:"66", name:"Sky Sports Football UK" }],
+    schedule,
+  });
+  assert.equal(reference.events.length, 0);
+  assert.equal(reference.linearEvents.length, 1);
+  assert.equal(reference.linearEvents[0].linkedStaticChannels[0].name, "Sky Sports Football UK");
+});
+
+test("standalone PPV/event-stream schedule entries remain event channels", () => {
+  const schedule = {
+    events: [{
+      id:"evt-ppv", title:"UFC 400", category:"PPV Events", start:1000, end:2000,
+      channels:[{ id:"9000", name:"Event PPV" }],
+    }],
+  };
+  const reference = buildDlhdReference({
+    channels: [{ id:"66", name:"Sky Sports Football UK" }],
+    schedule,
+  });
+  assert.equal(reference.linearEvents.length, 0);
+  assert.equal(reference.events.length, 1);
+  assert.equal(reference.events[0].name, "UFC 400");
 });
 
 test("parses public schedule events and linked channels", () => {
