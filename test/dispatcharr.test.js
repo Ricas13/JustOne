@@ -117,11 +117,11 @@ test("provision apply creates inputs and queues M3U/EPG refresh jobs", async () 
   assert.equal(result.refreshActions.filter((row) => row.type === "epg-refresh").length, 1);
 });
 
-test("channel preview blocks foreign static references even when their provider group looks allowed", async () => {
+test("global channel policy allows foreign DLHD static references", async () => {
   const snapshot = {
     channels: [
       { referenceKind:"channel", tvgId:"justone.channel.bbc-one", name:"BBC One UK", group:"TV | UK", number:1000, variants:[{url:"x"}] },
-      { referenceKind:"channel", tvgId:"justone.channel.eurosport-greece", name:"EuroSport 1 Greece", group:"TV | PT", number:2000, variants:[{url:"y"}] },
+      { referenceKind:"channel", tvgId:"justone.channel.eurosport-greece", name:"EuroSport 1 Greece", group:"TV | Greece", number:4000, variants:[{url:"y"}] },
     ],
   };
   const client = new FakeReconcileClient({
@@ -132,10 +132,9 @@ test("channel preview blocks foreign static references even when their provider 
     groups: [{ id:1, name:"TV | UK" }],
   });
   const result = await reconcileDispatcharr(snapshot, { apply:false, client });
-  assert.equal(result.readyForApply, false);
-  assert.equal(result.counts["policy-violation"], 1);
-  assert.ok(result.actions.some((row) => row.action === "policy-violation" && row.country === "GR"));
-  assert.equal(result.actions.some((row) => row.action === "create" && row.tvgId === "justone.channel.eurosport-greece"), false);
+  assert.equal(result.readyForApply, true);
+  assert.equal(result.counts["policy-violation"] || 0, 0);
+  assert.ok(result.actions.some((row) => row.action === "create" && row.tvgId === "justone.channel.eurosport-greece"));
 });
 
 test("channel preview is not ready while desired JustOne streams have not been imported", async () => {
@@ -169,5 +168,6 @@ test("channel preview expires stale events but keeps unknown static orphans non-
   assert.equal(result.readyForApply, true);
   assert.ok(result.actions.some((row) => row.action === "delete-stale-event" && row.id === 21));
   assert.ok(result.actions.some((row) => row.action === "orphan-static" && row.id === 22));
-  assert.ok(result.actions.some((row) => row.action === "delete-policy-static" && row.id === 23 && row.country === "AR"));
+  assert.ok(result.actions.some((row) => row.action === "orphan-static" && row.id === 23));
+  assert.equal(result.actions.some((row) => row.action === "delete-policy-static" && row.id === 23), false);
 });
