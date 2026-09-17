@@ -340,8 +340,9 @@ async function cacheState(source) {
 function shouldKeepEpgCandidate(row, allowedCountries) {
   if (!row?.tvgId) return false;
   if (isEventLikeRow(row)) return true;
+  if (!allowedCountries.size) return true;
   const cc = countryOf(row);
-  return !allowedCountries.size || (cc && allowedCountries.has(cc));
+  return Boolean(cc && allowedCountries.has(cc));
 }
 
 async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto") {
