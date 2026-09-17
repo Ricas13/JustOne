@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalIdentity, countryGroup, countryName, countryOf, isBackup, qualityOf, strippedChannelName } from "../src/identity.js";
+import { canonicalIdentity, countryGroup, countryName, countryOf, isBackup, qualityOf, stripCountryDecoration, strippedChannelName } from "../src/identity.js";
 
 test("quality and backup variants collapse to one canonical channel", () => {
   const names = ["UK: BBC One FHD", "BBC One HD", "BBC One Backup HD", "BBC One SD"];
@@ -38,4 +38,13 @@ test("global country detection recognises additional DLHD countries without trea
   assert.equal(countryName("FR"), "France");
   assert.equal(countryGroup("FR"), "TV | France");
   assert.equal(countryGroup("GB"), "TV | UK");
+});
+
+
+test("country decoration stripping removes complete edge countries without damaging ordinary words", () => {
+  assert.equal(stripCountryDecoration("Canal+ Foot France"), "canal foot");
+  assert.equal(stripCountryDecoration("France | Canal+ Foot"), "canal foot");
+  assert.equal(stripCountryDecoration("MY: beIN Sports 2"), "bein sports 2");
+  assert.equal(stripCountryDecoration("South Park"), "south park");
+  assert.equal(stripCountryDecoration("North Sports Network"), "north sports network");
 });
