@@ -81,12 +81,18 @@ const PREFIX_RE = new RegExp(
 function countryFromName(value) {
   const hay = normalize(value);
   if (!hay) return "";
+  const tokens = hay.split(" ").filter(Boolean);
+
+  // An explicit country code at an edge is the strongest signal. This avoids
+  // treating a channel such as "Georgia Bulldogs USA" as the country Georgia.
+  const boundaryCode = COUNTRY_CODE_TOKEN.get(tokens[0]) || COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]);
+  if (boundaryCode) return boundaryCode;
+
   const padded = ` ${hay} `;
   for (const [alias, code] of COUNTRY_NAME_ALIASES) {
     if (padded.includes(` ${alias} `)) return code;
   }
-  const tokens = hay.split(" ").filter(Boolean);
-  return COUNTRY_CODE_TOKEN.get(tokens[0]) || COUNTRY_CODE_TOKEN.get(tokens[tokens.length - 1]) || "";
+  return "";
 }
 
 function countryFromId(value) {
