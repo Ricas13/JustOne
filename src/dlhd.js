@@ -1,4 +1,4 @@
-import { countryGroup, countryOf, isCountryWord, strippedChannelName } from "./identity.js";
+import { countryGroup, countryOf, stripCountryDecoration, strippedChannelName } from "./identity.js";
 import { hash, normalize, slug, stripTags, text } from "./util.js";
 
 
@@ -327,12 +327,9 @@ function canonicalToken(token) {
   return token;
 }
 function keyVariants(value) {
-  let base = normalize(strippedChannelName(value));
+  let base = stripCountryDecoration(strippedChannelName(value));
   if (!base) return [];
-  let tokens = base.split(" ").filter(Boolean);
-  while (tokens.length > 1 && isCountryWord(tokens[0])) tokens.shift();
-  while (tokens.length > 1 && isCountryWord(tokens[tokens.length-1])) tokens.pop();
-  tokens = tokens.map(canonicalToken);
+  let tokens = base.split(" ").filter(Boolean).map(canonicalToken);
   base = tokens.join(" ");
   const out = new Set([base, base.replace(/\s+/g,"")]);
   const withoutRegion = tokens.filter((token)=>!new Set(["east","west"]).has(token));
@@ -345,7 +342,7 @@ function keyVariants(value) {
   return [...out].filter(Boolean);
 }
 function significantTokens(value) {
-  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !isCountryWord(x) && !["live","channel","sports","sport","tv"].includes(x)) || []);
+  return new Set(keyVariants(value)[0]?.split(" ").filter((x)=>x.length>1 && !["live","channel","sports","sport","tv"].includes(x)) || []);
 }
 function fuzzyEventMatch(a,b) {
   const aa = significantTokens(a), bb = significantTokens(b);
