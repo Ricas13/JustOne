@@ -183,7 +183,7 @@ The proxy is a byte relay, not a transcoder. Its stability controls are:
 - **provider compatibility:** upstream requests use a VLC user agent by default and can be overridden with `STREAM_USER_AGENT`
 - **credential isolation:** provider stream URLs and credentials are never emitted in the proxy M3U or live status API
 
-The native proxy supports both direct HTTP MPEG-TS and HLS sources whose media segments are MPEG-TS. HLS master/media playlists are consumed inside JustOne, live playlists start near the live edge, relative URLs and byte ranges are resolved, and AES-128 encrypted TS segments are decrypted before entering the existing shared relay. fMP4/CMAF (`EXT-X-MAP`) and non-AES-128 HLS encryption remain unsupported because the byte relay does not remux media.
+The native proxy supports both direct HTTP MPEG-TS and HLS sources whose media segments are MPEG-TS. HLS master/media playlists are consumed inside JustOne, live playlists start near the live edge, relative URLs and byte ranges are resolved, and AES-128 encrypted TS segments are decrypted before entering the existing shared relay. Live HLS segments are paced against their `EXTINF` media duration so a fast CDN cannot dump several seconds of video into Jellyfin in a short burst and then go silent. fMP4/CMAF (`EXT-X-MAP`) and non-AES-128 HLS encryption remain unsupported because the byte relay does not remux media.
 
 ## Easy playlist management
 
