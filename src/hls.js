@@ -400,6 +400,11 @@ export class HlsMpegTsReader {
       error.status = response.status;
       throw error;
     }
+    if (segment.byteRange && response.status !== 206) {
+      const error = new Error(`HLS byte-range segment expected HTTP 206, got ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     if (!response.body) throw new Error("HLS segment has no body");
 
     if (segment.key?.method === "AES-128") {
