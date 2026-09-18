@@ -817,3 +817,233 @@ seg102.ts
   await first.reader.cancel();
   await second.reader.cancel();
 });
+
+
+test("stream status identifies the exact playlist/channel and measures real shared-relay egress", async (t) => {
+  const stats = {};
+  const state = { sources: [{
+    id: "line1",
+    name: "Alibaba - Pai",
+    provider: "Alibaba",
+    account: "Pai",
+    url: "https://playlist.example/get.php?username=hidden&password=hidden",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc3",
+    tvgId: "justone.bbc3",
+    name: "BBC Three UK",
+    variants: [{
+      sourceId: "line1",
+      name: "UK| BBC THREE FHD",
+      order: 0,
+      url: "UPSTREAM/live",
+      quality: "FHD",
+    }],
+  }] };
+  const h = await createHarness({ snapshot, state, upstreamHandler: liveHandler("T", stats) });
+  t.after(() => h.cleanup());
+
+  const a = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+  const b = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+  await new Promise((resolve) => setTimeout(resolve, 1150));
+
+  const status = await h.manager.status();
+  const relay = status.relays[0];
+  assert.equal(relay.channelName, "BBC Three UK");
+  assert.equal(relay.sourceName, "Alibaba - Pai");
+  assert.equal(relay.provider, "Alibaba");
+  assert.equal(relay.account, "Pai");
+  assert.equal(relay.sourceChannelName, "UK| BBC THREE FHD");
+  assert.equal(relay.playlistHost, "playlist.example");
+  assert.equal(relay.upstreamHost, "127.0.0.1");
+  assert.equal(relay.processingMode, "passthrough");
+  assert.equal(relay.transcoding, false);
+  assert.ok(relay.bitrateMbps > 0);
+  assert.ok(relay.egressMbps > relay.bitrateMbps * 1.5);
+  assert.ok(relay.egressBytes > relay.bytes);
+  assert.ok(status.upstreamMbps > 0);
+  assert.ok(status.egressMbps > status.upstreamMbps * 1.5);
+  assert.equal(status.transcoding, false);
+  assert.equal(status.sources[0].playlistHost, "playlist.example");
+
+  await a.reader.cancel();
+  await b.reader.cancel();
+});
+
+test("HLS master metadata appears in live stream status", async (t) => {
+  const state = { sources: [{
+    id: "line1",
+    name: "Alibaba - Mine",
+    provider: "Alibaba",
+    account: "Mine",
+    url: "https://list.example/get.php?username=hidden&password=hidden",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc",
+    tvgId: "justone.bbc",
+    name: "BBC One UK",
+    variants: [{ sourceId: "line1", name: "BBC One FHD", order: 0, url: "UPSTREAM/master.m3u8", quality: "FHD" }],
+  }] };
+  const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,AVERAGE-BANDWIDTH=5500000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+high.m3u8
+`;
+  const media = `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2,
+seg10.ts
+#EXTINF:2,
+seg11.ts
+#EXTINF:2,
+seg12.ts
+`;
+  const handler = (req, res) => {
+    if (req.url === "/master.m3u8") {
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end(master);
+    }
+    if (req.url === "/high.m3u8") {
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end(media);
+    }
+    if (/^\/seg\d+\.ts$/.test(req.url)) {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      return res.end(tsChunk("H", 8));
+    }
+    res.writeHead(404).end();
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 188 * 3, stallTimeoutMs: 2500 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  const status = await h.manager.status();
+  const relay = status.relays[0];
+  assert.equal(relay.transport, "hls");
+  assert.deepEqual(relay.codecs, ["avc1.640028", "mp4a.40.2"]);
+  assert.equal(relay.resolution, "1920x1080");
+  assert.equal(relay.advertisedBandwidthMbps, 5.5);
+  assert.equal(relay.sourceChannelName, "BBC One FHD");
+  assert.equal(relay.playlistHost, "list.example");
+
+  await stream.reader.cancel();
+});
+
+
+function psiPacket(pid, section) {
+  const packet = Buffer.alloc(188, 0xff);
+  packet[0] = 0x47;
+  packet[1] = 0x40 | ((pid >> 8) & 0x1f);
+  packet[2] = pid & 0xff;
+  packet[3] = 0x10;
+  packet[4] = 0x00;
+  Buffer.from(section).copy(packet, 5);
+  return packet;
+}
+
+function patPacket(pmtPid = 0x100) {
+  return psiPacket(0, [
+    0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00,
+    0x00, 0x01, 0xe0 | ((pmtPid >> 8) & 0x1f), pmtPid & 0xff,
+    0x00, 0x00, 0x00, 0x00,
+  ]);
+}
+
+function pmtPacket(pid = 0x100) {
+  return psiPacket(pid, [
+    0x02, 0xb0, 0x17, 0x00, 0x01, 0xc1, 0x00, 0x00,
+    0xe1, 0x01, 0xf0, 0x00,
+    0x1b, 0xe1, 0x01, 0xf0, 0x00,
+    0x0f, 0xe1, 0x02, 0xf0, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+  ]);
+}
+
+test("direct MPEG-TS status detects codecs from PAT/PMT without guessing resolution", async (t) => {
+  const state = { sources: [{
+    id: "line1",
+    name: "Direct TS line",
+    provider: "Provider A",
+    account: "Line 1",
+    url: "https://list.example/get.php?username=hidden&password=hidden",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "direct",
+    tvgId: "justone.direct",
+    name: "Direct TS",
+    variants: [{ sourceId: "line1", name: "Direct TS FHD", order: 0, url: "UPSTREAM/live", quality: "FHD" }],
+  }] };
+  const first = Buffer.concat([patPacket(), pmtPacket(), tsChunk("V", 1)]);
+  const handler = (_req, res) => {
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    res.write(first);
+    const timer = setInterval(() => res.write(tsChunk("V")), 20);
+    res.once("close", () => clearInterval(timer));
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 188 * 3 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/direct.ts`);
+  const relay = (await h.manager.status()).relays[0];
+  assert.equal(relay.transport, "mpegts");
+  assert.deepEqual(relay.codecs, ["H.264", "AAC"]);
+  assert.equal(relay.resolution, null);
+  assert.equal(relay.advertisedBandwidthMbps, null);
+  await stream.reader.cancel();
+});
+
+
+test("proxy egress reports zero when a relay is in reconnect grace with no viewers", async (t) => {
+  const stats = {};
+  const state = { sources: [{
+    id: "line1",
+    name: "Line 1",
+    provider: "Provider A",
+    account: "Account 1",
+    url: "https://list.example/list.m3u",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc",
+    tvgId: "justone.bbc",
+    name: "BBC One",
+    variants: [{ sourceId: "line1", name: "BBC One HD", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: liveHandler("G", stats),
+    options: { relayGraceMs: 1200 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  await new Promise((resolve) => setTimeout(resolve, 1050));
+  await stream.reader.cancel();
+
+  const status = await waitFor(async () => {
+    const current = await h.manager.status();
+    return current.relays[0]?.status === "grace" ? current : null;
+  });
+  assert.equal(status.relays[0].viewers, 0);
+  assert.equal(status.relays[0].egressMbps, 0);
+  assert.equal(status.egressMbps, 0);
+  assert.ok(status.relays[0].bitrateMbps > 0);
+});

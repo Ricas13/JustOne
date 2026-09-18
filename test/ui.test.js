@@ -16,7 +16,7 @@ test("admin UI keeps Dispatcharr behind an explicitly legacy rollback control", 
 
 
 test("admin UI exposes the native JustOne playback allocator as the primary live workflow", () => {
-  assert.match(ADMIN_HTML, /Live stream proxy/);
+  assert.match(ADMIN_HTML, /Live stream operations/);
   assert.match(ADMIN_HTML, /id="activeRelays"/);
   assert.match(ADMIN_HTML, /id="streamViewers"/);
   assert.match(ADMIN_HTML, /id="liveStreams"/);
@@ -39,4 +39,21 @@ test("embedded admin script remains syntactically valid", () => {
   const match = ADMIN_HTML.match(/<script>([\s\S]*)<\/script>/);
   assert.ok(match, "admin script should be present");
   assert.doesNotThrow(() => new Function(match[1]));
+});
+
+
+test("live operations dashboard shows source routing, media details and real throughput", () => {
+  assert.match(ADMIN_HTML, /Live stream operations/);
+  assert.match(ADMIN_HTML, /Provider input/);
+  assert.match(ADMIN_HTML, /Proxy output/);
+  assert.match(ADMIN_HTML, /Processing · no transcode/);
+  assert.match(ADMIN_HTML, /PLAYLIST \/ LINE/);
+  assert.match(ADMIN_HTML, /Provider channel:/);
+  assert.match(ADMIN_HTML, /Stream host:/);
+  assert.match(ADMIN_HTML, /Advertised rate/);
+  assert.match(ADMIN_HTML, /Transferred in/);
+  assert.match(ADMIN_HTML, /Transferred out/);
+  assert.match(ADMIN_HTML, /mediaValue\(x\)/);
+  assert.match(ADMIN_HTML, /x\.sourceName/);
+  assert.match(ADMIN_HTML, /x\.egressMbps/);
 });

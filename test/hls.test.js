@@ -278,3 +278,48 @@ seg1.ts
   assert.ok(requested.some((url) => url.endsWith("/low/index.m3u8")));
   await reader.cancel();
 });
+
+
+test("selected HLS rendition metadata is exposed without leaking media URLs", async () => {
+  const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=6500000,AVERAGE-BANDWIDTH=5800000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+high/index.m3u8
+`;
+  const media = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:1
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:6,
+seg1.ts
+#EXT-X-ENDLIST
+`;
+  const key = Buffer.from("0123456789abcdef");
+  const iv = Buffer.alloc(16);
+  iv.writeUInt32BE(1, 12);
+  const plain = tsChunk("Q", 4);
+  const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const fetchImpl = async (url) => {
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/high/index.m3u8")) return new Response(media, { status: 200 });
+    if (pathname.endsWith("/high/key.bin")) return new Response(key, { status: 200 });
+    if (pathname.endsWith("/high/seg1.ts")) return new Response(encrypted, { status: 200 });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl,
+    initialResponse: new Response(master, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/master.m3u8?username=secret",
+    signal: new AbortController().signal,
+    userAgent: "test",
+  });
+  assert.deepEqual(reader.metadata, {
+    master: true,
+    codecs: "avc1.640028,mp4a.40.2",
+    resolution: "1920x1080",
+    bandwidth: 6500000,
+    averageBandwidth: 5800000,
+    encryption: "AES-128",
+  });
+  await reader.cancel();
+});

@@ -33,6 +33,84 @@ function iso(ms) {
   return ms ? new Date(ms).toISOString() : null;
 }
 
+function safeHostname(value) {
+  try { return new URL(String(value || "")).hostname || ""; } catch { return ""; }
+}
+
+const TS_STREAM_TYPES = new Map([
+  [0x01, "MPEG-1 Video"],
+  [0x02, "MPEG-2 Video"],
+  [0x03, "MPEG-1 Audio"],
+  [0x04, "MPEG-2 Audio"],
+  [0x0f, "AAC"],
+  [0x10, "MPEG-4 Video"],
+  [0x11, "AAC LATM"],
+  [0x1b, "H.264"],
+  [0x24, "HEVC"],
+  [0x81, "AC-3"],
+]);
+
+function tsPayload(packet) {
+  if (!packet || packet.length < 188 || packet[0] !== 0x47) return null;
+  const adaptation = (packet[3] >> 4) & 0x03;
+  if (adaptation === 0 || adaptation === 2) return null;
+  let offset = 4;
+  if (adaptation === 3) offset += 1 + packet[4];
+  if (offset >= 188) return null;
+  return packet.subarray(offset);
+}
+
+function inspectTsCodecs(value) {
+  const data = Buffer.from(value || []);
+  let pmtPid = -1;
+  const codecs = new Set();
+
+  for (let offset = 0; offset + 188 <= data.length; offset += 188) {
+    const packet = data.subarray(offset, offset + 188);
+    if (packet[0] !== 0x47) continue;
+    const pid = ((packet[1] & 0x1f) << 8) | packet[2];
+    const payloadStart = Boolean(packet[1] & 0x40);
+    const payload = tsPayload(packet);
+    if (!payload?.length || !payloadStart) continue;
+
+    let sectionOffset = payload[0] + 1;
+    if (sectionOffset >= payload.length) continue;
+
+    if (pid === 0 && payload[sectionOffset] === 0x00) {
+      const sectionLength = ((payload[sectionOffset + 1] & 0x0f) << 8) | payload[sectionOffset + 2];
+      const end = Math.min(payload.length, sectionOffset + 3 + sectionLength - 4);
+      let cursor = sectionOffset + 8;
+      while (cursor + 4 <= end) {
+        const programNumber = (payload[cursor] << 8) | payload[cursor + 1];
+        const candidatePid = ((payload[cursor + 2] & 0x1f) << 8) | payload[cursor + 3];
+        if (programNumber) {
+          pmtPid = candidatePid;
+          break;
+        }
+        cursor += 4;
+      }
+      continue;
+    }
+
+    if (pmtPid >= 0 && pid === pmtPid && payload[sectionOffset] === 0x02) {
+      const sectionLength = ((payload[sectionOffset + 1] & 0x0f) << 8) | payload[sectionOffset + 2];
+      const end = Math.min(payload.length, sectionOffset + 3 + sectionLength - 4);
+      const programInfoLength = ((payload[sectionOffset + 10] & 0x0f) << 8) | payload[sectionOffset + 11];
+      let cursor = sectionOffset + 12 + programInfoLength;
+      while (cursor + 5 <= end) {
+        const streamType = payload[cursor];
+        const esInfoLength = ((payload[cursor + 3] & 0x0f) << 8) | payload[cursor + 4];
+        const codec = TS_STREAM_TYPES.get(streamType);
+        if (codec) codecs.add(codec);
+        cursor += 5 + esInfoLength;
+      }
+      if (codecs.size) break;
+    }
+  }
+
+  return [...codecs];
+}
+
 function errorLabel(error) {
   if (error?.name === "AbortError") return "upstream timeout";
   if (error instanceof UpstreamError) return error.message;
@@ -143,6 +221,17 @@ export class StreamManager {
         lastByteAt: iso(relay.lastByteAt),
         bytes: relay.bytes,
         bitrateMbps: Number(relay.bitrateMbps.toFixed(2)),
+        egressMbps: relay.clients.size ? Number(relay.egressMbps.toFixed(2)) : 0,
+        egressBytes: relay.egressBytes,
+        sourceChannelName: relay.current?.sourceChannelName || null,
+        playlistHost: relay.current?.playlistHost || null,
+        upstreamHost: relay.current?.upstreamHost || null,
+        codecs: relay.current?.codecs || [],
+        resolution: relay.current?.resolution || null,
+        advertisedBandwidthMbps: relay.current?.advertisedBandwidthMbps || null,
+        encryption: relay.current?.encryption || null,
+        processingMode: "passthrough",
+        transcoding: false,
         failovers: relay.failovers,
         attempts: relay.attempts,
       }));
@@ -165,6 +254,7 @@ export class StreamManager {
         name: source.name,
         provider: source.provider || source.name,
         account: source.account || source.name,
+        playlistHost: safeHostname(source.url),
         enabled: source.enabled !== false,
         maxStreams,
         activeStreams: active,
@@ -179,6 +269,9 @@ export class StreamManager {
       activeRelays: relays.length,
       viewers: relays.reduce((sum, row) => sum + row.viewers, 0),
       upstreamConnections: sources.reduce((sum, row) => sum + row.activeStreams, 0),
+      upstreamMbps: Number(relays.reduce((sum, row) => sum + Number(row.bitrateMbps || 0), 0).toFixed(2)),
+      egressMbps: Number(relays.reduce((sum, row) => sum + Number(row.egressMbps || 0), 0).toFixed(2)),
+      transcoding: false,
       relays,
       sources,
       recentEvents: this.recentEvents.slice(-30),
@@ -216,6 +309,10 @@ export class StreamManager {
       bitrateMbps: 0,
       rateSampleAt: now,
       rateSampleBytes: 0,
+      egressBytes: 0,
+      egressMbps: 0,
+      egressRateSampleAt: now,
+      egressRateSampleBytes: 0,
       failovers: 0,
       attempts: 0,
       everStarted: false,
@@ -251,7 +348,11 @@ export class StreamManager {
       const syncOffset = findTsSyncOffset(replay);
       const alignedReplay = syncOffset >= 0 ? replay.subarray(syncOffset) : replay;
       if (alignedReplay.length && !res.destroyed && !res.writableEnded) {
-        try { res.write(alignedReplay); } catch {}
+        try {
+          res.write(alignedReplay);
+          relay.egressBytes += alignedReplay.length;
+          this.#updateEgressRate(relay);
+        } catch {}
       }
     }
 
@@ -368,6 +469,13 @@ export class StreamManager {
           maxStreams: Math.max(1, Number(source.maxStreams || 1)),
           quality: candidate.quality || "UNKNOWN",
           transport: connection.transport || "mpegts",
+          sourceChannelName: candidate.name || "",
+          playlistHost: safeHostname(source.url),
+          upstreamHost: safeHostname(candidate.url),
+          codecs: connection.mediaInfo?.codecs || [],
+          resolution: connection.mediaInfo?.resolution || "",
+          advertisedBandwidthMbps: Number(connection.mediaInfo?.advertisedBandwidthMbps || 0) || null,
+          encryption: connection.mediaInfo?.encryption || "",
           backup: candidate.backup === true,
           order: Number(candidate.order || 0),
         };
@@ -573,12 +681,23 @@ export class StreamManager {
         try { await reader.cancel(); } catch {}
         throw new UpstreamError("upstream did not contain valid MPEG-TS sync packets", { code: "invalid_mpegts" });
       }
+      const alignedFirstChunk = syncOffset ? firstChunk.subarray(syncOffset) : firstChunk;
+      const detectedCodecs = inspectTsCodecs(alignedFirstChunk);
+      const hlsBandwidth = Number(reader?.metadata?.averageBandwidth || reader?.metadata?.bandwidth || 0);
       return {
         controller,
         reader,
-        firstChunk: syncOffset ? firstChunk.subarray(syncOffset) : firstChunk,
+        firstChunk: alignedFirstChunk,
         contentType: "video/mp2t",
         transport,
+        mediaInfo: {
+          codecs: reader?.metadata?.codecs
+            ? String(reader.metadata.codecs).split(",").map((value) => value.trim()).filter(Boolean)
+            : detectedCodecs,
+          resolution: reader?.metadata?.resolution || "",
+          advertisedBandwidthMbps: hlsBandwidth > 0 ? hlsBandwidth / 1_000_000 : 0,
+          encryption: reader?.metadata?.encryption || "",
+        },
       };
     } catch (error) {
       controller.abort();
@@ -625,6 +744,8 @@ export class StreamManager {
       if (!client.headersSent) continue;
       try {
         res.write(data);
+        relay.egressBytes += data.length;
+        this.#updateEgressRate(relay);
         if (Number(res.writableLength || 0) > this.options.maxClientBufferBytes) {
           relay.clients.delete(client);
           res.destroy();
@@ -667,7 +788,11 @@ export class StreamManager {
     for (const client of [...relay.clients]) {
       const { res } = client;
       if (res.destroyed || res.writableEnded || !client.headersSent) continue;
-      try { res.write(packet); } catch { relay.clients.delete(client); }
+      try {
+        res.write(packet);
+        relay.egressBytes += packet.length;
+        this.#updateEgressRate(relay);
+      } catch { relay.clients.delete(client); }
     }
   }
 
@@ -736,6 +861,16 @@ export class StreamManager {
     relay.bitrateMbps = (bytes * 8) / elapsed / 1000;
     relay.rateSampleAt = now;
     relay.rateSampleBytes = relay.bytes;
+  }
+
+  #updateEgressRate(relay) {
+    const now = this.now();
+    const elapsed = now - relay.egressRateSampleAt;
+    if (elapsed < 1000) return;
+    const bytes = relay.egressBytes - relay.egressRateSampleBytes;
+    relay.egressMbps = (bytes * 8) / elapsed / 1000;
+    relay.egressRateSampleAt = now;
+    relay.egressRateSampleBytes = relay.egressBytes;
   }
 
   #event(type, relay, source, message) {
