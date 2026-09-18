@@ -135,6 +135,7 @@ export class StreamManager {
         provider: relay.current?.provider || null,
         account: relay.current?.account || null,
         quality: relay.current?.quality || null,
+        transport: relay.current?.transport || null,
         backup: relay.current?.backup || false,
         variantOrder: Number.isFinite(relay.current?.order) ? relay.current.order : null,
         startedAt: iso(relay.startedAt),
@@ -366,6 +367,7 @@ export class StreamManager {
           account: source.account || source.name,
           maxStreams: Math.max(1, Number(source.maxStreams || 1)),
           quality: candidate.quality || "UNKNOWN",
+          transport: connection.transport || "mpegts",
           backup: candidate.backup === true,
           order: Number(candidate.order || 0),
         };
@@ -524,7 +526,9 @@ export class StreamManager {
       if (!response.body) throw new UpstreamError("upstream returned no response body", { code: "empty" });
 
       let reader;
+      let transport = "mpegts";
       if (isHlsResponse(response, candidate.url)) {
+        transport = "hls";
         try {
           reader = await HlsMpegTsReader.create({
             fetchImpl: this.fetchImpl,
@@ -574,6 +578,7 @@ export class StreamManager {
         reader,
         firstChunk: syncOffset ? firstChunk.subarray(syncOffset) : firstChunk,
         contentType: "video/mp2t",
+        transport,
       };
     } catch (error) {
       controller.abort();
