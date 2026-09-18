@@ -27,6 +27,14 @@ test("admin UI exposes the native JustOne playback allocator as the primary live
   assert.match(ADMIN_HTML, /Jellyfin connects directly to JustOne/);
 });
 
+test("playlist edit flow exposes allocator-critical provider, account, limit and priority settings", () => {
+  assert.match(ADMIN_HTML, /Provider \/ family/);
+  assert.match(ADMIN_HTML, /Account \/ line/);
+  assert.match(ADMIN_HTML, /Max connections/);
+  assert.match(ADMIN_HTML, /Priority \(lower first\)/);
+  assert.match(ADMIN_HTML, /priority '\+esc\(x\.priority/);
+});
+
 test("embedded admin script remains syntactically valid", () => {
   const match = ADMIN_HTML.match(/<script>([\s\S]*)<\/script>/);
   assert.ok(match, "admin script should be present");
