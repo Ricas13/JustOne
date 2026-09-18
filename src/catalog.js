@@ -736,8 +736,8 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     for (const old of previous.channels || []) {
       if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
       if (old.referenceKind !== "event" && allowedCountries.size) {
-        const oldCountry = String(old.group || "").match(/TV\s*\|\s*(GB|PT|US)\b/i)?.[1]?.toUpperCase() || "";
-        if (!allowedCountries.has(oldCountry)) continue;
+        const oldCountry = countryOf({ name: old.name || "", group: old.group || "" });
+        if (!oldCountry || !allowedCountries.has(oldCountry)) continue;
       }
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;
