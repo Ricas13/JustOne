@@ -18,13 +18,13 @@ const EMPTY_STATE = {
 };
 
 async function ensureDir() {
-  await fs.mkdir(config.dataDir, { recursive: true });
+  await fs.mkdir(config.dataDir, { recursive: true, mode: 0o700 });
 }
 
 async function atomicWrite(file, content) {
   await ensureDir();
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, content);
+  await fs.writeFile(tmp, content, { mode: 0o600 });
   await fs.rename(tmp, file);
 }
 
@@ -42,7 +42,7 @@ function providerKeyForUrl(url) {
 }
 
 export async function ensureProviderCacheDir() {
-  await fs.mkdir(providerCacheDir, { recursive: true });
+  await fs.mkdir(providerCacheDir, { recursive: true, mode: 0o700 });
   return providerCacheDir;
 }
 
