@@ -319,7 +319,7 @@ export class StreamManager {
           continue;
         }
 
-        if (!relay.clients.size) break;
+        if (!relay.clients.size && !relay.graceTimer) break;
         if (!failoverStartedAt) failoverStartedAt = this.now();
         if (this.now() - failoverStartedAt >= this.options.failoverWindowMs) {
           this.#event("failover-exhausted", relay, null, "no upstream became available before failover deadline");
@@ -422,7 +422,7 @@ export class StreamManager {
         // receive TS keepalives while the replacement source is selected.
         relay.replay = [];
         relay.replayBytes = 0;
-        if (!relay.clients.size) break;
+        if (!relay.clients.size && !relay.graceTimer) break;
         if (!failoverStartedAt) failoverStartedAt = this.now();
       } finally {
         if (keepaliveTimer) clearInterval(keepaliveTimer);
