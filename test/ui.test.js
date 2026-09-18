@@ -16,7 +16,7 @@ test("admin UI keeps Dispatcharr behind an explicitly legacy rollback control", 
 
 
 test("admin UI exposes the native JustOne playback allocator as the primary live workflow", () => {
-  assert.match(ADMIN_HTML, /Live stream proxy/);
+  assert.match(ADMIN_HTML, /Live stream operations/);
   assert.match(ADMIN_HTML, /id="activeRelays"/);
   assert.match(ADMIN_HTML, /id="streamViewers"/);
   assert.match(ADMIN_HTML, /id="liveStreams"/);
