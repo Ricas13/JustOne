@@ -3,6 +3,14 @@ import crypto from "node:crypto";
 const DEFAULT_MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
 const DEFAULT_LIVE_EDGE_SEGMENTS = 3;
 
+function hlsError(message, { code = "hls_error", status = 0 } = {}) {
+  const error = new Error(message);
+  error.name = "HlsError";
+  error.code = code;
+  error.status = Number(status || 0);
+  return error;
+}
+
 function abortError() {
   const error = new Error("The operation was aborted");
   error.name = "AbortError";
@@ -79,7 +87,7 @@ function parseIv(value, sequence) {
   const raw = String(value || "").trim();
   if (!raw) return sequenceIv(sequence);
   const hex = raw.replace(/^0x/i, "").padStart(32, "0").slice(-32);
-  if (!/^[0-9a-f]{32}$/i.test(hex)) throw new Error("invalid HLS AES-128 IV");
+  if (!/^[0-9a-f]{32}$/i.test(hex)) throw hlsError("invalid HLS AES-128 IV", { code: "hls_invalid" });
   return Buffer.from(hex, "hex");
 }
 
@@ -95,7 +103,7 @@ export function isHlsResponse(response, candidateUrl = "") {
 export function parseHlsPlaylist(text, baseUrl) {
   const body = String(text || "").replace(/^\uFEFF/, "");
   const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length || lines[0] !== "#EXTM3U") throw new Error("invalid HLS playlist");
+  if (!lines.length || lines[0] !== "#EXTM3U") throw hlsError("invalid HLS playlist", { code: "hls_invalid" });
 
   const variants = [];
   const segments = [];
@@ -208,7 +216,7 @@ async function readBodyLimited(response, maxBytes = DEFAULT_MAX_PLAYLIST_BYTES) 
       if (part.done) break;
       if (!part.value?.byteLength) continue;
       total += part.value.byteLength;
-      if (total > maxBytes) throw new Error(`HLS playlist exceeds ${maxBytes} bytes`);
+      if (total > maxBytes) throw hlsError(`HLS playlist exceeds ${maxBytes} bytes`, { code: "hls_invalid" });
       chunks.push(Buffer.from(part.value));
     }
   } finally {
@@ -217,12 +225,12 @@ async function readBodyLimited(response, maxBytes = DEFAULT_MAX_PLAYLIST_BYTES) 
   return Buffer.concat(chunks, total).toString("utf8");
 }
 
-function chooseMasterVariant(variants) {
+function orderedMasterVariants(variants) {
   return [...variants].sort((a, b) => {
     const ab = Number(a.averageBandwidth || a.bandwidth || 0);
     const bb = Number(b.averageBandwidth || b.bandwidth || 0);
     return bb - ab;
-  })[0] || null;
+  });
 }
 
 export class HlsMpegTsReader {
@@ -277,18 +285,34 @@ export class HlsMpegTsReader {
     let parsed = parseHlsPlaylist(text, base);
 
     if (parsed.master) {
-      const variant = chooseMasterVariant(parsed.variants);
-      if (!variant) throw new Error("HLS master playlist has no playable variants");
-      this.playlistUrl = variant.url;
-      const response = await this.#fetchPlaylist(this.playlistUrl);
-      const mediaText = await readBodyLimited(response, this.maxPlaylistBytes);
-      parsed = parseHlsPlaylist(mediaText, response.url || this.playlistUrl);
-      if (parsed.master) throw new Error("nested HLS master playlists are not supported");
-      this.playlistUrl = response.url || this.playlistUrl;
-    } else {
-      this.playlistUrl = base;
+      const variants = orderedMasterVariants(parsed.variants);
+      if (!variants.length) throw hlsError("HLS master playlist has no playable variants", { code: "hls_invalid" });
+      let lastUnsupported = null;
+      for (const variant of variants) {
+        const variantUrl = variant.url;
+        const response = await this.#fetchPlaylist(variantUrl);
+        const mediaText = await readBodyLimited(response, this.maxPlaylistBytes);
+        const media = parseHlsPlaylist(mediaText, response.url || variantUrl);
+        if (media.master) {
+          lastUnsupported = hlsError("nested HLS master playlists are not supported", { code: "hls_unsupported" });
+          continue;
+        }
+        try {
+          this.playlistUrl = response.url || variantUrl;
+          this.#applyMediaPlaylist(media, true);
+          this.initialized = true;
+          return;
+        } catch (error) {
+          if (error?.code !== "hls_unsupported") throw error;
+          lastUnsupported = error;
+          this.pending = [];
+          this.seen.clear();
+        }
+      }
+      throw lastUnsupported || hlsError("HLS master playlist has no relayable MPEG-TS rendition", { code: "hls_unsupported" });
     }
 
+    this.playlistUrl = base;
     this.#applyMediaPlaylist(parsed, true);
     this.initialized = true;
   }
@@ -300,10 +324,10 @@ export class HlsMpegTsReader {
   }
 
   #applyMediaPlaylist(parsed, initial = false) {
-    if (parsed.sawMap) throw new Error("fMP4 HLS is not supported by the MPEG-TS relay");
+    if (parsed.sawMap) throw hlsError("fMP4 HLS is not supported by the MPEG-TS relay", { code: "hls_unsupported" });
     const unsupported = parsed.segments.find((segment) => segment.key?.unsupported);
     if (unsupported) {
-      throw new Error(`HLS encryption method ${unsupported.key.method || "unknown"} is not supported`);
+      throw hlsError(`HLS encryption method ${unsupported.key.method || "unknown"} is not supported`, { code: "hls_unsupported" });
     }
 
     this.targetDuration = Math.max(1, Number(parsed.targetDuration || this.targetDuration || 6));
@@ -359,7 +383,7 @@ export class HlsMpegTsReader {
     const response = await this.#fetch(url, {
       headers: { accept: "application/vnd.apple.mpegurl,application/x-mpegURL,audio/mpegurl,*/*" },
     });
-    if (!response.ok) throw new Error(`HLS playlist HTTP ${response.status}`);
+    if (!response.ok) throw hlsError(`HLS playlist HTTP ${response.status}`, { code: "hls_http", status: response.status });
     return response;
   }
 
@@ -367,7 +391,7 @@ export class HlsMpegTsReader {
     const response = await this.#fetchPlaylist(this.playlistUrl);
     const text = await readBodyLimited(response, this.maxPlaylistBytes);
     const parsed = parseHlsPlaylist(text, response.url || this.playlistUrl);
-    if (parsed.master) throw new Error("HLS media playlist changed into a master playlist");
+    if (parsed.master) throw hlsError("HLS media playlist changed into a master playlist", { code: "hls_invalid" });
     this.playlistUrl = response.url || this.playlistUrl;
     this.#applyMediaPlaylist(parsed, false);
   }
@@ -377,9 +401,9 @@ export class HlsMpegTsReader {
     let key = this.keyCache.get(cacheKey);
     if (!key) {
       const response = await this.#fetch(keyInfo.uri);
-      if (!response.ok) throw new Error(`HLS AES-128 key HTTP ${response.status}`);
+      if (!response.ok) throw hlsError(`HLS AES-128 key HTTP ${response.status}`, { code: "hls_http", status: response.status });
       const body = Buffer.from(await response.arrayBuffer());
-      if (body.length !== 16) throw new Error(`HLS AES-128 key must be 16 bytes, got ${body.length}`);
+      if (body.length !== 16) throw hlsError(`HLS AES-128 key must be 16 bytes, got ${body.length}`, { code: "hls_invalid" });
       key = body;
       this.keyCache.set(cacheKey, key);
     }
@@ -405,7 +429,7 @@ export class HlsMpegTsReader {
       error.status = response.status;
       throw error;
     }
-    if (!response.body) throw new Error("HLS segment has no body");
+    if (!response.body) throw hlsError("HLS segment has no body", { code: "hls_invalid" });
 
     if (segment.key?.method === "AES-128") {
       const encrypted = Buffer.from(await response.arrayBuffer());
