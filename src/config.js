@@ -22,12 +22,15 @@ function csvEnv(name, fallback = "") {
     .filter(Boolean);
 }
 
+const adminPort = intEnv("PORT", 8090);
+const internalPort = intEnv("INTERNAL_PORT", 8091);
+
 export const config = {
-  port: intEnv("PORT", 8090),
+  port: adminPort,
   bindAddress: String(process.env.BIND_ADDRESS || "0.0.0.0"),
-  internalPort: intEnv("INTERNAL_PORT", 8091),
+  internalPort,
   internalBindAddress: String(process.env.INTERNAL_BIND_ADDRESS || "0.0.0.0"),
-  internalBaseUrl: cleanUrl(process.env.INTERNAL_BASE_URL, "http://justone-catalog:8091"),
+  internalBaseUrl: cleanUrl(process.env.INTERNAL_BASE_URL, `http://justone-catalog:${internalPort}`),
   internalKey: String(process.env.INTERNAL_KEY || ""),
   dataDir: path.resolve(process.env.DATA_DIR || "./data"),
   adminKey: String(process.env.ADMIN_KEY || ""),
