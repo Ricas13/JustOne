@@ -108,7 +108,7 @@ export function createAdminServer() {
       if (req.method === "GET" && path === "/") {
         return json(res, 200, {
           name: "JustOne Catalog",
-          purpose: "DLHD-filtered IPTV catalogue with optional native stream proxy and Dispatcharr compatibility",
+          purpose: "Standalone DLHD-filtered IPTV catalogue, account allocator and native stream proxy for Jellyfin; Dispatcharr is legacy rollback only",
           endpoints: ["/health", "/admin", "/api/catalog"],
         });
       }
