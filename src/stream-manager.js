@@ -221,7 +221,7 @@ export class StreamManager {
         lastByteAt: iso(relay.lastByteAt),
         bytes: relay.bytes,
         bitrateMbps: Number(relay.bitrateMbps.toFixed(2)),
-        egressMbps: Number(relay.egressMbps.toFixed(2)),
+        egressMbps: relay.clients.size ? Number(relay.egressMbps.toFixed(2)) : 0,
         egressBytes: relay.egressBytes,
         sourceChannelName: relay.current?.sourceChannelName || null,
         playlistHost: relay.current?.playlistHost || null,
@@ -348,7 +348,11 @@ export class StreamManager {
       const syncOffset = findTsSyncOffset(replay);
       const alignedReplay = syncOffset >= 0 ? replay.subarray(syncOffset) : replay;
       if (alignedReplay.length && !res.destroyed && !res.writableEnded) {
-        try { res.write(alignedReplay); } catch {}
+        try {
+          res.write(alignedReplay);
+          relay.egressBytes += alignedReplay.length;
+          this.#updateEgressRate(relay);
+        } catch {}
       }
     }
 
@@ -784,7 +788,11 @@ export class StreamManager {
     for (const client of [...relay.clients]) {
       const { res } = client;
       if (res.destroyed || res.writableEnded || !client.headersSent) continue;
-      try { res.write(packet); } catch { relay.clients.delete(client); }
+      try {
+        res.write(packet);
+        relay.egressBytes += packet.length;
+        this.#updateEgressRate(relay);
+      } catch { relay.clients.delete(client); }
     }
   }
 
