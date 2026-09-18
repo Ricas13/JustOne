@@ -1007,3 +1007,43 @@ test("direct MPEG-TS status detects codecs from PAT/PMT without guessing resolut
   assert.equal(relay.advertisedBandwidthMbps, null);
   await stream.reader.cancel();
 });
+
+
+test("proxy egress reports zero when a relay is in reconnect grace with no viewers", async (t) => {
+  const stats = {};
+  const state = { sources: [{
+    id: "line1",
+    name: "Line 1",
+    provider: "Provider A",
+    account: "Account 1",
+    url: "https://list.example/list.m3u",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc",
+    tvgId: "justone.bbc",
+    name: "BBC One",
+    variants: [{ sourceId: "line1", name: "BBC One HD", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: liveHandler("G", stats),
+    options: { relayGraceMs: 1200 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  await new Promise((resolve) => setTimeout(resolve, 1050));
+  await stream.reader.cancel();
+
+  const status = await waitFor(async () => {
+    const current = await h.manager.status();
+    return current.relays[0]?.status === "grace" ? current : null;
+  });
+  assert.equal(status.relays[0].viewers, 0);
+  assert.equal(status.relays[0].egressMbps, 0);
+  assert.equal(status.egressMbps, 0);
+  assert.ok(status.relays[0].bitrateMbps > 0);
+});
