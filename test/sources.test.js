@@ -73,3 +73,19 @@ test("blank or null allocator values use safe defaults instead of coercing prior
   }, []);
   assert.equal(explicitZero.priority, 0);
 });
+
+
+test("invalid explicit allocator values are rejected instead of silently reinterpreted", () => {
+  assert.throws(
+    () => normaliseSourceInput({ url: "https://a.example/list.m3u", maxStreams: "abc" }, []),
+    /maxStreams must be a positive number/
+  );
+  assert.throws(
+    () => normaliseSourceInput({ url: "https://a.example/list.m3u", maxStreams: "0" }, []),
+    /maxStreams must be a positive number/
+  );
+  assert.throws(
+    () => normaliseSourceInput({ url: "https://a.example/list.m3u", priority: "first" }, []),
+    /priority must be a number/
+  );
+});
