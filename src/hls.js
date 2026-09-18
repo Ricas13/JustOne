@@ -16,14 +16,20 @@ function throwIfAborted(signal) {
 async function sleep(ms, signal) {
   throwIfAborted(signal);
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, Math.max(1, Number(ms) || 1));
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+    const timer = setTimeout(() => finish(resolve), Math.max(1, Number(ms) || 1));
     timer.unref?.();
-    if (!signal) return;
     const onAbort = () => {
       clearTimeout(timer);
-      reject(abortError());
+      finish(reject, abortError());
     };
-    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
   });
   throwIfAborted(signal);
 }
@@ -303,21 +309,27 @@ export class HlsMpegTsReader {
     this.targetDuration = Math.max(1, Number(parsed.targetDuration || this.targetDuration || 6));
     this.endList = parsed.endList === true;
 
-    let segments = parsed.segments || [];
-    if (initial && !this.endList && segments.length > this.liveEdgeSegments) {
-      segments = segments.slice(-this.liveEdgeSegments);
-    }
+    const allSegments = parsed.segments || [];
+    let segments = allSegments;
 
-    for (const segment of segments) {
-      const key = this.#segmentKey(segment);
-      if (this.seen.has(key)) continue;
-      this.seen.add(key);
-      this.pending.push(segment);
+    if (initial && !this.endList && allSegments.length > this.liveEdgeSegments) {
+      // Mark the whole initial playlist window as seen so the first refresh
+      // cannot enqueue older pre-live-edge segments and play backwards.
+      for (const segment of allSegments) this.seen.add(this.#segmentKey(segment));
+      segments = allSegments.slice(-this.liveEdgeSegments);
+      this.pending.push(...segments);
+    } else {
+      for (const segment of segments) {
+        const key = this.#segmentKey(segment);
+        if (this.seen.has(key)) continue;
+        this.seen.add(key);
+        this.pending.push(segment);
+      }
     }
 
     // Prevent unbounded sequence history on long-running channels.
-    if (this.seen.size > 4096 && segments.length) {
-      const floor = Math.min(...segments.map((segment) => Number(segment.sequence)).filter(Number.isFinite));
+    if (this.seen.size > 4096 && allSegments.length) {
+      const floor = Math.min(...allSegments.map((segment) => Number(segment.sequence)).filter(Number.isFinite));
       if (Number.isFinite(floor)) {
         for (const key of [...this.seen]) {
           const match = /^seq:(\d+)$/.exec(key);
