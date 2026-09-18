@@ -1,4 +1,4 @@
-import { withInternalKey } from "./config.js";
+import { config, withInternalKey } from "./config.js";
 import { countryGroup, countryName, countryOf } from "./identity.js";
 import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
@@ -89,8 +89,8 @@ export function eventPresentation(value) {
 function eventArtworkUrls(channel) {
   const token = encodeURIComponent(String(channel.id || channel.tvgId || "event"));
   return {
-    channel: withInternalKey(`http://justone-catalog:8091/artwork/event/channel/${token}.png`),
-    programme: withInternalKey(`http://justone-catalog:8091/artwork/event/program/${token}.png`),
+    channel: withInternalKey(`${config.internalBaseUrl}/artwork/event/channel/${token}.png`),
+    programme: withInternalKey(`${config.internalBaseUrl}/artwork/event/program/${token}.png`),
   };
 }
 
