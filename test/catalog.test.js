@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderVariantsBreadthFirst } from "../src/catalog.js";
+import { existingChannelAllowedForCountries, orderVariantsBreadthFirst } from "../src/catalog.js";
 
 const sources = [
   { id: "a1", name: "A1", provider: "A", priority: 10 },
@@ -21,4 +21,16 @@ test("failover order prioritises independent families before deeper variants", (
   assert.deepEqual(ordered.map((x) => `${x.sourceId}:${x.quality}`), [
     "a1:HD", "b1:HD", "a2:HD", "a1:FHD", "b1:FHD", "a2:FHD",
   ]);
+});
+
+
+test("last-known-good retention accepts any explicitly configured country", () => {
+  const france = { referenceKind: "channel", name: "Canal+ Foot France", group: "TV | France" };
+  const germany = { referenceKind: "channel", name: "Sky Sport Mix DE", group: "TV | Germany" };
+  const event = { referenceKind: "event", name: "UFC 400", group: "Events | Combat Sports" };
+
+  assert.equal(existingChannelAllowedForCountries(france, new Set(["FR"])), true);
+  assert.equal(existingChannelAllowedForCountries(germany, new Set(["FR"])), false);
+  assert.equal(existingChannelAllowedForCountries(event, new Set(["FR"])), true);
+  assert.equal(existingChannelAllowedForCountries(germany, new Set()), true);
 });
