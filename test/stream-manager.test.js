@@ -817,3 +817,123 @@ seg102.ts
   await first.reader.cancel();
   await second.reader.cancel();
 });
+
+
+test("stream status identifies the exact playlist/channel and measures real shared-relay egress", async (t) => {
+  const stats = {};
+  const state = { sources: [{
+    id: "line1",
+    name: "Alibaba - Pai",
+    provider: "Alibaba",
+    account: "Pai",
+    url: "https://playlist.example/get.php?username=hidden&password=hidden",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc3",
+    tvgId: "justone.bbc3",
+    name: "BBC Three UK",
+    variants: [{
+      sourceId: "line1",
+      name: "UK| BBC THREE FHD",
+      order: 0,
+      url: "UPSTREAM/live",
+      quality: "FHD",
+    }],
+  }] };
+  const h = await createHarness({ snapshot, state, upstreamHandler: liveHandler("T", stats) });
+  t.after(() => h.cleanup());
+
+  const a = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+  const b = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+  await new Promise((resolve) => setTimeout(resolve, 1150));
+
+  const status = await h.manager.status();
+  const relay = status.relays[0];
+  assert.equal(relay.channelName, "BBC Three UK");
+  assert.equal(relay.sourceName, "Alibaba - Pai");
+  assert.equal(relay.provider, "Alibaba");
+  assert.equal(relay.account, "Pai");
+  assert.equal(relay.sourceChannelName, "UK| BBC THREE FHD");
+  assert.equal(relay.playlistHost, "playlist.example");
+  assert.equal(relay.upstreamHost, "127.0.0.1");
+  assert.equal(relay.processingMode, "passthrough");
+  assert.equal(relay.transcoding, false);
+  assert.ok(relay.bitrateMbps > 0);
+  assert.ok(relay.egressMbps > relay.bitrateMbps * 1.5);
+  assert.ok(relay.egressBytes > relay.bytes);
+  assert.ok(status.upstreamMbps > 0);
+  assert.ok(status.egressMbps > status.upstreamMbps * 1.5);
+  assert.equal(status.transcoding, false);
+  assert.equal(status.sources[0].playlistHost, "playlist.example");
+
+  await a.reader.cancel();
+  await b.reader.cancel();
+});
+
+test("HLS master metadata appears in live stream status", async (t) => {
+  const state = { sources: [{
+    id: "line1",
+    name: "Alibaba - Mine",
+    provider: "Alibaba",
+    account: "Mine",
+    url: "https://list.example/get.php?username=hidden&password=hidden",
+    maxStreams: 1,
+    enabled: true,
+  }] };
+  const snapshot = { channels: [{
+    id: "bbc",
+    tvgId: "justone.bbc",
+    name: "BBC One UK",
+    variants: [{ sourceId: "line1", name: "BBC One FHD", order: 0, url: "UPSTREAM/master.m3u8", quality: "FHD" }],
+  }] };
+  const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,AVERAGE-BANDWIDTH=5500000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+high.m3u8
+`;
+  const media = `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2,
+seg10.ts
+#EXTINF:2,
+seg11.ts
+#EXTINF:2,
+seg12.ts
+`;
+  const handler = (req, res) => {
+    if (req.url === "/master.m3u8") {
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end(master);
+    }
+    if (req.url === "/high.m3u8") {
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end(media);
+    }
+    if (/^\/seg\d+\.ts$/.test(req.url)) {
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      return res.end(tsChunk("H", 8));
+    }
+    res.writeHead(404).end();
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 188 * 3, stallTimeoutMs: 2500 },
+  });
+  t.after(() => h.cleanup());
+
+  const stream = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  const status = await h.manager.status();
+  const relay = status.relays[0];
+  assert.equal(relay.transport, "hls");
+  assert.deepEqual(relay.codecs, ["avc1.640028", "mp4a.40.2"]);
+  assert.equal(relay.resolution, "1920x1080");
+  assert.equal(relay.advertisedBandwidthMbps, 5.5);
+  assert.equal(relay.sourceChannelName, "BBC One FHD");
+  assert.equal(relay.playlistHost, "list.example");
+
+  await stream.reader.cancel();
+});
