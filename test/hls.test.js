@@ -147,3 +147,87 @@ seg.ts
   assert.equal((await reader.read()).done, true);
   await reader.cancel();
 });
+
+
+test("master playlists select the highest-bandwidth rendition and relay its TS segments", async () => {
+  const requests = [];
+  const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000000
+low/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000
+high/index.m3u8
+`;
+  const high = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:6,
+seg1.ts
+#EXT-X-ENDLIST
+`;
+  const fetchImpl = async (url) => {
+    requests.push(String(url));
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/high/index.m3u8")) {
+      return new Response(high, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } });
+    }
+    if (pathname.endsWith("/high/seg1.ts")) {
+      return new Response(tsChunk("M", 4), { status: 200, headers: { "content-type": "video/mp2t" } });
+    }
+    if (pathname.includes("/low/")) throw new Error("low rendition should not be requested");
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const controller = new AbortController();
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl,
+    initialResponse: new Response(master, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/master.m3u8",
+    signal: controller.signal,
+    userAgent: "test",
+  });
+  const part = await reader.read();
+  assert.equal(part.done, false);
+  assert.ok(Buffer.from(part.value).includes(Buffer.from("MMMM")));
+  assert.ok(requests.some((url) => url.endsWith("/high/index.m3u8")));
+  assert.equal(requests.some((url) => url.includes("/low/")), false);
+  await reader.cancel();
+});
+
+test("byte-range HLS sends Range and rejects a server that ignores it", async () => {
+  const manifest = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:1
+#EXT-X-BYTERANGE:752@188
+#EXTINF:6,
+shared.ts
+#EXT-X-ENDLIST
+`;
+  const ranges = [];
+  const okFetch = async (url, init = {}) => {
+    ranges.push(init.headers?.range || "");
+    return new Response(tsChunk("R", 4), {
+      status: 206,
+      headers: { "content-type": "video/mp2t", "content-range": "bytes 188-939/2000" },
+    });
+  };
+  const controller = new AbortController();
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl: okFetch,
+    initialResponse: new Response(manifest, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/live.m3u8",
+    signal: controller.signal,
+    userAgent: "test",
+  });
+  const part = await reader.read();
+  assert.equal(part.done, false);
+  assert.equal(ranges[0], "bytes=188-939");
+  await reader.cancel();
+
+  const badReader = await HlsMpegTsReader.create({
+    fetchImpl: async () => new Response(tsChunk("X", 4), { status: 200 }),
+    initialResponse: new Response(manifest, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/live.m3u8",
+    signal: new AbortController().signal,
+    userAgent: "test",
+  });
+  await assert.rejects(() => badReader.read(), /expected HTTP 206/);
+});
