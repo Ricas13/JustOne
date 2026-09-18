@@ -607,3 +607,85 @@ test("viewer joining after failover receives replay only from the replacement so
   await firstViewer.reader.cancel();
   await secondViewer.reader.cancel();
 });
+
+
+test("simultaneous viewers joining during startup still create only one upstream relay", async (t) => {
+  const stats = { requests: 0 };
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+  const handler = (_req, res) => {
+    stats.requests += 1;
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    setTimeout(() => {
+      const chunk = tsChunk("S");
+      res.write(chunk);
+      const timer = setInterval(() => res.write(chunk), 20);
+      res.once("close", () => clearInterval(timer));
+    }, 120);
+  };
+  const h = await createHarness({ snapshot, state, upstreamHandler: handler });
+  t.after(() => h.cleanup());
+
+  const [a, b] = await Promise.all([
+    openStream(`${h.proxyBase}/stream/bbc.ts`),
+    openStream(`${h.proxyBase}/stream/bbc.ts`),
+  ]);
+
+  assert.equal(stats.requests, 1);
+  const status = await h.manager.status();
+  assert.equal(status.activeRelays, 1);
+  assert.equal(status.viewers, 2);
+  assert.equal(status.upstreamConnections, 1);
+
+  await a.reader.cancel();
+  await b.reader.cancel();
+});
+
+test("simultaneous different channels cannot race past maxStreams", async (t) => {
+  const stats = { line1: 0, line2: 0 };
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+    { id: "line2", name: "Line 2", provider: "Provider A", account: "Account 2", maxStreams: 1, enabled: true },
+  ] };
+  const variants = (suffix) => [
+    { sourceId: "line1", order: 0, url: `UPSTREAM/one/${suffix}`, quality: "HD" },
+    { sourceId: "line2", order: 1, url: `UPSTREAM/two/${suffix}`, quality: "HD" },
+  ];
+  const snapshot = { channels: [
+    { id: "a", tvgId: "justone.a", name: "Channel A", variants: variants("a") },
+    { id: "b", tvgId: "justone.b", name: "Channel B", variants: variants("b") },
+  ] };
+  const handler = (req, res) => {
+    if (req.url.startsWith("/one/")) stats.line1 += 1;
+    else stats.line2 += 1;
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    setTimeout(() => {
+      const chunk = tsChunk(req.url.startsWith("/one/") ? "1" : "2");
+      res.write(chunk);
+      const timer = setInterval(() => res.write(chunk), 20);
+      res.once("close", () => clearInterval(timer));
+    }, 100);
+  };
+  const h = await createHarness({ snapshot, state, upstreamHandler: handler });
+  t.after(() => h.cleanup());
+
+  const [a, b] = await Promise.all([
+    openStream(`${h.proxyBase}/stream/a.ts`),
+    openStream(`${h.proxyBase}/stream/b.ts`),
+  ]);
+
+  const status = await h.manager.status();
+  assert.equal(status.upstreamConnections, 2);
+  assert.equal(status.sources.find((row) => row.id === "line1").activeStreams, 1);
+  assert.equal(status.sources.find((row) => row.id === "line2").activeStreams, 1);
+  assert.equal(stats.line1, 1);
+  assert.equal(stats.line2, 1);
+
+  await a.reader.cancel();
+  await b.reader.cancel();
+});
