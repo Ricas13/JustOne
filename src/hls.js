@@ -35,7 +35,6 @@ async function sleep(ms, signal) {
       fn(value);
     };
     const timer = setTimeout(() => finish(resolve), Math.max(1, Number(ms) || 1));
-    timer.unref?.();
     const onAbort = () => {
       clearTimeout(timer);
       finish(reject, abortError());
