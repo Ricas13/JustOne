@@ -689,3 +689,70 @@ test("simultaneous different channels cannot race past maxStreams", async (t) =>
   await a.reader.cancel();
   await b.reader.cancel();
 });
+
+
+test("Jellyfin reconnect during failover reuses the same relay within grace", async (t) => {
+  let requests = 0;
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc", tvgId: "justone.bbc", name: "BBC One",
+    variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+
+  const handler = (_req, res) => {
+    requests += 1;
+    res.writeHead(200, { "content-type": "video/mp2t" });
+    if (requests === 1) {
+      res.end(tsChunk("A"));
+      return;
+    }
+    const chunk = tsChunk("B");
+    res.write(chunk);
+    const timer = setInterval(() => res.write(chunk), 20);
+    res.once("close", () => clearInterval(timer));
+  };
+
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: {
+      failureCooldownMs: 180,
+      relayGraceMs: 700,
+      failoverWindowMs: 900,
+      failoverKeepaliveMs: 30,
+    },
+  });
+  t.after(() => h.cleanup());
+
+  const first = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.relays[0]?.status === "failover";
+  });
+  await first.reader.cancel();
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const duringGrace = await h.manager.status();
+  assert.equal(duringGrace.activeRelays, 1);
+  assert.equal(duringGrace.relays[0].viewers, 0);
+
+  const second = await openStream(`${h.proxyBase}/stream/bbc.ts`);
+  await waitFor(async () => {
+    const status = await h.manager.status();
+    return status.relays[0]?.failovers === 1 ? status : null;
+  });
+
+  const finalStatus = await h.manager.status();
+  assert.equal(requests, 2);
+  assert.equal(finalStatus.relays[0].attempts, 2);
+  assert.equal(finalStatus.relays[0].failovers, 1);
+  assert.equal(
+    finalStatus.recentEvents.filter((row) => row.type === "started" && row.channelId === "bbc").length,
+    1
+  );
+
+  await second.reader.cancel();
+});
