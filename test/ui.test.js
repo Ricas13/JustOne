@@ -57,3 +57,12 @@ test("live operations dashboard shows source routing, media details and real thr
   assert.match(ADMIN_HTML, /x\.sourceName/);
   assert.match(ADMIN_HTML, /x\.egressMbps/);
 });
+
+
+test("live operations dashboard exposes HLS pacing diagnostics", () => {
+  assert.match(ADMIN_HTML, /HLS pacing/);
+  assert.match(ADMIN_HTML, /HLS segment/);
+  assert.match(ADMIN_HTML, /Real-time/);
+  assert.match(ADMIN_HTML, /hlsSegmentDownloadMs/);
+  assert.match(ADMIN_HTML, /hlsSegmentDurationMs/);
+});
