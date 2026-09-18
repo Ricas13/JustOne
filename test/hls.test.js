@@ -231,3 +231,50 @@ shared.ts
   });
   await assert.rejects(() => badReader.read(), /expected HTTP 206/);
 });
+
+
+test("master playlist falls back from unsupported fMP4 rendition to MPEG-TS rendition", async () => {
+  const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=6000000
+high/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2500000
+low/index.m3u8
+`;
+  const high = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:1
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:6,
+seg1.m4s
+#EXT-X-ENDLIST
+`;
+  const low = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:6,
+seg1.ts
+#EXT-X-ENDLIST
+`;
+  const requested = [];
+  const fetchImpl = async (url) => {
+    requested.push(String(url));
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/high/index.m3u8")) return new Response(high, { status: 200 });
+    if (pathname.endsWith("/low/index.m3u8")) return new Response(low, { status: 200 });
+    if (pathname.endsWith("/low/seg1.ts")) return new Response(tsChunk("L", 4), { status: 200 });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl,
+    initialResponse: new Response(master, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/master.m3u8",
+    signal: new AbortController().signal,
+    userAgent: "test",
+  });
+  const part = await reader.read();
+  assert.equal(part.done, false);
+  assert.ok(Buffer.from(part.value).includes(Buffer.from("LLLL")));
+  assert.ok(requested.some((url) => url.endsWith("/high/index.m3u8")));
+  assert.ok(requested.some((url) => url.endsWith("/low/index.m3u8")));
+  await reader.cancel();
+});
