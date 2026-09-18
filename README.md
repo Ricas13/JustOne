@@ -107,7 +107,7 @@ Host(`resolver.vpn4u.cc`)
 entrypoint = websecure
 TLS = true
 certresolver = le
-service port = 8090
+service port = 8090 by default (`PORT`)
 ```
 
 The JustOne router has priority `100`, so it takes precedence over an older lower-priority router using the same hostname.
@@ -126,7 +126,7 @@ https://resolver.vpn4u.cc/admin
 
 `ADMIN_KEY` is mandatory. JustOne refuses to start if it is empty.
 
-Direct host access remains loopback-only:
+Direct host access remains loopback-only (default `PORT=8090`):
 
 ```text
 http://127.0.0.1:8090/admin
@@ -134,12 +134,12 @@ http://127.0.0.1:8090/admin
 
 ## M3U/XMLTV/streams remain internal-only
 
-M3U, XMLTV and native proxy streams stay on port `8091` inside `media_net` only.
+M3U, XMLTV and native proxy streams stay on the internal listener (`INTERNAL_PORT=8091` by default) inside `media_net` only.
 
 There is deliberately:
 
-- no host port mapping for `8091`
-- no Traefik router for `8091`
+- no host port mapping for the internal listener
+- no Traefik router for the internal listener
 - no public M3U or native stream endpoint
 - no provider URL in the proxy M3U
 
@@ -155,7 +155,7 @@ http://justone-catalog:8091/epg/guide.xml
 
 `GET /api/internal-outputs` returns the generated internal URLs. Proxy M3U/stream URLs use `STREAM_PROXY_KEY`; `INTERNAL_KEY` remains the independent legacy internal-output key. If `STREAM_PROXY_KEY` is empty, `INTERNAL_KEY` is accepted as a compatibility fallback.
 
-Do **not** publish `8091` through Docker, Traefik or Cloudflare.
+Do **not** publish the internal listener through Docker, Traefik or Cloudflare.
 
 ## Native stream proxy
 
@@ -299,7 +299,7 @@ Use `/api/dispatcharr/preview` first.
 
 ## Important APIs
 
-Admin/API listener (`8090`):
+Admin/API listener (default `8090`):
 
 - `GET /api/catalog`
 - `GET /api/dlhd`
@@ -315,7 +315,7 @@ Admin/API listener (`8090`):
 - `GET /api/dispatcharr/preview`
 - `POST /api/dispatcharr/reconcile`
 
-Internal listener (`8091`, `media_net` only):
+Internal listener (default `8091`, `media_net` only):
 
 - `GET /m3u/source/:sourceId.m3u`
 - `GET /m3u/master.m3u`
