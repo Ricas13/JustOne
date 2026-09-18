@@ -4,6 +4,7 @@ const DEFAULT_MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_SEGMENT_BYTES = 128 * 1024 * 1024;
 const DEFAULT_LIVE_EDGE_SEGMENTS = 3;
 const DEFAULT_PACING_SLICE_MS = 50;
+const MIN_PACED_SEGMENT_BYTES = 64 * 1024;
 
 function hlsError(message, { code = "hls_error", status = 0 } = {}) {
   const error = new Error(message);
@@ -544,7 +545,11 @@ export class HlsMpegTsReader {
     this.metadata.lastSegmentDurationMs = durationMs;
     this.metadata.lastSegmentDownloadMs = downloadMs;
     this.metadata.lastSegmentBytes = body.length;
-    this.metadata.pacing = true;
+    this.metadata.pacing = body.length >= MIN_PACED_SEGMENT_BYTES;
+
+    if (!this.metadata.pacing) {
+      return pacedBufferReader(body, { durationMs: 0, signal: this.signal });
+    }
 
     return pacedBufferReader(body, {
       durationMs,
