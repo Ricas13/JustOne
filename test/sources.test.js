@@ -48,3 +48,28 @@ test("duplicate URL matching is normalized", () => {
   assert.equal(duplicateSourceByUrl(existing, "https://a.example/list.m3u")?.id, "one");
   assert.equal(duplicateSourceByUrl(existing, "https://b.example/list.m3u"), null);
 });
+
+
+test("blank or null allocator values use safe defaults instead of coercing priority to zero", () => {
+  const blank = normaliseSourceInput({
+    url: "https://a.example/list.m3u",
+    maxStreams: "",
+    priority: "",
+  }, []);
+  assert.equal(blank.maxStreams, 1);
+  assert.equal(blank.priority, 10);
+
+  const nulls = normaliseSourceInput({
+    url: "https://b.example/list.m3u",
+    maxStreams: null,
+    priority: null,
+  }, [{ id: "existing", provider: "other" }]);
+  assert.equal(nulls.maxStreams, 1);
+  assert.equal(nulls.priority, 20);
+
+  const explicitZero = normaliseSourceInput({
+    url: "https://c.example/list.m3u",
+    priority: 0,
+  }, []);
+  assert.equal(explicitZero.priority, 0);
+});
