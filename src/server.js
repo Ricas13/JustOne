@@ -108,7 +108,7 @@ export function createAdminServer() {
       if (req.method === "GET" && path === "/") {
         return json(res, 200, {
           name: "JustOne Catalog",
-          purpose: "Standalone DLHD-filtered IPTV catalogue, account allocator and native stream proxy for Jellyfin; Dispatcharr is legacy rollback only",
+          purpose: "DLHD-filtered IPTV catalogue, matching and EPG control plane feeding Dispatcharr for Jellyfin playback",
           endpoints: ["/health", "/admin", "/api/catalog"],
         });
       }
@@ -235,7 +235,10 @@ export function createAdminServer() {
       }
 
       if (req.method === "GET" && path === "/api/dispatcharr/inputs/preview") {
-        return json(res, 200, await provisionDispatcharrInputs(await loadState(), { apply: false }));
+        return json(res, 200, {
+          ...(await provisionDispatcharrInputs(await loadState(), { apply: false })),
+          applyEnabled: config.dispatcharr.applyEnabled,
+        });
       }
       if (req.method === "POST" && path === "/api/dispatcharr/inputs/provision") {
         const body = await readJsonBody(req);
@@ -245,7 +248,10 @@ export function createAdminServer() {
         }));
       }
       if (req.method === "GET" && path === "/api/dispatcharr/preview") {
-        return json(res, 200, await reconcileDispatcharr(await loadSnapshot(), { apply: false }));
+        return json(res, 200, {
+          ...(await reconcileDispatcharr(await loadSnapshot(), { apply: false })),
+          applyEnabled: config.dispatcharr.applyEnabled,
+        });
       }
       if (req.method === "POST" && path === "/api/dispatcharr/reconcile") {
         const body = await readJsonBody(req);
