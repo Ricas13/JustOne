@@ -183,7 +183,7 @@ The proxy is a byte relay, not a transcoder. Its stability controls are:
 - **provider compatibility:** upstream requests use a VLC user agent by default and can be overridden with `STREAM_USER_AGENT`
 - **credential isolation:** provider stream URLs and credentials are never emitted in the proxy M3U or live status API
 
-The first version supports direct HTTP MPEG-TS-style live streams. HLS manifests (`.m3u8`) are deliberately not rewritten yet; if a candidate is HLS it is treated as unsupported and the allocator tries the next candidate.
+The native proxy supports both direct HTTP MPEG-TS and HLS sources whose media segments are MPEG-TS. HLS master/media playlists are consumed inside JustOne, live playlists start near the live edge, relative URLs and byte ranges are resolved, and AES-128 encrypted TS segments are decrypted before entering the existing shared relay. fMP4/CMAF (`EXT-X-MAP`) and non-AES-128 HLS encryption remain unsupported because the byte relay does not remux media.
 
 ## Easy playlist management
 
@@ -325,4 +325,4 @@ Internal listener (default `8091`, `media_net` only):
 
 ## Still deliberately absent
 
-JustOne still contains no DLHD playback resolver, FFmpeg remuxing/transcoding, HLS manifest/segment rewriting, warm-standby upstream, timeshift buffer or DVR engine. The native proxy deliberately remains a small live MPEG-TS relay/allocator rather than becoming another full IPTV server.
+JustOne still contains no DLHD playback resolver, FFmpeg remuxing/transcoding, fMP4/CMAF-to-TS remuxing, warm-standby upstream, timeshift buffer or DVR engine. The native proxy deliberately remains a small live MPEG-TS relay/allocator rather than becoming another full IPTV server.

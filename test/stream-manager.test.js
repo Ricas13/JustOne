@@ -756,3 +756,64 @@ test("Jellyfin reconnect during failover reuses the same relay within grace", as
 
   await second.reader.cancel();
 });
+
+
+test("HLS provider output is converted into the same shared MPEG-TS relay", async (t) => {
+  const stats = { manifests: 0, segments: 0 };
+  const state = { sources: [
+    { id: "line1", name: "Line 1", provider: "Provider A", account: "Account 1", maxStreams: 1, enabled: true },
+  ] };
+  const snapshot = { channels: [{
+    id: "bbc3", tvgId: "justone.bbc3", name: "BBC Three UK",
+    variants: [{ sourceId: "line1", order: 0, url: "UPSTREAM/live", quality: "HD" }],
+  }] };
+  const manifest = `#EXTM3U
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:1,
+seg100.ts
+#EXTINF:1,
+seg101.ts
+#EXTINF:1,
+seg102.ts
+`;
+  const handler = (req, res) => {
+    if (req.url === "/live") {
+      stats.manifests += 1;
+      res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" });
+      return res.end(manifest);
+    }
+    if (/^\/seg\d+\.ts$/.test(req.url)) {
+      stats.segments += 1;
+      res.writeHead(200, { "content-type": "video/mp2t" });
+      return res.end(tsChunk("H", 8));
+    }
+    res.writeHead(404).end();
+  };
+  const h = await createHarness({
+    snapshot,
+    state,
+    upstreamHandler: handler,
+    options: { startupBufferBytes: 188 * 3, stallTimeoutMs: 1500 },
+  });
+  t.after(() => h.cleanup());
+
+  const first = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+  const second = await openStream(`${h.proxyBase}/stream/bbc3.ts`);
+
+  assert.equal(first.response.headers.get("content-type"), "video/mp2t");
+  assert.equal(first.first[0], 0x47);
+  assert.equal(second.first[0], 0x47);
+
+  const status = await h.manager.status();
+  assert.equal(status.activeRelays, 1);
+  assert.equal(status.viewers, 2);
+  assert.equal(status.upstreamConnections, 1);
+  assert.equal(status.relays[0].transport, "hls");
+  assert.equal(status.sources[0].activeStreams, 1);
+  assert.ok(stats.manifests >= 1);
+  assert.ok(stats.segments >= 1);
+
+  await first.reader.cancel();
+  await second.reader.cancel();
+});
