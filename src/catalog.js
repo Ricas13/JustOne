@@ -379,7 +379,7 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
       readable = response.body;
       await ensureProviderCacheDir();
       tmpPath = `${providerCachePath(source.id)}.${process.pid}.${Date.now()}.tmp`;
-      cacheHandle = await fsp.open(tmpPath, "w");
+      cacheHandle = await fsp.open(tmpPath, "w", 0o600);
       input = "provider";
     } catch (error) {
       if (cache.exists && cache.urlMatches) {
