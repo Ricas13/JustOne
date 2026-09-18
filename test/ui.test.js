@@ -28,6 +28,8 @@ test("Dispatcharr filtered-input provisioning is a first-class workflow", () => 
   assert.match(ADMIN_HTML, /\/api\/dispatcharr\/inputs\/provision/);
   assert.match(ADMIN_HTML, /JSON\.stringify\(\{apply:true,refresh:true\}\)/);
   assert.match(ADMIN_HTML, /Raw provider credentials remain in JustOne/);
+  assert.match(ADMIN_HTML, /DISPATCHARR_APPLY_ENABLED=false/);
+  assert.match(ADMIN_HTML, /fresh\.applyEnabled/);
 });
 
 test("Dispatcharr channel and EPG reconciliation retains preview safety gates", () => {
@@ -42,7 +44,8 @@ test("Dispatcharr channel and EPG reconciliation retains preview safety gates", 
   assert.match(ADMIN_HTML, /Scheduled events carried on normal channels remain EPG-only/);
 });
 
-test("provider source management keeps Dispatcharr-relevant line settings", () => {
+test("provider source and EPG management keeps catalogue-relevant settings", () => {
+  assert.match(ADMIN_HTML, /Provider EPG inputs/);
   assert.match(ADMIN_HTML, /Provider \/ family/);
   assert.match(ADMIN_HTML, /Account \/ line/);
   assert.match(ADMIN_HTML, /Max connections/);
