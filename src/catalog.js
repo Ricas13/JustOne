@@ -321,6 +321,13 @@ export function mappingAllowedForCountries(row, ref, countries) {
   return allowed.has(staticCountry(row, ref));
 }
 
+export function existingChannelAllowedForCountries(channel, countries) {
+  const allowed = countries instanceof Set ? countries : new Set(countries || []);
+  if (channel?.referenceKind === "event" || !allowed.size) return true;
+  const country = countryOf({ name: channel?.name || "", group: channel?.group || "" });
+  return Boolean(country && allowed.has(country));
+}
+
 function targetReference(ref, allowedCountries) {
   if (ref.kind === "event") return true;
   if (!allowedCountries.size) return true;
@@ -735,10 +742,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     const byId = new Map(channels.map((channel) => [channel.id, channel]));
     for (const old of previous.channels || []) {
       if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
-      if (old.referenceKind !== "event" && allowedCountries.size) {
-        const oldCountry = countryOf({ name: old.name || "", group: old.group || "" });
-        if (!oldCountry || !allowedCountries.has(oldCountry)) continue;
-      }
+      if (!existingChannelAllowedForCountries(old, allowedCountries)) continue;
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;
       const current = byId.get(old.id);
