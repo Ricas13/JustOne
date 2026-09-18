@@ -230,6 +230,9 @@ export class StreamManager {
         resolution: relay.current?.resolution || null,
         advertisedBandwidthMbps: relay.current?.advertisedBandwidthMbps || null,
         encryption: relay.current?.encryption || null,
+        hlsPacing: relay.current?.hlsPacing === true,
+        hlsSegmentDurationMs: relay.current?.hlsSegmentDurationMs || null,
+        hlsSegmentDownloadMs: relay.current?.hlsSegmentDownloadMs || null,
         processingMode: "passthrough",
         transcoding: false,
         failovers: relay.failovers,
@@ -476,6 +479,9 @@ export class StreamManager {
           resolution: connection.mediaInfo?.resolution || "",
           advertisedBandwidthMbps: Number(connection.mediaInfo?.advertisedBandwidthMbps || 0) || null,
           encryption: connection.mediaInfo?.encryption || "",
+          hlsPacing: connection.mediaInfo?.hlsPacing === true,
+          hlsSegmentDurationMs: Number(connection.mediaInfo?.hlsSegmentDurationMs || 0) || null,
+          hlsSegmentDownloadMs: Number(connection.mediaInfo?.hlsSegmentDownloadMs || 0) || null,
           backup: candidate.backup === true,
           order: Number(candidate.order || 0),
         };
@@ -697,6 +703,9 @@ export class StreamManager {
           resolution: reader?.metadata?.resolution || "",
           advertisedBandwidthMbps: hlsBandwidth > 0 ? hlsBandwidth / 1_000_000 : 0,
           encryption: reader?.metadata?.encryption || "",
+          hlsPacing: reader?.metadata?.pacing === true,
+          hlsSegmentDurationMs: Number(reader?.metadata?.lastSegmentDurationMs || 0),
+          hlsSegmentDownloadMs: Number(reader?.metadata?.lastSegmentDownloadMs || 0),
         },
       };
     } catch (error) {

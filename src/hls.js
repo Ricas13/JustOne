@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 
 const DEFAULT_MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_SEGMENT_BYTES = 128 * 1024 * 1024;
 const DEFAULT_LIVE_EDGE_SEGMENTS = 3;
+const DEFAULT_PACING_SLICE_MS = 50;
+const MIN_PACED_SEGMENT_BYTES = 64 * 1024;
 
 function hlsError(message, { code = "hls_error", status = 0 } = {}) {
   const error = new Error(message);
@@ -32,7 +35,6 @@ async function sleep(ms, signal) {
       fn(value);
     };
     const timer = setTimeout(() => finish(resolve), Math.max(1, Number(ms) || 1));
-    timer.unref?.();
     const onAbort = () => {
       clearTimeout(timer);
       finish(reject, abortError());
@@ -89,6 +91,71 @@ function parseIv(value, sequence) {
   const hex = raw.replace(/^0x/i, "").padStart(32, "0").slice(-32);
   if (!/^[0-9a-f]{32}$/i.test(hex)) throw hlsError("invalid HLS AES-128 IV", { code: "hls_invalid" });
   return Buffer.from(hex, "hex");
+}
+
+async function readResponseBuffer(response, maxBytes = DEFAULT_MAX_SEGMENT_BYTES) {
+  if (!response.body) throw hlsError("HLS segment has no body", { code: "hls_invalid" });
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      if (!part.value?.byteLength) continue;
+      total += part.value.byteLength;
+      if (total > maxBytes) throw hlsError(`HLS segment exceeds ${maxBytes} bytes`, { code: "hls_invalid" });
+      chunks.push(Buffer.from(part.value));
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function pacedBufferReader(buffer, {
+  durationMs,
+  alreadyElapsedMs = 0,
+  signal,
+  sliceMs = DEFAULT_PACING_SLICE_MS,
+  now = () => Date.now(),
+} = {}) {
+  const data = Buffer.from(buffer || []);
+  const budgetMs = Math.max(0, Number(durationMs || 0) - Math.max(0, Number(alreadyElapsedMs || 0)));
+  const startedAt = now();
+  const packetSize = 188;
+  const slices = budgetMs > 0 ? Math.max(1, Math.ceil(budgetMs / Math.max(10, sliceMs))) : 1;
+  const packets = Math.max(1, Math.ceil(data.length / packetSize));
+  const packetsPerSlice = Math.max(1, Math.ceil(packets / slices));
+  const chunkSize = packetsPerSlice * packetSize;
+  let offset = 0;
+  let cancelled = false;
+
+  return {
+    async read() {
+      if (cancelled) return { done: true, value: undefined };
+      throwIfAborted(signal);
+      if (offset >= data.length) {
+        const remaining = startedAt + budgetMs - now();
+        if (remaining > 0) await sleep(remaining, signal);
+        return { done: true, value: undefined };
+      }
+
+      if (budgetMs > 0 && offset > 0) {
+        const target = startedAt + Math.round(budgetMs * (offset / data.length));
+        const waitMs = target - now();
+        if (waitMs > 0) await sleep(waitMs, signal);
+      }
+
+      const end = Math.min(data.length, offset + chunkSize);
+      const value = data.subarray(offset, end);
+      offset = end;
+      return { done: false, value };
+    },
+    async cancel() {
+      cancelled = true;
+    },
+  };
 }
 
 export function isHlsResponse(response, candidateUrl = "") {
@@ -283,6 +350,10 @@ export class HlsMpegTsReader {
       bandwidth: 0,
       averageBandwidth: 0,
       encryption: "",
+      pacing: false,
+      lastSegmentDurationMs: 0,
+      lastSegmentDownloadMs: 0,
+      lastSegmentBytes: 0,
     };
   }
 
@@ -309,6 +380,7 @@ export class HlsMpegTsReader {
           this.playlistUrl = response.url || variantUrl;
           this.#applyMediaPlaylist(media, true);
           this.metadata = {
+            ...this.metadata,
             master: true,
             codecs: variant.codecs || "",
             resolution: variant.resolution || "",
@@ -331,6 +403,7 @@ export class HlsMpegTsReader {
     this.playlistUrl = base;
     this.#applyMediaPlaylist(parsed, true);
     this.metadata = {
+      ...this.metadata,
       master: false,
       codecs: "",
       resolution: "",
@@ -365,13 +438,13 @@ export class HlsMpegTsReader {
       // cannot enqueue older pre-live-edge segments and play backwards.
       for (const segment of allSegments) this.seen.add(this.#segmentKey(segment));
       segments = allSegments.slice(-this.liveEdgeSegments);
-      this.pending.push(...segments);
+      this.pending.push(...segments.map((segment) => ({ ...segment, live: true })));
     } else {
       for (const segment of segments) {
         const key = this.#segmentKey(segment);
         if (this.seen.has(key)) continue;
         this.seen.add(key);
-        this.pending.push(segment);
+        this.pending.push({ ...segment, live: !this.endList });
       }
     }
 
@@ -442,6 +515,7 @@ export class HlsMpegTsReader {
       headers.range = `bytes=${start}-${end}`;
     }
 
+    const fetchStartedAt = Date.now();
     const response = await this.#fetch(segment.url, { headers });
     if (!response.ok) {
       const error = new Error(`HLS segment HTTP ${response.status}`);
@@ -453,27 +527,34 @@ export class HlsMpegTsReader {
       error.status = response.status;
       throw error;
     }
-    if (!response.body) throw hlsError("HLS segment has no body", { code: "hls_invalid" });
 
+    let body = await readResponseBuffer(response);
     if (segment.key?.method === "AES-128") {
-      const encrypted = Buffer.from(await response.arrayBuffer());
       const { key, iv } = await this.#getKey(segment.key, segment.sequence);
       const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
-      const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-      return {
-        read: (() => {
-          let sent = false;
-          return async () => {
-            if (sent) return { done: true, value: undefined };
-            sent = true;
-            return { done: false, value: decrypted };
-          };
-        })(),
-        cancel: async () => {},
-      };
+      body = Buffer.concat([decipher.update(body), decipher.final()]);
     }
 
-    return response.body.getReader();
+    if (!segment.live || !Number.isFinite(Number(segment.duration)) || Number(segment.duration) <= 0) {
+      return pacedBufferReader(body, { durationMs: 0, signal: this.signal });
+    }
+
+    const downloadMs = Math.max(0, Date.now() - fetchStartedAt);
+    const durationMs = Math.max(1, Number(segment.duration) * 1000);
+    this.metadata.lastSegmentDurationMs = durationMs;
+    this.metadata.lastSegmentDownloadMs = downloadMs;
+    this.metadata.lastSegmentBytes = body.length;
+    this.metadata.pacing = body.length >= MIN_PACED_SEGMENT_BYTES;
+
+    if (!this.metadata.pacing) {
+      return pacedBufferReader(body, { durationMs: 0, signal: this.signal });
+    }
+
+    return pacedBufferReader(body, {
+      durationMs,
+      alreadyElapsedMs: downloadMs,
+      signal: this.signal,
+    });
   }
 
   async read() {
