@@ -39,9 +39,11 @@ export function normaliseSourceInput(input = {}, existing = []) {
   const lineNumber = sameProvider + 1;
   const account = text(input.account) || `Line ${lineNumber}`;
   const name = text(input.name) || `${provider} - ${account}`;
-  const maxStreamsRaw = Number(input.maxStreams);
+  const maxStreamsText = text(input.maxStreams);
+  const maxStreamsRaw = maxStreamsText ? Number(maxStreamsText) : Number.NaN;
   const maxStreams = Number.isFinite(maxStreamsRaw) && maxStreamsRaw > 0 ? Math.floor(maxStreamsRaw) : 1;
-  const priorityRaw = Number(input.priority);
+  const priorityText = text(input.priority);
+  const priorityRaw = priorityText ? Number(priorityText) : Number.NaN;
   const priority = Number.isFinite(priorityRaw) ? priorityRaw : (existing.length + 1) * 10;
   const detectedEpgUrl = text(input.detectedEpgUrl) || deriveXtreamXmltvUrl(parsed.toString());
 
