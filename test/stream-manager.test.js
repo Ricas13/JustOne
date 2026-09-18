@@ -809,6 +809,7 @@ seg102.ts
   assert.equal(status.activeRelays, 1);
   assert.equal(status.viewers, 2);
   assert.equal(status.upstreamConnections, 1);
+  assert.equal(status.relays[0].transport, "hls");
   assert.equal(status.sources[0].activeStreams, 1);
   assert.ok(stats.manifests >= 1);
   assert.ok(stats.segments >= 1);
