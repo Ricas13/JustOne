@@ -323,3 +323,75 @@ seg1.ts
   });
   await reader.cancel();
 });
+
+
+test("large live HLS segments are paced near their media duration instead of dumped immediately", async () => {
+  const segment = tsChunk("P", 400); // 75.2 KiB, above pacing threshold
+  const manifest = `#EXTM3U
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:0.30,
+seg1.ts
+`;
+  const fetchImpl = async (url) => {
+    if (new URL(url).pathname.endsWith("/seg1.ts")) {
+      return new Response(segment, {
+        status: 200,
+        headers: { "content-type": "video/mp2t", "content-length": String(segment.length) },
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const controller = new AbortController();
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl,
+    initialResponse: new Response(manifest, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/live.m3u8",
+    signal: controller.signal,
+    userAgent: "test",
+  });
+
+  const started = Date.now();
+  let received = 0;
+  while (received < segment.length) {
+    const part = await reader.read();
+    assert.equal(part.done, false);
+    received += part.value.byteLength;
+  }
+  const elapsed = Date.now() - started;
+
+  assert.equal(received, segment.length);
+  assert.equal(reader.metadata.pacing, true);
+  assert.equal(reader.metadata.lastSegmentDurationMs, 300);
+  assert.ok(elapsed >= 180, `expected paced delivery, got ${elapsed}ms`);
+  assert.ok(elapsed < 1000, `pacing should not stall excessively, got ${elapsed}ms`);
+
+  controller.abort();
+  await reader.cancel();
+});
+
+test("tiny live HLS segments bypass pacing", async () => {
+  const segment = tsChunk("S", 8);
+  const manifest = `#EXTM3U
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:0.50,
+seg1.ts
+`;
+  const fetchImpl = async () => new Response(segment, { status: 200, headers: { "content-type": "video/mp2t" } });
+  const reader = await HlsMpegTsReader.create({
+    fetchImpl,
+    initialResponse: new Response(manifest, { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } }),
+    candidateUrl: "https://provider.example/live.m3u8",
+    signal: new AbortController().signal,
+    userAgent: "test",
+  });
+
+  const started = Date.now();
+  const part = await reader.read();
+  assert.equal(part.done, false);
+  assert.equal(Buffer.from(part.value).length, segment.length);
+  assert.equal(reader.metadata.pacing, false);
+  assert.ok(Date.now() - started < 200);
+  await reader.cancel();
+});
