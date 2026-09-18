@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "IPTV catalogue, metadata enrichment and Dispatcharr reconciliation without video proxying.",
+  "description": "Standalone DLHD-filtered IPTV catalogue, account allocator and MPEG-TS stream proxy for Jellyfin.",
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test",

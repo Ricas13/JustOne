@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { eventPresentation, eventTypeFor, finalizeSnapshot, syncGuideEvents } from "../src/finalize.js";
+import { config } from "../src/config.js";
 
 test("event classifier normalizes DLHD generic categories into sports groups", () => {
   assert.equal(eventTypeFor({ name:"Soccer : Southampton vs Ipswich Town", category:"Events" }), "Football");
@@ -94,4 +95,34 @@ test("event guide contains exactly one event-only programme with poster artwork"
   assert.doesNotMatch(xml, /Wrong broadcaster filler/);
   assert.match(xml, /Real static programme/);
   assert.equal((xml.match(/channel="justone\.event\.fallback"/g) || []).length, 1);
+});
+
+
+test("event artwork follows a custom internal base and port", () => {
+  const previousBase = config.internalBaseUrl;
+  const previousPort = config.internalPort;
+  config.internalBaseUrl = "http://custom-justone:9101";
+  config.internalPort = 9101;
+  try {
+    const snapshot = {
+      channels: [{
+        id: "evt",
+        key: "evt",
+        tvgId: "justone.event.evt",
+        name: "UFC 400",
+        group: "Events | Events",
+        referenceKind: "event",
+        variants: [{ sourceId: "a", url: "http://provider/live", name: "HD", quality: "HD", backup: false, order: 0 }],
+        event: { start: 1000, end: 2000, category: "Events", originalName: "UFC 400" },
+      }],
+      dlhdStatus: { unmatchedReferences: [] },
+      dlhdReference: { channels: [], events: [], linearEvents: [] },
+    };
+    const { snapshot: result } = finalizeSnapshot(snapshot, { overrides: {} });
+    assert.match(result.channels[0].logo, /^http:\/\/custom-justone:9102\/artwork\/event\/channel\/evt\.png/);
+    assert.match(result.channels[0].event.programmeArtwork, /^http:\/\/custom-justone:9102\/artwork\/event\/program\/evt\.png/);
+  } finally {
+    config.internalBaseUrl = previousBase;
+    config.internalPort = previousPort;
+  }
 });

@@ -1,10 +1,14 @@
 import { createArtworkServer } from "./artwork-server.js";
 import { config } from "./config.js";
 import { refreshManager } from "./refresh-manager.js";
-import { createAdminServer, createInternalServer } from "./server.js";
+import { createAdminServer, createInternalServer, streamManager } from "./server.js";
 
 if (!config.adminKey) {
   console.error("ADMIN_KEY is required because the admin/API listener may be exposed through Traefik.");
+  process.exit(1);
+}
+if (config.streamProxy.enabled && !config.streamProxy.key) {
+  console.error("STREAM_PROXY_KEY (or legacy INTERNAL_KEY) is required when STREAM_PROXY_ENABLED=true so proxy M3U and stream URLs remain bearer-protected.");
   process.exit(1);
 }
 
@@ -24,6 +28,7 @@ artworkServer.listen(artworkPort, config.internalBindAddress, () => {
 });
 
 console.log(`Refresh cadence: providers every ${config.providerRefreshMinutes} min; DLHD every ${config.dlhdRefreshMinutes} min`);
+console.log(`Native stream proxy: ${config.streamProxy.enabled ? "enabled" : "disabled"}; master M3U mode: ${config.streamProxy.enabled && config.streamProxy.masterEnabled ? "proxy" : "legacy variants"}`);
 
 setTimeout(() => refreshManager.start("startup", { sourceMode: "auto" }), 250);
 
@@ -43,6 +48,7 @@ if (config.dlhdRefreshMinutes > 0) {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    streamManager.shutdown();
     let pending = 3;
     const done = () => { if (--pending <= 0) process.exit(0); };
     adminServer.close(done);

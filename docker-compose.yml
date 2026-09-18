@@ -7,11 +7,11 @@ services:
       - .env
     # Keep direct host access local-only. Remote admin goes through Traefik.
     ports:
-      - "127.0.0.1:${PORT:-8090}:8090"
-    # M3U/XMLTV is available only to containers already on media_net.
-    # There is deliberately no Traefik router and no host port for 8091.
+      - "127.0.0.1:${PORT:-8090}:${PORT:-8090}"
+    # M3U/XMLTV/native streams are available only to containers already on media_net.
+    # There is deliberately no Traefik router or host mapping for the internal listener (8091 by default).
     expose:
-      - "8091"
+      - "${INTERNAL_PORT:-8091}"
     volumes:
       - ./data:/data
     networks:
@@ -28,7 +28,7 @@ services:
       - "traefik.http.middlewares.justone-admin-root.redirectregex.regex=^https?://([^/]+)/?$"
       - "traefik.http.middlewares.justone-admin-root.redirectregex.replacement=https://$${1}/admin"
       - "traefik.http.middlewares.justone-admin-root.redirectregex.permanent=false"
-      - "traefik.http.services.justone-admin.loadbalancer.server.port=8090"
+      - "traefik.http.services.justone-admin.loadbalancer.server.port=${PORT:-8090}"
 
 networks:
   media_net:

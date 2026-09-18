@@ -321,6 +321,13 @@ export function mappingAllowedForCountries(row, ref, countries) {
   return allowed.has(staticCountry(row, ref));
 }
 
+export function existingChannelAllowedForCountries(channel, countries) {
+  const allowed = countries instanceof Set ? countries : new Set(countries || []);
+  if (channel?.referenceKind === "event" || !allowed.size) return true;
+  const country = countryOf({ name: channel?.name || "", group: channel?.group || "" });
+  return Boolean(country && allowed.has(country));
+}
+
 function targetReference(ref, allowedCountries) {
   if (ref.kind === "event") return true;
   if (!allowedCountries.size) return true;
@@ -372,7 +379,7 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
       readable = response.body;
       await ensureProviderCacheDir();
       tmpPath = `${providerCachePath(source.id)}.${process.pid}.${Date.now()}.tmp`;
-      cacheHandle = await fsp.open(tmpPath, "w");
+      cacheHandle = await fsp.open(tmpPath, "w", 0o600);
       input = "provider";
     } catch (error) {
       if (cache.exists && cache.urlMatches) {
@@ -735,10 +742,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     const byId = new Map(channels.map((channel) => [channel.id, channel]));
     for (const old of previous.channels || []) {
       if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
-      if (old.referenceKind !== "event" && allowedCountries.size) {
-        const oldCountry = String(old.group || "").match(/TV\s*\|\s*(GB|PT|US)\b/i)?.[1]?.toUpperCase() || "";
-        if (!allowedCountries.has(oldCountry)) continue;
-      }
+      if (!existingChannelAllowedForCountries(old, allowedCountries)) continue;
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;
       const current = byId.get(old.id);

@@ -94,3 +94,33 @@ test("buildM3u preserves ranked variant labels in per-source feeds for Dispatcha
   assert.match(body, /https:\/\/b\.example\/live\/1/);
   assert.doesNotMatch(body, /https:\/\/a\.example\/live\/1/);
 });
+
+
+test("buildM3u proxy mode emits one opaque JustOne URL per canonical channel", () => {
+  const snapshot = {
+    channels: [{
+      id: "channel-bbc-one",
+      name: "BBC One",
+      tvgId: "justone.channel.bbc-one-uk",
+      logo: "",
+      number: 1000,
+      group: "TV | UK",
+      variants: [
+        { sourceId: "src-a", order: 0, quality: "HD", url: "http://provider-a.example/live/alice/secret/1.ts" },
+        { sourceId: "src-b", order: 1, quality: "HD", url: "http://provider-b.example/live/bob/secret/1.ts" },
+      ],
+    }],
+  };
+
+  const body = buildM3u(snapshot, {
+    guideUrl: "http://justone-catalog:8091/epg/guide.xml?key=test",
+    streamUrlForChannel: (channel) => `http://justone-catalog:8091/stream/${channel.id}.ts?key=test`,
+  });
+  const extinf = body.split("\n").filter((line) => line.startsWith("#EXTINF:"));
+
+  assert.equal(extinf.length, 1);
+  assert.match(body, /\/stream\/channel-bbc-one\.ts\?key=test/);
+  assert.doesNotMatch(body, /provider-a\.example/);
+  assert.doesNotMatch(body, /provider-b\.example/);
+  assert.doesNotMatch(body, /alice|bob|secret/);
+});

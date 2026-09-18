@@ -22,12 +22,15 @@ function csvEnv(name, fallback = "") {
     .filter(Boolean);
 }
 
+const adminPort = intEnv("PORT", 8090);
+const internalPort = intEnv("INTERNAL_PORT", 8091);
+
 export const config = {
-  port: intEnv("PORT", 8090),
+  port: adminPort,
   bindAddress: String(process.env.BIND_ADDRESS || "0.0.0.0"),
-  internalPort: intEnv("INTERNAL_PORT", 8091),
+  internalPort,
   internalBindAddress: String(process.env.INTERNAL_BIND_ADDRESS || "0.0.0.0"),
-  internalBaseUrl: cleanUrl(process.env.INTERNAL_BASE_URL, "http://justone-catalog:8091"),
+  internalBaseUrl: cleanUrl(process.env.INTERNAL_BASE_URL, `http://justone-catalog:${internalPort}`),
   internalKey: String(process.env.INTERNAL_KEY || ""),
   dataDir: path.resolve(process.env.DATA_DIR || "./data"),
   adminKey: String(process.env.ADMIN_KEY || ""),
@@ -41,6 +44,28 @@ export const config = {
   playlistMaxLineLength: intEnv("PLAYLIST_MAX_LINE_LENGTH", 4 * 1024 * 1024),
   qualityOrder: String(process.env.DEFAULT_QUALITY_ORDER || "HD,FHD,UHD,SD,UNKNOWN")
     .split(",").map((x) => x.trim().toUpperCase()).filter(Boolean),
+
+  streamProxy: {
+    enabled: boolEnv("STREAM_PROXY_ENABLED", false),
+    masterEnabled: boolEnv("STREAM_PROXY_MASTER_ENABLED", false),
+    // Keep proxy bearer auth separate from the legacy internal-output key so
+    // enabling the proxy cannot break an existing Dispatcharr rollback path.
+    // INTERNAL_KEY remains a compatibility fallback for earlier deployments.
+    key: String(process.env.STREAM_PROXY_KEY || process.env.INTERNAL_KEY || ""),
+    startupTimeoutMs: intEnv("STREAM_STARTUP_TIMEOUT_MS", 8000),
+    startupQueueTimeoutMs: intEnv("STREAM_STARTUP_QUEUE_TIMEOUT_MS", 1500),
+    stallTimeoutMs: intEnv("STREAM_STALL_TIMEOUT_MS", 15000),
+    relayGraceMs: intEnv("STREAM_RELAY_GRACE_MS", 8000),
+    failoverWindowMs: intEnv("STREAM_FAILOVER_WINDOW_MS", 12000),
+    failureCooldownMs: intEnv("STREAM_FAILURE_COOLDOWN_MS", 10000),
+    notFoundCooldownMs: intEnv("STREAM_NOT_FOUND_COOLDOWN_MS", 300000),
+    sourceFailureCooldownMs: intEnv("STREAM_SOURCE_FAILURE_COOLDOWN_MS", 60000),
+    maxClientBufferBytes: intEnv("STREAM_MAX_CLIENT_BUFFER_BYTES", 8 * 1024 * 1024),
+    startupBufferBytes: intEnv("STREAM_STARTUP_BUFFER_BYTES", 256 * 1024),
+    replayBufferBytes: intEnv("STREAM_REPLAY_BUFFER_BYTES", 1024 * 1024),
+    failoverKeepaliveMs: intEnv("STREAM_FAILOVER_KEEPALIVE_MS", 500),
+    userAgent: String(process.env.STREAM_USER_AGENT || "VLC/3.0.20 LibVLC/3.0.20"),
+  },
   dlhd: {
     enabled: boolEnv("DLHD_FILTER_ENABLED", true),
     baseUrl: cleanUrl(process.env.DLHD_BASE_URL, "https://dlive.sx"),
@@ -69,5 +94,12 @@ export function withInternalKey(url) {
     u.port = String(config.internalPort + 1);
   }
   if (config.internalKey) u.searchParams.set("key", config.internalKey);
+  return u.toString();
+}
+
+
+export function withStreamProxyKey(url) {
+  const u = new URL(url);
+  if (config.streamProxy.key) u.searchParams.set("key", config.streamProxy.key);
   return u.toString();
 }
