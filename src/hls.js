@@ -276,6 +276,14 @@ export class HlsMpegTsReader {
     this.cancelled = false;
     this.initialized = false;
     this.keyCache = new Map();
+    this.metadata = {
+      master: false,
+      codecs: "",
+      resolution: "",
+      bandwidth: 0,
+      averageBandwidth: 0,
+      encryption: "",
+    };
   }
 
   async #initialize(initialResponse, candidateUrl) {
@@ -300,6 +308,14 @@ export class HlsMpegTsReader {
         try {
           this.playlistUrl = response.url || variantUrl;
           this.#applyMediaPlaylist(media, true);
+          this.metadata = {
+            master: true,
+            codecs: variant.codecs || "",
+            resolution: variant.resolution || "",
+            bandwidth: Number(variant.bandwidth || 0),
+            averageBandwidth: Number(variant.averageBandwidth || 0),
+            encryption: media.segments.find((segment) => segment.key?.method)?.key?.method || "",
+          };
           this.initialized = true;
           return;
         } catch (error) {
@@ -314,6 +330,14 @@ export class HlsMpegTsReader {
 
     this.playlistUrl = base;
     this.#applyMediaPlaylist(parsed, true);
+    this.metadata = {
+      master: false,
+      codecs: "",
+      resolution: "",
+      bandwidth: 0,
+      averageBandwidth: 0,
+      encryption: parsed.segments.find((segment) => segment.key?.method)?.key?.method || "",
+    };
     this.initialized = true;
   }
 
