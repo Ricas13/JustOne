@@ -1,3 +1,5 @@
+import { HlsMpegTsReader, isHlsResponse } from "./hls.js";
+
 const DEFAULTS = {
   startupTimeoutMs: 8000,
   startupQueueTimeoutMs: 1500,
@@ -29,12 +31,6 @@ function sleep(ms) {
 
 function iso(ms) {
   return ms ? new Date(ms).toISOString() : null;
-}
-
-function looksLikeHls(response, candidate) {
-  const type = String(response.headers.get("content-type") || "").toLowerCase();
-  const url = String(candidate?.url || "").toLowerCase();
-  return type.includes("mpegurl") || /\.m3u8(?:$|[?#])/.test(url);
 }
 
 function errorLabel(error) {
@@ -526,11 +522,26 @@ export class StreamManager {
         throw new UpstreamError(`upstream HTTP ${response.status}`, { status: response.status, code: "http" });
       }
       if (!response.body) throw new UpstreamError("upstream returned no response body", { code: "empty" });
-      if (looksLikeHls(response, candidate)) {
-        throw new UpstreamError("HLS upstream is not supported by the byte relay", { status: 415, code: "hls" });
-      }
 
-      const reader = response.body.getReader();
+      let reader;
+      if (isHlsResponse(response, candidate.url)) {
+        try {
+          reader = await HlsMpegTsReader.create({
+            fetchImpl: this.fetchImpl,
+            initialResponse: response,
+            candidateUrl: candidate.url,
+            signal: controller.signal,
+            userAgent: this.options.userAgent,
+          });
+        } catch (error) {
+          throw new UpstreamError(
+            `HLS startup failed: ${error?.message || error}`,
+            { status: Number(error?.status || 0), code: "hls_startup" }
+          );
+        }
+      } else {
+        reader = response.body.getReader();
+      }
       const chunks = [];
       let buffered = 0;
       const target = Math.max(TS_PACKET_SIZE * TS_SYNC_CHECK_PACKETS, Number(this.options.startupBufferBytes || 1));
@@ -694,7 +705,7 @@ export class StreamManager {
     if ([401, 403, 429].includes(status)) {
       sourceWide = true;
       cooldown = this.options.sourceFailureCooldownMs;
-    } else if (status === 404 || error?.code === "hls") {
+    } else if (status === 404 || error?.code === "hls_unsupported") {
       cooldown = this.options.notFoundCooldownMs;
     }
 
