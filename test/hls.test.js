@@ -313,14 +313,16 @@ seg1.ts
     signal: new AbortController().signal,
     userAgent: "test",
   });
-  assert.deepEqual(reader.metadata, {
-    master: true,
-    codecs: "avc1.640028,mp4a.40.2",
-    resolution: "1920x1080",
-    bandwidth: 6500000,
-    averageBandwidth: 5800000,
-    encryption: "AES-128",
-  });
+  assert.equal(reader.metadata.master, true);
+  assert.equal(reader.metadata.codecs, "avc1.640028,mp4a.40.2");
+  assert.equal(reader.metadata.resolution, "1920x1080");
+  assert.equal(reader.metadata.bandwidth, 6500000);
+  assert.equal(reader.metadata.averageBandwidth, 5800000);
+  assert.equal(reader.metadata.encryption, "AES-128");
+  assert.equal(reader.metadata.pacing, false);
+  assert.equal(reader.metadata.lastSegmentDurationMs, 0);
+  assert.equal(reader.metadata.lastSegmentDownloadMs, 0);
+  assert.equal(reader.metadata.lastSegmentBytes, 0);
   await reader.cancel();
 });
 
