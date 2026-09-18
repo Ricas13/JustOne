@@ -540,7 +540,7 @@ export class StreamManager {
         } catch (error) {
           throw new UpstreamError(
             `HLS startup failed: ${error?.message || error}`,
-            { status: Number(error?.status || 0), code: "hls_startup" }
+            { status: Number(error?.status || 0), code: String(error?.code || "hls_startup") }
           );
         }
       } else {
