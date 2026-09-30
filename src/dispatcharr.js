@@ -347,6 +347,37 @@ function explicitManagedCountry(channel) {
   return countryOf({ name: channel?.name || "" });
 }
 
+function idValue(value) {
+  if (value == null) return null;
+  if (typeof value === "object") return value.id ?? null;
+  return value;
+}
+
+function channelStreamCount(channel) {
+  return Array.isArray(channel?.streams) ? channel.streams.length : 0;
+}
+
+function channelHasEpg(channel) {
+  return idValue(channel?.epg_data_id ?? channel?.effective_epg_data_id) != null;
+}
+
+function compareChannelIds(a, b) {
+  const an = Number(a?.id);
+  const bn = Number(b?.id);
+  if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+  return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+}
+
+export function chooseManagedChannelSurvivor(matches = []) {
+  return [...matches].sort((a, b) => {
+    const epg = Number(channelHasEpg(b)) - Number(channelHasEpg(a));
+    if (epg) return epg;
+    const streams = channelStreamCount(b) - channelStreamCount(a);
+    if (streams) return streams;
+    return compareChannelIds(a, b);
+  })[0] || null;
+}
+
 export async function reconcileDispatcharr(snapshot, { apply = false, client = new DispatcharrClient() } = {}) {
   if (apply && !config.dispatcharr.applyEnabled) {
     throw new Error("Dispatcharr apply is disabled. Set DISPATCHARR_APPLY_ENABLED=true after reviewing preview output.");
@@ -387,9 +418,6 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
   if (apply && waiting.length) {
     throw new Error(`Dispatcharr apply blocked: ${waiting.length} desired channel(s) are waiting for imported streams. Provision/refresh the JustOne M3Us first, wait for Dispatcharr import to finish, then preview again.`);
   }
-  if (apply && duplicates.length) {
-    throw new Error(`Dispatcharr apply blocked: ${duplicates.length} duplicate JustOne-managed channel identity/identities already exist.`);
-  }
 
   const actions = violations.map(({ channel, country }) => ({
     action: "policy-violation",
@@ -416,10 +444,20 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
       ...(logoId ? { logo_id: logoId } : {}),
     };
     const matches = byTvg.get(channel.tvgId) || [];
-    if (matches.length > 1) {
-      actions.push({ action: "duplicate-managed-channel", tvgId: channel.tvgId, ids: matches.map((x) => x.id) });
+    const existing = chooseManagedChannelSurvivor(matches);
+    const redundant = existing ? matches.filter((row) => String(row.id) !== String(existing.id)) : [];
+
+    if (existing && redundant.length) {
+      actions.push({
+        action: "merge-duplicate-managed-channel",
+        id: existing.id,
+        tvgId: channel.tvgId,
+        name: channel.name,
+        duplicateIds: redundant.map((row) => row.id),
+        streams: desired.streams.length,
+      });
     }
-    const existing = matches[0];
+
     if (!existing) {
       actions.push({ action: "create", tvgId: channel.tvgId, name: channel.name, streams: desired.streams.length });
       if (apply) {
@@ -428,11 +466,23 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
       }
       continue;
     }
+
     if (changed(existing, desired)) {
       actions.push({ action: "update", id: existing.id, tvgId: channel.tvgId, name: channel.name, streams: desired.streams.length });
       if (apply) await client.request(`/api/channels/channels/${existing.id}/`, { method: "PATCH", body: desired });
     } else {
       actions.push({ action: "unchanged", id: existing.id, tvgId: channel.tvgId, name: channel.name, streams: desired.streams.length });
+    }
+
+    if (apply && redundant.length) {
+      // Only delete redundant JustOne-managed copies after the survivor has
+      // successfully received the complete desired stream list. If any write
+      // fails, the next reconciliation can safely resume without losing the
+      // canonical channel.
+      for (const duplicate of redundant) {
+        await client.request(`/api/channels/channels/${duplicate.id}/`, { method: "DELETE" });
+      }
+      byTvg.set(channel.tvgId, [existing]);
     }
   }
 
@@ -457,11 +507,10 @@ export async function reconcileDispatcharr(snapshot, { apply = false, client = n
   }
 
   const counts = actions.reduce((acc, row) => ((acc[row.action] = (acc[row.action] || 0) + 1), acc), {});
-  const readyForApply = !violations.length && !waiting.length && !duplicates.length;
+  const readyForApply = !violations.length && !waiting.length;
   const blockers = [];
   if (violations.length) blockers.push(`${violations.length} country-policy violation(s)`);
   if (waiting.length) blockers.push(`${waiting.length} channel(s) waiting for Dispatcharr stream import`);
-  if (duplicates.length) blockers.push(`${duplicates.length} duplicate managed channel identity/identities`);
 
   return {
     apply,

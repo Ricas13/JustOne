@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planDispatcharrInputs, provisionDispatcharrInputs, rankFromName, reconcileDispatcharr } from "../src/dispatcharr.js";
+import { chooseManagedChannelSurvivor, planDispatcharrInputs, provisionDispatcharrInputs, rankFromName, reconcileDispatcharr } from "../src/dispatcharr.js";
 import { config } from "../src/config.js";
 
 test("Dispatcharr reconciler reads JustOne stream rank", () => {
@@ -199,4 +199,165 @@ test("channel preview expires stale events but keeps unknown static orphans non-
   assert.ok(result.actions.some((row) => row.action === "orphan-static" && row.id === 22));
   assert.ok(result.actions.some((row) => row.action === "orphan-static" && row.id === 23));
   assert.equal(result.actions.some((row) => row.action === "delete-policy-static" && row.id === 23), false);
+});
+
+
+class MutableReconcileClient extends FakeReconcileClient {
+  constructor(options = {}) {
+    super(options);
+    this.nextId = 1000;
+  }
+
+  async request(path, { method = "GET", body } = {}) {
+    this.calls.push({ path, method, body });
+    if (path === "/api/channels/channels/" && method === "POST") {
+      const row = { ...body, id: this.nextId++ };
+      this.channels.push(row);
+      return row;
+    }
+    const match = /^\/api\/channels\/channels\/(\d+)\/$/.exec(path);
+    if (match && method === "PATCH") {
+      const id = Number(match[1]);
+      const index = this.channels.findIndex((row) => Number(row.id) === id);
+      if (index < 0) throw new Error(`missing channel ${id}`);
+      this.channels[index] = { ...this.channels[index], ...body };
+      return this.channels[index];
+    }
+    if (match && method === "DELETE") {
+      const id = Number(match[1]);
+      this.channels = this.channels.filter((row) => Number(row.id) !== id);
+      return null;
+    }
+    if (path === "/api/channels/groups/" && method === "POST") {
+      const row = { ...body, id: this.nextId++ };
+      this.groups.push(row);
+      return row;
+    }
+    if (path === "/api/channels/logos/" && method === "POST") {
+      const row = { ...body, id: this.nextId++ };
+      this.logos.push(row);
+      return row;
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  }
+}
+
+test("duplicate managed channels are repairable rather than blocking reconciliation", async () => {
+  const snapshot = {
+    channels: [
+      { referenceKind:"channel", tvgId:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK", group:"TV | UK", number:1200, variants:[{url:"x"}] },
+    ],
+  };
+  const client = new FakeReconcileClient({
+    channels: [
+      { id:41, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Old copy", channel_number:1200, channel_group_id:1, streams:[11] },
+      { id:42, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Current copy", channel_number:1200, channel_group_id:1, streams:[11,12], epg_data_id:77 },
+    ],
+    streams: [
+      { id:11, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK [JO:001]" },
+      { id:12, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK [JO:002]" },
+    ],
+    groups: [{ id:1, name:"TV | UK" }],
+  });
+
+  const result = await reconcileDispatcharr(snapshot, { apply:false, client });
+  assert.equal(result.readyForApply, true);
+  assert.equal(result.blockers.length, 0);
+  assert.equal(result.counts["merge-duplicate-managed-channel"], 1);
+  const merge = result.actions.find((row) => row.action === "merge-duplicate-managed-channel");
+  assert.equal(merge.id, 42);
+  assert.deepEqual(merge.duplicateIds, [41]);
+});
+
+test("managed duplicate survivor prefers EPG mapping, then stream coverage, then stable lowest id", () => {
+  assert.equal(chooseManagedChannelSurvivor([
+    { id:1, streams:[1,2,3] },
+    { id:9, streams:[1], epg_data_id:55 },
+  ]).id, 9);
+  assert.equal(chooseManagedChannelSurvivor([
+    { id:7, streams:[1] },
+    { id:8, streams:[1,2] },
+  ]).id, 8);
+  assert.equal(chooseManagedChannelSurvivor([
+    { id:5, streams:[1] },
+    { id:3, streams:[1] },
+  ]).id, 3);
+});
+
+test("apply updates duplicate survivor before deleting redundant managed channels", async () => {
+  const previousApply = config.dispatcharr.applyEnabled;
+  config.dispatcharr.applyEnabled = true;
+  try {
+    const snapshot = {
+      channels: [
+        { referenceKind:"channel", tvgId:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK", group:"TV | UK", number:1200, variants:[{url:"x"}] },
+      ],
+    };
+    const client = new MutableReconcileClient({
+      channels: [
+        { id:41, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Duplicate A", channel_number:1200, channel_group_id:1, streams:[11] },
+        { id:42, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Duplicate B", channel_number:1200, channel_group_id:1, streams:[11], epg_data_id:77 },
+      ],
+      streams: [
+        { id:11, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK [JO:001]" },
+        { id:12, tvg_id:"justone.channel.viaplay-sports-2-uk", name:"Viaplay Sports 2 UK [JO:002]" },
+      ],
+      groups: [{ id:1, name:"TV | UK" }],
+    });
+
+    const result = await reconcileDispatcharr(snapshot, { apply:true, client });
+    assert.equal(result.readyForApply, true);
+    assert.equal(client.channels.length, 1);
+    assert.equal(client.channels[0].id, 42);
+    assert.equal(client.channels[0].name, "Viaplay Sports 2 UK");
+    assert.deepEqual(client.channels[0].streams, [11,12]);
+    assert.equal(client.channels[0].epg_data_id, 77);
+
+    const patchIndex = client.calls.findIndex((row) => row.method === "PATCH" && row.path === "/api/channels/channels/42/");
+    const deleteIndex = client.calls.findIndex((row) => row.method === "DELETE" && row.path === "/api/channels/channels/41/");
+    assert.ok(patchIndex >= 0);
+    assert.ok(deleteIndex > patchIndex);
+  } finally {
+    config.dispatcharr.applyEnabled = previousApply;
+  }
+});
+
+test("duplicate cleanup never deletes anything if survivor update fails", async () => {
+  const previousApply = config.dispatcharr.applyEnabled;
+  config.dispatcharr.applyEnabled = true;
+  try {
+    const snapshot = {
+      channels: [
+        { referenceKind:"channel", tvgId:"justone.channel.test", name:"Test Channel", group:"TV | UK", number:1201, variants:[{url:"x"}] },
+      ],
+    };
+    const client = new MutableReconcileClient({
+      channels: [
+        { id:51, tvg_id:"justone.channel.test", name:"Duplicate A", channel_number:1201, channel_group_id:1, streams:[21] },
+        { id:52, tvg_id:"justone.channel.test", name:"Duplicate B", channel_number:1201, channel_group_id:1, streams:[21], epg_data_id:88 },
+      ],
+      streams: [
+        { id:21, tvg_id:"justone.channel.test", name:"Test Channel [JO:001]" },
+        { id:22, tvg_id:"justone.channel.test", name:"Test Channel [JO:002]" },
+      ],
+      groups: [{ id:1, name:"TV | UK" }],
+    });
+    const originalRequest = client.request.bind(client);
+    client.request = async (path, options = {}) => {
+      if (path === "/api/channels/channels/52/" && options.method === "PATCH") {
+        client.calls.push({ path, ...options });
+        throw new Error("simulated survivor update failure");
+      }
+      return originalRequest(path, options);
+    };
+
+    await assert.rejects(
+      () => reconcileDispatcharr(snapshot, { apply:true, client }),
+      /simulated survivor update failure/,
+    );
+    assert.equal(client.channels.length, 2);
+    assert.equal(client.calls.some((row) => row.method === "DELETE"), false);
+  } finally {
+    config.dispatcharr.applyEnabled = previousApply;
+  }
 });
