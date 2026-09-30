@@ -18,6 +18,7 @@ import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, vari
 import { enrichAndBuildGuide, epgHintsForChannelId, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
 import { createDlhdMatcher, isEventLikeRow } from "./dlhd-matcher.js";
+import { loadCachedXmltv, saveCachedXmltv } from "./upstream-xmltv-cache.js";
 import { text, timeoutSignal } from "./util.js";
 
 const MAX_EPG_CANDIDATES_PER_SOURCE = 50000;
@@ -39,6 +40,21 @@ async function fetchText(url, timeoutMs = config.fetchTimeoutMs) {
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
   return await response.text();
+}
+
+async function fetchGuideText(url, timeoutMs = config.xmltvFetchTimeoutMs) {
+  const response = await fetch(url, {
+    signal: timeoutSignal(timeoutMs),
+    redirect: "follow",
+    headers: { "user-agent": "Mozilla/5.0 JustOne Catalog", accept: "application/xml,text/xml,*/*" },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  return {
+    body: await response.text(),
+    cached: response.headers.get("x-justone-upstream-cache") === "1",
+    stale: response.headers.get("x-justone-upstream-cache-stale") === "1",
+    contentType: response.headers.get("content-type") || "application/xml",
+  };
 }
 
 async function fetchPlaylist(url) {
@@ -562,32 +578,124 @@ function resolveWithEpg({ candidates, guideDocs, matcher, allowedCountries, exis
   return { rows, refIds, newlyMatchedRows: matchedCandidateKeys.size, mappingsBySource, events, statics };
 }
 
-async function loadGuideDocs(state) {
+function parseUsefulGuide(body) {
+  const parsed = parseXmlTv(body);
+  if (parsed.channels.size === 0) throw new Error("XMLTV contains no channels");
+  if (parsed.programmes.size === 0) throw new Error("XMLTV contains no programme data");
+  return parsed;
+}
+
+function addGuideSuccess(guideDocs, guideStatus, guide, parsed, {
+  cached = false,
+  stale = false,
+  cachedAt = null,
+  recoveredFrom = null,
+} = {}) {
+  guideDocs.push({ ...guide, parsed });
+  guideStatus.push({
+    id: guide.id,
+    name: guide.name,
+    ok: true,
+    channels: parsed.channels.size,
+    programmeChannels: parsed.programmes.size,
+    auto: guide.auto === true,
+    cached,
+    stale,
+    ...(cachedAt ? { cachedAt } : {}),
+    ...(recoveredFrom ? { recoveredFrom } : {}),
+  });
+  console.log(
+    `Guide ${guide.name}: ${parsed.channels.size} channels, ${parsed.programmes.size} with programmes`
+    + `${guide.auto ? " (auto)" : ""}${cached ? stale ? " (stale cache)" : " (cache)" : ""}`,
+  );
+}
+
+export async function loadGuideDocs(state, sourceMode = "auto") {
   const guideDocs = [];
   const guideStatus = [];
   for (const guide of [...(state.guides || [])]
     .filter((g) => g.enabled !== false)
     .sort((a, b) => Number(a.priority || 100) - Number(b.priority || 100))) {
     try {
-      const timeout = guide.auto ? config.playlistFetchTimeoutMs : config.fetchTimeoutMs;
-      const body = await fetchText(guide.url, timeout);
-      const parsed = parseXmlTv(body);
-      guideDocs.push({ ...guide, parsed });
-      guideStatus.push({ id: guide.id, name: guide.name, ok: true, channels: parsed.channels.size, auto: guide.auto === true });
-      console.log(`Guide ${guide.name}: ${parsed.channels.size} channels${guide.auto ? " (auto)" : ""}`);
+      if (sourceMode === "cache") {
+        const hit = await loadCachedXmltv(guide.url, { allowStale: true });
+        if (!hit) throw new Error("no cached upstream XMLTV available for cache-only refresh");
+        const parsed = parseUsefulGuide(hit.body.toString("utf8"));
+        addGuideSuccess(guideDocs, guideStatus, guide, parsed, {
+          cached: true,
+          stale: hit.stale === true,
+          cachedAt: hit.meta?.cachedAt || null,
+        });
+        continue;
+      }
+
+      const fetched = await fetchGuideText(guide.url, config.xmltvFetchTimeoutMs);
+      const parsed = parseUsefulGuide(fetched.body);
+
+      // Explicitly cache every configured guide after successful parsing, even
+      // when its URL does not match the global XMLTV URL heuristics.
+      if (!fetched.cached) {
+        try {
+          await saveCachedXmltv(guide.url, Buffer.from(fetched.body), { contentType: fetched.contentType });
+        } catch (cacheError) {
+          console.warn(`Guide ${guide.name} cache write failed: ${cacheError.message}`);
+        }
+      }
+
+      addGuideSuccess(guideDocs, guideStatus, guide, parsed, {
+        cached: fetched.cached,
+        stale: fetched.stale,
+      });
     } catch (error) {
+      // A configured guide URL may not look like a conventional XMLTV endpoint,
+      // so the global fetch wrapper may not have had a chance to use the cache.
+      // Always make one explicit last-known-good cache attempt before declaring
+      // the guide failed.
+      if (sourceMode !== "cache") {
+        try {
+          const hit = await loadCachedXmltv(guide.url, { allowStale: true });
+          if (hit) {
+            const parsed = parseUsefulGuide(hit.body.toString("utf8"));
+            console.warn(`Guide ${guide.name} failed live refresh (${error.message}); using cached XMLTV from ${hit.meta?.cachedAt || "unknown time"}`);
+            addGuideSuccess(guideDocs, guideStatus, guide, parsed, {
+              cached: true,
+              stale: hit.stale === true,
+              cachedAt: hit.meta?.cachedAt || null,
+              recoveredFrom: error.message,
+            });
+            continue;
+          }
+        } catch (cacheError) {
+          console.warn(`Guide ${guide.name} cache fallback failed: ${cacheError.message}`);
+        }
+      }
+
       guideStatus.push({ id: guide.id, name: guide.name, ok: false, error: error.message, auto: guide.auto === true });
       console.error(`Guide ${guide.name} failed: ${error.message}`);
     }
   }
-  if (guideStatus.some((row) => !row.ok)) {
-    try {
-      const previousGuide = parseXmlTv(await loadGuide());
-      guideDocs.push({ id: "__previous__", name: "Last known good guide", parsed: previousGuide });
-      console.warn("Using last-known-good generated guide because at least one XMLTV source failed");
-    } catch {}
-  }
   return { guideDocs, guideStatus };
+}
+
+function programmeCount(xml) {
+  return (String(xml || "").match(/<programme\b/gi) || []).length;
+}
+
+export function protectLastKnownGoodGuide(previousGuide, nextGuide, guideStatus = []) {
+  const failedGuides = (guideStatus || []).filter((row) => row?.ok === false);
+  const previousProgrammes = programmeCount(previousGuide);
+  const nextProgrammes = programmeCount(nextGuide);
+  const preserve = failedGuides.length > 0
+    && previousProgrammes > 0
+    && nextProgrammes < previousProgrammes;
+
+  return {
+    xml: preserve ? previousGuide : nextGuide,
+    preserved: preserve,
+    failedGuides: failedGuides.length,
+    previousProgrammes,
+    nextProgrammes,
+  };
 }
 
 export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
@@ -677,7 +785,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   }
 
   report(onProgress, { phase: "loading-guides", epgCandidates: epgCandidates.length });
-  const { guideDocs, guideStatus } = await loadGuideDocs(state);
+  const { guideDocs, guideStatus } = await loadGuideDocs(state, sourceMode);
 
   const assisted = resolveWithEpg({
     candidates: epgCandidates,
@@ -772,6 +880,8 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   }
 
   const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {}, { dlhdReference });
+  const previousGuideXml = await loadGuide();
+  const guideProtection = protectLastKnownGoodGuide(previousGuideXml, guideXml, guideStatus);
   const snapshot = {
     generatedAt: new Date().toISOString(),
     sourceMode,
@@ -779,11 +889,22 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     sourceStatus,
     guideStatus,
     guideSummary: guideSummary(guideDocs),
+    guideProtection: {
+      preservedLastKnownGood: guideProtection.preserved,
+      failedGuides: guideProtection.failedGuides,
+      previousProgrammes: guideProtection.previousProgrammes,
+      candidateProgrammes: guideProtection.nextProgrammes,
+    },
     dlhdStatus,
     dlhdReference,
   };
   await saveSnapshot(snapshot);
-  await saveGuide(guideXml);
+  await saveGuide(guideProtection.xml);
+  if (guideProtection.preserved) {
+    console.warn(
+      `EPG fail-safe: preserved last-known-good guide with ${guideProtection.previousProgrammes} programmes because ${guideProtection.failedGuides} upstream guide(s) failed; candidate guide had ${guideProtection.nextProgrammes}`,
+    );
+  }
   report(onProgress, { phase: "complete", currentSource: null, outputStaticChannels, outputEvents });
   console.log(`Catalog refresh complete in ${elapsedSeconds(started)}s: ${outputStaticChannels} static + ${outputEvents} events = ${channels.length} channels`);
   return snapshot;

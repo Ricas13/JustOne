@@ -40,6 +40,7 @@ export const config = {
   providerCacheMaxAgeMinutes: intEnv("PROVIDER_CACHE_MAX_AGE_MINUTES", 24 * 60),
 
   fetchTimeoutMs: intEnv("FETCH_TIMEOUT_MS", 30000),
+  xmltvFetchTimeoutMs: intEnv("XMLTV_FETCH_TIMEOUT_MS", 5 * 60 * 1000),
   playlistFetchTimeoutMs: intEnv("PLAYLIST_FETCH_TIMEOUT_MS", 30 * 60 * 1000),
   playlistMaxLineLength: intEnv("PLAYLIST_MAX_LINE_LENGTH", 4 * 1024 * 1024),
   qualityOrder: String(process.env.DEFAULT_QUALITY_ORDER || "HD,FHD,UHD,SD,UNKNOWN")
