@@ -29,8 +29,15 @@ export function isXmltvUrl(value) {
   try {
     const url = new URL(String(value));
     const pathname = url.pathname.toLowerCase();
-    return pathname.includes("xmltv")
-      || pathname.includes("epg")
+    const leaf = pathname.split("/").filter(Boolean).at(-1) || "";
+
+    // Match actual XMLTV-looking resources, not arbitrary REST API paths that
+    // merely contain an "epg" segment (for example Dispatcharr's
+    // /api/epg/sources/ and /api/epg/epgdata/ JSON endpoints).
+    return leaf === "xmltv"
+      || leaf === "epg"
+      || /^xmltv(?:[._-]|$)/i.test(leaf)
+      || /^epg(?:[._-]|$)/i.test(leaf)
       || pathname.endsWith(".xml")
       || pathname.endsWith(".xml.gz")
       || /(?:^|[?&])(?:xmltv|epg)=/i.test(url.search)
