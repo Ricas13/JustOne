@@ -4,6 +4,7 @@ import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
 import { provisionDispatcharrInputs } from "./dispatcharr.js";
 import { reconcileDispatcharr } from "./dispatcharr-epg.js";
+import { dispatcharrApplyManager } from "./dispatcharr-apply-manager.js";
 import { StreamManager } from "./stream-manager.js";
 import { loadGuide, loadSnapshot, loadState, newId, saveState } from "./store.js";
 import { duplicateSourceByUrl, normaliseSourceInput, parseBulkPlaylistText } from "./sources.js";
@@ -253,9 +254,16 @@ export function createAdminServer() {
           applyEnabled: config.dispatcharr.applyEnabled,
         });
       }
+      if (req.method === "GET" && path === "/api/dispatcharr/reconcile/status") {
+        return json(res, 200, dispatcharrApplyManager.status());
+      }
       if (req.method === "POST" && path === "/api/dispatcharr/reconcile") {
         const body = await readJsonBody(req);
-        return json(res, 200, await reconcileDispatcharr(await loadSnapshot(), { apply: body.apply === true }));
+        if (body.apply !== true) {
+          return json(res, 200, await reconcileDispatcharr(await loadSnapshot(), { apply: false }));
+        }
+        const started = dispatcharrApplyManager.start(await loadSnapshot());
+        return json(res, started.started ? 202 : 200, started);
       }
 
       return json(res, 404, { error: "not found" });
