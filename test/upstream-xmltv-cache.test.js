@@ -25,6 +25,31 @@ test("XMLTV URL detection covers common guide endpoints but not provider M3U", (
   assert.equal(isXmltvUrl("https://example.test/get.php?username=a&password=b&type=m3u_plus"), false);
 });
 
+test("Dispatcharr EPG REST API routes are not mistaken for XMLTV documents", async () => {
+  const urls = [
+    "http://dispatcharr:9191/api/epg/sources/",
+    "http://dispatcharr:9191/api/epg/epgdata/",
+    "http://dispatcharr:9191/api/epg/import/",
+  ];
+  for (const url of urls) assert.equal(isXmltvUrl(url), false, url);
+
+  let calls = 0;
+  const wrapped = createXmltvCachingFetch(async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ results: [{ id: 1, name: "JustOne | Canonical EPG" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  for (const url of urls) {
+    const response = await wrapped(url);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Canonical EPG/);
+  }
+  assert.equal(calls, urls.length);
+});
+
 test("useful XMLTV requires a TV root, channel metadata and programme data", () => {
   assert.equal(looksLikeUsefulXmltv(Buffer.from(validXml())), true);
   assert.equal(looksLikeUsefulXmltv(Buffer.from("<tv><channel id=\"x\"></channel></tv>")), false);
