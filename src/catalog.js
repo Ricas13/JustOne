@@ -632,7 +632,7 @@ async function loadGuideDocs(state, sourceMode = "auto") {
 }
 
 function programmeCount(xml) {
-  return (String(xml || "").match(/<programme\\b/gi) || []).length;
+  return (String(xml || "").match(/<programme\b/gi) || []).length;
 }
 
 export function protectLastKnownGoodGuide(previousGuide, nextGuide, guideStatus = []) {
