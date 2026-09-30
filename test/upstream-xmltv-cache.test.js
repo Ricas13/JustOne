@@ -104,6 +104,29 @@ test("HTTP 200 with HTML or empty provider output cannot replace a healthy XMLTV
   }
 });
 
+test("generated JustOne guide output passes through the global cache wrapper but is never cached upstream", async () => {
+  const oldDataDir = process.env.DATA_DIR;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "justone-generated-guide-"));
+  process.env.DATA_DIR = dir;
+  const url = "http://127.0.0.1:8091/epg/guide.xml";
+  const xml = '<?xml version="1.0"?><tv generator-info-name="JustOne Catalog"><channel id="justone.bbc"><display-name>BBC One</display-name></channel></tv>';
+  const cachedFetch = createXmltvCachingFetch(async () => new Response(xml, {
+    status: 200,
+    headers: { "content-type": "application/xml" },
+  }));
+
+  try {
+    const response = await cachedFetch(url);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), xml);
+    assert.equal(await loadCachedXmltv(url, { allowStale: true }), null);
+  } finally {
+    if (oldDataDir == null) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = oldDataDir;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an unusable HTTP 200 without a prior cache fails instead of publishing an empty guide", async () => {
   const oldDataDir = process.env.DATA_DIR;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "justone-xmltv-empty-"));
