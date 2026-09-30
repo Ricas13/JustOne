@@ -78,7 +78,7 @@ async function loadCached(url, maxAgeMs, { allowStale = false } = {}) {
     const ageMs = Math.max(0, Date.now() - cachedAt);
     const stale = ageMs > maxAgeMs;
     if (stale && !allowStale) return null;
-    if (!looksLikeUsefulXmltv(body)) return null;
+    if (isGeneratedJustOneXmltv(body) || !looksLikeUsefulXmltv(body)) return null;
     return { body, meta, stale, ageMs };
   } catch (error) {
     if (error.code === "ENOENT") return null;
@@ -94,8 +94,9 @@ export async function loadCachedXmltv(url, {
   return await loadCached(url, maxAgeMs, { allowStale });
 }
 
-async function saveCached(url, body, response) {
-  if (!looksLikeUsefulXmltv(body)) return false;
+export async function saveCachedXmltv(url, body, { contentType = "application/xml" } = {}) {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""));
+  if (isGeneratedJustOneXmltv(buffer) || !looksLikeUsefulXmltv(buffer)) return false;
   const files = cachePaths(url);
   await fs.mkdir(files.root, { recursive: true });
   const cachedAt = new Date().toISOString();
@@ -103,10 +104,10 @@ async function saveCached(url, body, response) {
   const metaTmp = `${files.meta}.${process.pid}.${Date.now()}.tmp`;
   const meta = {
     cachedAt,
-    contentType: response?.headers?.get?.("content-type") || "application/xml",
-    bytes: body.length,
+    contentType: contentType || "application/xml",
+    bytes: buffer.length,
   };
-  await fs.writeFile(bodyTmp, body);
+  await fs.writeFile(bodyTmp, buffer);
   await fs.writeFile(metaTmp, `${JSON.stringify(meta, null, 2)}\n`);
   await fs.rename(bodyTmp, files.body);
   await fs.rename(metaTmp, files.meta);
@@ -158,7 +159,9 @@ export function createXmltvCachingFetch(fetchImpl, {
 
         if (looksLikeUsefulXmltv(body)) {
           try {
-            await saveCached(url, body, response);
+            await saveCachedXmltv(url, body, {
+              contentType: response.headers.get("content-type") || "application/xml",
+            });
           } catch (error) {
             logger.warn?.(`XMLTV cache write failed for ${new URL(url).host}: ${error.message}`);
           }
