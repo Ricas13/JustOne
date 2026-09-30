@@ -48,6 +48,14 @@ function responseHeaders(original, bodyLength, extra = {}) {
   return headers;
 }
 
+function isGeneratedJustOneXmltv(body) {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""));
+  const prefix = buffer.subarray(0, Math.min(buffer.length, 128 * 1024)).toString("utf8");
+  const tvTag = /<tv\b[^>]*>/i.exec(prefix)?.[0] || "";
+  const match = /\bgenerator-info-name\s*=\s*(?:"([^"]+)"|'([^']+)')/i.exec(tvTag);
+  return String(match?.[1] ?? match?.[2] ?? "").trim().toLowerCase() === "justone catalog";
+}
+
 export function looksLikeUsefulXmltv(body) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""));
   if (!buffer.length) return false;
@@ -136,6 +144,18 @@ export function createXmltvCachingFetch(fetchImpl, {
       const response = await fetchImpl(input, init);
       if (response.ok) {
         const body = Buffer.from(await response.arrayBuffer());
+
+        // The cache wrapper is installed globally, so internal consumers may fetch
+        // JustOne's own generated /epg/guide.xml. That is output, never upstream:
+        // pass it through untouched and never persist it in the upstream cache.
+        if (isGeneratedJustOneXmltv(body)) {
+          return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders(response, body.length),
+          });
+        }
+
         if (looksLikeUsefulXmltv(body)) {
           try {
             await saveCached(url, body, response);
