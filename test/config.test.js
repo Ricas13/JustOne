@@ -31,3 +31,19 @@ test("docker compose routes configured admin and internal ports instead of hard-
   assert.match(compose, /\$\{INTERNAL_PORT:-8091\}/);
   assert.match(compose, /loadbalancer\.server\.port=\$\{PORT:-8090\}/);
 });
+
+
+test("config import does not globally wrap fetch with XMLTV handling", () => {
+  const script = [
+    'const original = async () => new Response("ok");',
+    'globalThis.fetch = original;',
+    'await import("./src/config.js");',
+    'console.log(globalThis.fetch === original ? "same" : "wrapped");',
+  ].join("\n");
+  const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+    encoding: "utf8",
+  }).trim();
+  assert.equal(output, "same");
+});
