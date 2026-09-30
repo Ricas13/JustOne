@@ -30,9 +30,11 @@ export function isXmltvUrl(value) {
     const url = new URL(String(value));
     const pathname = url.pathname.toLowerCase();
     return pathname.includes("xmltv")
+      || pathname.includes("epg")
       || pathname.endsWith(".xml")
       || pathname.endsWith(".xml.gz")
-      || /(?:^|[?&])(?:xmltv|epg)=/i.test(url.search);
+      || /(?:^|[?&])(?:xmltv|epg)=/i.test(url.search)
+      || /(?:^|[?&])type=(?:xmltv|epg)(?:&|$)/i.test(url.search);
   } catch {
     return false;
   }
@@ -46,12 +48,16 @@ function responseHeaders(original, bodyLength, extra = {}) {
   return headers;
 }
 
-function looksLikeXmltv(body) {
-  const prefix = body.subarray(0, Math.min(body.length, 128 * 1024)).toString("utf8");
-  return /<tv[\s>]/i.test(prefix);
+export function looksLikeUsefulXmltv(body) {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""));
+  if (!buffer.length) return false;
+  const prefix = buffer.subarray(0, Math.min(buffer.length, 128 * 1024)).toString("utf8");
+  return /<tv[\s>]/i.test(prefix)
+    && buffer.indexOf(Buffer.from("<channel")) >= 0
+    && buffer.indexOf(Buffer.from("<programme")) >= 0;
 }
 
-async function loadCached(url, maxAgeMs) {
+async function loadCached(url, maxAgeMs, { allowStale = false } = {}) {
   const files = cachePaths(url);
   try {
     const [body, metaText] = await Promise.all([
@@ -60,17 +66,28 @@ async function loadCached(url, maxAgeMs) {
     ]);
     const meta = JSON.parse(metaText);
     const cachedAt = Date.parse(meta.cachedAt || "");
-    if (!Number.isFinite(cachedAt) || Date.now() - cachedAt > maxAgeMs) return null;
-    if (!looksLikeXmltv(body)) return null;
-    return { body, meta };
+    if (!Number.isFinite(cachedAt)) return null;
+    const ageMs = Math.max(0, Date.now() - cachedAt);
+    const stale = ageMs > maxAgeMs;
+    if (stale && !allowStale) return null;
+    if (!looksLikeUsefulXmltv(body)) return null;
+    return { body, meta, stale, ageMs };
   } catch (error) {
     if (error.code === "ENOENT") return null;
     return null;
   }
 }
 
+export async function loadCachedXmltv(url, {
+  maxAgeMinutes = intEnv("UPSTREAM_XMLTV_CACHE_MAX_AGE_MINUTES", 72 * 60),
+  allowStale = false,
+} = {}) {
+  const maxAgeMs = Math.max(1, Number(maxAgeMinutes)) * 60 * 1000;
+  return await loadCached(url, maxAgeMs, { allowStale });
+}
+
 async function saveCached(url, body, response) {
-  if (!looksLikeXmltv(body)) return;
+  if (!looksLikeUsefulXmltv(body)) return false;
   const files = cachePaths(url);
   await fs.mkdir(files.root, { recursive: true });
   const cachedAt = new Date().toISOString();
@@ -78,13 +95,31 @@ async function saveCached(url, body, response) {
   const metaTmp = `${files.meta}.${process.pid}.${Date.now()}.tmp`;
   const meta = {
     cachedAt,
-    contentType: response.headers.get("content-type") || "application/xml",
+    contentType: response?.headers?.get?.("content-type") || "application/xml",
     bytes: body.length,
   };
   await fs.writeFile(bodyTmp, body);
   await fs.writeFile(metaTmp, `${JSON.stringify(meta, null, 2)}\n`);
   await fs.rename(bodyTmp, files.body);
   await fs.rename(metaTmp, files.meta);
+  return true;
+}
+
+function cachedResponse(url, cached, message, logger = console) {
+  const host = (() => {
+    try { return new URL(url).host; } catch { return "upstream"; }
+  })();
+  logger.warn?.(`${message}; using ${cached.stale ? "stale " : ""}cached real upstream XMLTV for ${host} from ${cached.meta.cachedAt}`);
+  return new Response(cached.body, {
+    status: 200,
+    statusText: "OK (cached upstream XMLTV)",
+    headers: {
+      "content-type": cached.meta.contentType || "application/xml",
+      "content-length": String(cached.body.length),
+      "x-justone-upstream-cache": "1",
+      ...(cached.stale ? { "x-justone-upstream-cache-stale": "1" } : {}),
+    },
+  });
 }
 
 export function createXmltvCachingFetch(fetchImpl, {
@@ -101,45 +136,33 @@ export function createXmltvCachingFetch(fetchImpl, {
       const response = await fetchImpl(input, init);
       if (response.ok) {
         const body = Buffer.from(await response.arrayBuffer());
-        if (looksLikeXmltv(body)) {
+        if (looksLikeUsefulXmltv(body)) {
           try {
             await saveCached(url, body, response);
           } catch (error) {
             logger.warn?.(`XMLTV cache write failed for ${new URL(url).host}: ${error.message}`);
           }
+          return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders(response, body.length),
+          });
         }
-        return new Response(body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: responseHeaders(response, body.length),
-        });
+
+        const cached = await loadCached(url, maxAgeMs, { allowStale: true });
+        if (cached) {
+          return cachedResponse(url, cached, `XMLTV upstream returned HTTP ${response.status} with an unusable body`, logger);
+        }
+        throw new Error(`XMLTV upstream ${new URL(url).host} returned HTTP ${response.status} with an unusable body`);
       }
 
-      const cached = await loadCached(url, maxAgeMs);
+      const cached = await loadCached(url, maxAgeMs, { allowStale: true });
       if (!cached) return response;
-      logger.warn?.(`XMLTV upstream ${new URL(url).host} returned HTTP ${response.status}; using cached real upstream XMLTV from ${cached.meta.cachedAt}`);
-      return new Response(cached.body, {
-        status: 200,
-        statusText: "OK (cached upstream XMLTV)",
-        headers: {
-          "content-type": cached.meta.contentType || "application/xml",
-          "content-length": String(cached.body.length),
-          "x-justone-upstream-cache": "1",
-        },
-      });
+      return cachedResponse(url, cached, `XMLTV upstream returned HTTP ${response.status}`, logger);
     } catch (error) {
-      const cached = await loadCached(url, maxAgeMs);
+      const cached = await loadCached(url, maxAgeMs, { allowStale: true });
       if (!cached) throw error;
-      logger.warn?.(`XMLTV upstream ${new URL(url).host} failed (${error.message}); using cached real upstream XMLTV from ${cached.meta.cachedAt}`);
-      return new Response(cached.body, {
-        status: 200,
-        statusText: "OK (cached upstream XMLTV)",
-        headers: {
-          "content-type": cached.meta.contentType || "application/xml",
-          "content-length": String(cached.body.length),
-          "x-justone-upstream-cache": "1",
-        },
-      });
+      return cachedResponse(url, cached, `XMLTV upstream failed (${error.message})`, logger);
     }
   };
 }
