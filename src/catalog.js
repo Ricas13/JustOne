@@ -610,7 +610,7 @@ function addGuideSuccess(guideDocs, guideStatus, guide, parsed, {
   );
 }
 
-async function loadGuideDocs(state, sourceMode = "auto") {
+export async function loadGuideDocs(state, sourceMode = "auto") {
   const guideDocs = [];
   const guideStatus = [];
   for (const guide of [...(state.guides || [])]
