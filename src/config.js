@@ -81,6 +81,9 @@ export const config = {
     applyEnabled: boolEnv("DISPATCHARR_APPLY_ENABLED", false),
     syncLogos: boolEnv("DISPATCHARR_SYNC_LOGOS", true),
     epgRefreshHours: intEnv("DISPATCHARR_EPG_REFRESH_HOURS", 24),
+    autoSyncEnabled: boolEnv("DISPATCHARR_AUTO_SYNC_ENABLED", true),
+    autoSyncPollSeconds: intEnv("DISPATCHARR_AUTO_SYNC_POLL_SECONDS", 5),
+    autoSyncTimeoutMinutes: intEnv("DISPATCHARR_AUTO_SYNC_TIMEOUT_MINUTES", 15),
   },
 };
 
