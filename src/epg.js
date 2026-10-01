@@ -349,6 +349,7 @@ function generatedEventProgramme(channel) {
 export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdReference = null } = {}) {
   const hits = new Map();
   const hitCandidates = new Map();
+  const mergedProgrammes = new Map();
   const linearEventsByChannel = new Map();
   for (const event of dlhdReference?.linearEvents || []) {
     for (const linked of event.linkedStaticChannels || []) {
@@ -369,6 +370,7 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
     if (hit) {
       hits.set(channel.id, hit);
       hitCandidates.set(channel.id, candidates);
+      mergedProgrammes.set(channel.id, mergedProgrammesForHits(candidates));
     }
     const override = overrides[channel.id] || overrides[channel.key] || {};
     const dlhdLogo = text(channel.logo || "");
@@ -377,6 +379,7 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
     else if (hit?.meta?.icon) channel.logo = hit.meta.icon;
     if (!channel.logo) channel.logo = channel.variants.find((v) => v.logo)?.logo || "";
     const linearEventCount = linearEventsByChannel.get(String(channel.dlhdRefId || ""))?.length || 0;
+    const mergedQuality = hit ? programmeQuality(mergedProgrammes.get(channel.id) || []) : null;
     channel.epg = channel.referenceKind === "event"
       ? { generated: "dlhd-schedule" }
       : (hit
@@ -384,10 +387,11 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
           guideId: hit.doc.id,
           sourceId: hit.sourceId,
           match: hit.matchKind,
-          futureProgrammes: hit.quality.futureProgrammes,
-          realFutureProgrammes: hit.quality.realFutureProgrammes,
-          placeholderFutureProgrammes: hit.quality.placeholderFutureProgrammes,
-          horizonHours: Number((hit.quality.horizonMs / 3600000).toFixed(1)),
+          candidateGuides: candidates.length,
+          futureProgrammes: mergedQuality.futureProgrammes,
+          realFutureProgrammes: mergedQuality.realFutureProgrammes,
+          placeholderFutureProgrammes: mergedQuality.placeholderFutureProgrammes,
+          horizonHours: Number((mergedQuality.horizonMs / 3600000).toFixed(1)),
           dlhdScheduleFallbacks: linearEventCount,
         }
         : (linearEventCount ? { generated: "dlhd-linear-schedule", dlhdScheduleFallbacks: linearEventCount } : null));
@@ -412,7 +416,7 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
       continue;
     }
     const hit = hits.get(channel.id);
-    const upstreamProgrammes = hit ? mergedProgrammesForHits(hitCandidates.get(channel.id) || [hit]) : [];
+    const upstreamProgrammes = hit ? (mergedProgrammes.get(channel.id) || []) : [];
     const fallbackImage = channel.logo || hit?.meta?.icon || "";
     for (const programme of upstreamProgrammes) {
       out.push(remapProgramme(programme, channel.tvgId, fallbackImage));
