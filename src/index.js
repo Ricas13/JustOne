@@ -1,5 +1,6 @@
 import { createArtworkServer } from "./artwork-server.js";
 import { config } from "./config.js";
+import { dispatcharrAutoSyncManager } from "./dispatcharr-auto-sync-manager.js";
 import { refreshManager } from "./refresh-manager.js";
 import { createAdminServer, createInternalServer, streamManager } from "./server.js";
 
@@ -29,6 +30,14 @@ artworkServer.listen(artworkPort, config.internalBindAddress, () => {
 
 console.log(`Refresh cadence: providers every ${config.providerRefreshMinutes} min; DLHD every ${config.dlhdRefreshMinutes} min`);
 console.log(`Native stream proxy: ${config.streamProxy.enabled ? "enabled" : "disabled"}; master M3U mode: ${config.streamProxy.enabled && config.streamProxy.masterEnabled ? "proxy" : "legacy variants"}`);
+console.log(`Dispatcharr auto-sync: ${config.dispatcharr.autoSyncEnabled && config.dispatcharr.applyEnabled ? "enabled" : "disabled"}`);
+
+refreshManager.onComplete(({ reason }) => {
+  const started = dispatcharrAutoSyncManager.start(`catalog-${reason}`);
+  if (!started.started && started.status?.phase !== "disabled") {
+    console.log(`Dispatcharr auto-sync already running; latest catalogue will be picked up by the active/next cycle`);
+  }
+});
 
 setTimeout(() => refreshManager.start("startup", { sourceMode: "auto" }), 250);
 
