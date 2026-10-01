@@ -80,6 +80,7 @@ export const config = {
     password: String(process.env.DISPATCHARR_PASSWORD || ""),
     applyEnabled: boolEnv("DISPATCHARR_APPLY_ENABLED", false),
     syncLogos: boolEnv("DISPATCHARR_SYNC_LOGOS", true),
+    epgRefreshHours: intEnv("DISPATCHARR_EPG_REFRESH_HOURS", 24),
   },
 };
 
