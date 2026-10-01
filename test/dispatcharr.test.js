@@ -75,6 +75,8 @@ test("Dispatcharr input preview creates one managed M3U per source plus canonica
   const result = await planDispatcharrInputs(state, { client });
   assert.equal(result.safe.counts["m3u:create"], 2);
   assert.equal(result.safe.counts["epg:create"], 1);
+  const epgCreate = result.actions.find((row) => row.type === "epg" && row.action === "create");
+  assert.equal(epgCreate.desired.refresh_interval, config.dispatcharr.epgRefreshHours);
   assert.equal(result.safe.actions.some((row) => String(row.internalPath).includes("key=")), false);
   assert.ok(result.safe.actions.some((row) => row.internalPath === "/m3u/source/src_a.m3u"));
   assert.ok(result.safe.actions.some((row) => row.internalPath === "/epg/guide.xml"));
