@@ -134,27 +134,31 @@ export function createDispatcharrAutoSyncManager({
         status = { ...status, phase: "waiting-for-imports" };
         const deadline = Date.now() + Math.max(1, Number(settings.autoSyncTimeoutMinutes || 15)) * 60 * 1000;
         const pollMs = Math.max(1000, Number(settings.autoSyncPollSeconds || 5) * 1000);
-        let observedBusy = false;
+        const advancedInputs = new Set();
         let imports = null;
 
         while (Date.now() < deadline) {
           await sleepFn(pollMs);
           const current = await managedRows(client);
-          const rows = [...current.accounts, ...current.epgSources];
-          observedBusy ||= rows.some((row) => !terminalStatus(row.status));
-
-          const importAdvanced = (row, baseline) => {
-            const beforeRow = baseline.get(String(row.id));
-            if (!beforeRow) return Boolean(stamp(row)) || !terminalStatus(row.status);
-            return stamp(row) !== beforeRow.stamp
-              || String(row.status || "").toLowerCase() !== beforeRow.status
-              || observedBusy;
-          };
-
-          const errors = [
-            ...current.accounts.filter((row) => failedStatus(row.status) && importAdvanced(row, beforeM3u)),
-            ...current.epgSources.filter((row) => failedStatus(row.status) && importAdvanced(row, beforeEpg)),
+          const taggedRows = [
+            ...current.accounts.map((row) => ({ kind: "m3u", row, baseline: beforeM3u })),
+            ...current.epgSources.map((row) => ({ kind: "epg", row, baseline: beforeEpg })),
           ];
+          const rows = taggedRows.map(({ row }) => row);
+
+          for (const { kind, row, baseline } of taggedRows) {
+            const key = `${kind}:${row.id}`;
+            const beforeRow = baseline.get(String(row.id));
+            const currentStatus = String(row.status || "").toLowerCase();
+            const advanced = !beforeRow
+              ? Boolean(stamp(row)) || !terminalStatus(currentStatus)
+              : stamp(row) !== beforeRow.stamp || currentStatus !== beforeRow.status;
+            if (advanced) advancedInputs.add(key);
+          }
+
+          const errors = taggedRows
+            .filter(({ kind, row }) => failedStatus(row.status) && advancedInputs.has(`${kind}:${row.id}`))
+            .map(({ row }) => row);
           if (errors.length) {
             throw new Error(
               `Dispatcharr import failed: ${errors.map((row) => `${row.name || row.id}: ${row.last_message || row.status}`).join("; ")}`
@@ -162,15 +166,10 @@ export function createDispatcharrAutoSyncManager({
           }
 
           const allTerminal = rows.length > 0 && rows.every((row) => terminalStatus(row.status));
-          const allRefreshed = current.accounts.every((row) => {
-            const old = beforeM3u.get(String(row.id));
-            return old == null ? Boolean(stamp(row)) : stamp(row) !== old.stamp;
-          }) && current.epgSources.every((row) => {
-            const old = beforeEpg.get(String(row.id));
-            return old == null ? Boolean(stamp(row)) : stamp(row) !== old.stamp;
-          });
+          const allAdvanced = taggedRows.length > 0
+            && taggedRows.every(({ kind, row }) => advancedInputs.has(`${kind}:${row.id}`));
 
-          if (allTerminal && (allRefreshed || observedBusy)) {
+          if (allTerminal && allAdvanced) {
             imports = current;
             break;
           }
