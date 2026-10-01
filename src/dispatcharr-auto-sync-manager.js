@@ -55,6 +55,7 @@ export function createDispatcharrAutoSyncManager({
   sleepFn = sleep,
 } = {}) {
   let currentPromise = null;
+  let pendingReason = null;
   let status = {
     running: false,
     id: null,
@@ -82,7 +83,10 @@ export function createDispatcharrAutoSyncManager({
   }
 
   function start(reason = "catalog-refresh") {
-    if (currentPromise) return { started: false, status: snapshotStatus() };
+    if (currentPromise) {
+      pendingReason = reason;
+      return { started: false, queued: true, status: snapshotStatus() };
+    }
     if (!settings.url || !settings.applyEnabled || settings.autoSyncEnabled === false) {
       return {
         started: false,
@@ -114,8 +118,14 @@ export function createDispatcharrAutoSyncManager({
       const client = makeClient();
       try {
         const before = await managedRows(client);
-        const beforeM3u = new Map(before.accounts.map((row) => [String(row.id), stamp(row)]));
-        const beforeEpg = new Map(before.epgSources.map((row) => [String(row.id), stamp(row)]));
+        const beforeM3u = new Map(before.accounts.map((row) => [String(row.id), {
+          stamp: stamp(row),
+          status: String(row.status || "").toLowerCase(),
+        }]));
+        const beforeEpg = new Map(before.epgSources.map((row) => [String(row.id), {
+          stamp: stamp(row),
+          status: String(row.status || "").toLowerCase(),
+        }]));
 
         const state = await loadCurrentState();
         status = { ...status, phase: "queueing-imports" };
@@ -133,7 +143,18 @@ export function createDispatcharrAutoSyncManager({
           const rows = [...current.accounts, ...current.epgSources];
           observedBusy ||= rows.some((row) => !terminalStatus(row.status));
 
-          const errors = rows.filter((row) => failedStatus(row.status));
+          const importAdvanced = (row, baseline) => {
+            const beforeRow = baseline.get(String(row.id));
+            if (!beforeRow) return Boolean(stamp(row)) || !terminalStatus(row.status);
+            return stamp(row) !== beforeRow.stamp
+              || String(row.status || "").toLowerCase() !== beforeRow.status
+              || observedBusy;
+          };
+
+          const errors = [
+            ...current.accounts.filter((row) => failedStatus(row.status) && importAdvanced(row, beforeM3u)),
+            ...current.epgSources.filter((row) => failedStatus(row.status) && importAdvanced(row, beforeEpg)),
+          ];
           if (errors.length) {
             throw new Error(
               `Dispatcharr import failed: ${errors.map((row) => `${row.name || row.id}: ${row.last_message || row.status}`).join("; ")}`
@@ -143,10 +164,10 @@ export function createDispatcharrAutoSyncManager({
           const allTerminal = rows.length > 0 && rows.every((row) => terminalStatus(row.status));
           const allRefreshed = current.accounts.every((row) => {
             const old = beforeM3u.get(String(row.id));
-            return old == null ? Boolean(stamp(row)) : stamp(row) !== old;
+            return old == null ? Boolean(stamp(row)) : stamp(row) !== old.stamp;
           }) && current.epgSources.every((row) => {
             const old = beforeEpg.get(String(row.id));
-            return old == null ? Boolean(stamp(row)) : stamp(row) !== old;
+            return old == null ? Boolean(stamp(row)) : stamp(row) !== old.stamp;
           });
 
           if (allTerminal && (allRefreshed || observedBusy)) {
@@ -196,10 +217,15 @@ export function createDispatcharrAutoSyncManager({
         console.error(`[dispatcharr-auto ${id}] failed after ${reason}:`, error);
       } finally {
         currentPromise = null;
+        if (pendingReason) {
+          const nextReason = pendingReason;
+          pendingReason = null;
+          queueMicrotask(() => start(nextReason));
+        }
       }
     })();
 
-    return { started: true, status: snapshotStatus() };
+    return { started: true, queued: false, status: snapshotStatus() };
   }
 
   return {
