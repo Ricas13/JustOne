@@ -8,7 +8,7 @@ function relaxedChannelName(value) {
   return parts.join(" ");
 }
 
-function addRelaxedName(map, key, id) {
+function addUniqueName(map, key, id) {
   if (!key) return;
   if (!map.has(key)) {
     map.set(key, id);
@@ -73,9 +73,9 @@ export function parseXmlTv(body) {
     channels.set(id, { id, display, icon });
     for (const name of display) {
       const key = normalize(name);
-      if (key && !names.has(key)) names.set(key, id);
+      if (key) addUniqueName(names, key, id);
       const relaxed = relaxedChannelName(name);
-      if (relaxed) addRelaxedName(relaxedNames, relaxed, id);
+      if (relaxed) addUniqueName(relaxedNames, relaxed, id);
     }
   }
 
