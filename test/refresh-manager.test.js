@@ -54,3 +54,46 @@ test("refresh manager records errors without throwing through the HTTP caller", 
   assert.equal(finished.phase, "failed");
   assert.equal(finished.lastError, "provider failed");
 });
+
+
+test("refresh completion listeners fire only after successful refreshes", async () => {
+  const events = [];
+  const manager = createRefreshManager(async ({ sourceMode }) => ({
+    sourceMode,
+    channels: [{ referenceKind:"channel" }],
+  }));
+
+  const unsubscribe = manager.onComplete((event) => {
+    events.push(event);
+  });
+
+  manager.start("scheduled-test", { sourceMode:"cache" });
+  await manager.wait();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, "scheduled-test");
+  assert.equal(events[0].sourceMode, "cache");
+  assert.equal(events[0].status.phase, "complete");
+
+  unsubscribe();
+  manager.start("after-unsubscribe", { sourceMode:"cache" });
+  await manager.wait();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.length, 1);
+});
+
+test("refresh completion listeners do not run after failed refreshes", async () => {
+  let fired = false;
+  const manager = createRefreshManager(async () => {
+    throw new Error("boom");
+  });
+  manager.onComplete(() => { fired = true; });
+
+  manager.start("failure");
+  await manager.wait();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fired, false);
+  assert.equal(manager.status().phase, "failed");
+});
