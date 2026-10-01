@@ -348,7 +348,6 @@ function generatedEventProgramme(channel) {
 
 export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdReference = null } = {}) {
   const hits = new Map();
-  const hitCandidates = new Map();
   const mergedProgrammes = new Map();
   const linearEventsByChannel = new Map();
   for (const event of dlhdReference?.linearEvents || []) {
@@ -369,7 +368,6 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
     const hit = candidates[0] || null;
     if (hit) {
       hits.set(channel.id, hit);
-      hitCandidates.set(channel.id, candidates);
       mergedProgrammes.set(channel.id, mergedProgrammesForHits(candidates));
     }
     const override = overrides[channel.id] || overrides[channel.key] || {};
