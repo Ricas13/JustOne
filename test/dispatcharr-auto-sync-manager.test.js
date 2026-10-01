@@ -210,3 +210,123 @@ test("automatic Dispatcharr sync is single-flight and respects disabled settings
   assert.equal(skipped.status.phase, "disabled");
   assert.match(skipped.status.lastError, /APPLY_ENABLED=false/);
 });
+
+
+test("automatic Dispatcharr sync queues a second pass when a refresh completes mid-sync", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let generation = 0;
+  let provisionCalls = 0;
+  const client = {
+    async list(path) {
+      const common = {
+        status: "success",
+        updated_at: `2026-10-01T1${generation}:00:00Z`,
+      };
+      if (path === "/api/m3u/accounts/") return [{
+        id: 1,
+        name: "JustOne | Provider A",
+        ...common,
+        custom_properties: { justone_managed:true, justone_role:"filtered_m3u", justone_source_id:"a" },
+      }];
+      if (path === "/api/epg/sources/") return [{
+        id: 2,
+        name: "JustOne | Canonical EPG",
+        ...common,
+        custom_properties: { justone_managed:true, justone_role:"canonical_epg" },
+      }];
+      throw new Error(`unexpected list ${path}`);
+    },
+  };
+  const manager = createDispatcharrAutoSyncManager({
+    makeClient: () => client,
+    loadCurrentState: async () => ({}),
+    loadCurrentSnapshot: async () => ({ channels: [] }),
+    provision: async () => {
+      provisionCalls += 1;
+      if (provisionCalls === 1) await firstGate;
+      generation += 1;
+      return { counts: {} };
+    },
+    reconcile: async (_snapshot, options) => ({
+      readyForApply: true,
+      blockers: [],
+      counts: options.apply ? { update: 1 } : {},
+    }),
+    settings: {
+      url: "http://dispatcharr:9191",
+      applyEnabled: true,
+      autoSyncEnabled: true,
+      autoSyncPollSeconds: 0,
+      autoSyncTimeoutMinutes: 1,
+    },
+    sleepFn: async () => {},
+  });
+
+  const first = manager.start("first-refresh");
+  const queued = manager.start("newer-refresh");
+  assert.equal(first.started, true);
+  assert.equal(queued.started, false);
+  assert.equal(queued.queued, true);
+
+  releaseFirst();
+  await manager.wait();
+  await new Promise((resolve) => setImmediate(resolve));
+  const secondPass = manager.wait();
+  if (secondPass) await secondPass;
+
+  assert.equal(provisionCalls, 2);
+  assert.equal(manager.status().phase, "complete");
+  assert.equal(manager.status().reason, "newer-refresh");
+});
+
+test("a stale pre-existing Dispatcharr error waits for the fresh import instead of failing immediately", async () => {
+  let refreshed = false;
+  const client = {
+    async list(path) {
+      if (path === "/api/m3u/accounts/") return [{
+        id: 1,
+        name: "JustOne | Provider A",
+        status: refreshed ? "success" : "error",
+        last_message: refreshed ? "Imported" : "Old failure",
+        updated_at: refreshed ? "2026-10-01T12:00:00Z" : "2026-10-01T10:00:00Z",
+        custom_properties: { justone_managed:true, justone_role:"filtered_m3u", justone_source_id:"a" },
+      }];
+      if (path === "/api/epg/sources/") return [{
+        id: 2,
+        name: "JustOne | Canonical EPG",
+        status: "success",
+        updated_at: refreshed ? "2026-10-01T12:00:00Z" : "2026-10-01T10:00:00Z",
+        custom_properties: { justone_managed:true, justone_role:"canonical_epg" },
+      }];
+      throw new Error(`unexpected list ${path}`);
+    },
+  };
+  const manager = createDispatcharrAutoSyncManager({
+    makeClient: () => client,
+    loadCurrentState: async () => ({}),
+    loadCurrentSnapshot: async () => ({ channels: [] }),
+    provision: async () => {
+      refreshed = true;
+      return { counts: {} };
+    },
+    reconcile: async (_snapshot, options) => ({
+      readyForApply: true,
+      blockers: [],
+      counts: options.apply ? { update: 1 } : {},
+    }),
+    settings: {
+      url: "http://dispatcharr:9191",
+      applyEnabled: true,
+      autoSyncEnabled: true,
+      autoSyncPollSeconds: 0,
+      autoSyncTimeoutMinutes: 1,
+    },
+    sleepFn: async () => {},
+  });
+
+  manager.start("recover-old-error");
+  await manager.wait();
+  assert.equal(manager.status().phase, "complete");
+  assert.equal(manager.status().lastError, null);
+});
