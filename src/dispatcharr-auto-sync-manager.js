@@ -143,10 +143,10 @@ export function createDispatcharrAutoSyncManager({
           const allTerminal = rows.length > 0 && rows.every((row) => terminalStatus(row.status));
           const allRefreshed = current.accounts.every((row) => {
             const old = beforeM3u.get(String(row.id));
-            return !old || stamp(row) !== old;
+            return old == null ? Boolean(stamp(row)) : stamp(row) !== old;
           }) && current.epgSources.every((row) => {
             const old = beforeEpg.get(String(row.id));
-            return !old || stamp(row) !== old;
+            return old == null ? Boolean(stamp(row)) : stamp(row) !== old;
           });
 
           if (allTerminal && (allRefreshed || observedBusy)) {
