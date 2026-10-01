@@ -681,6 +681,49 @@ function programmeCount(xml) {
   return (String(xml || "").match(/<programme\b/gi) || []).length;
 }
 
+function epgCoverageSummary(channels) {
+  const statics = (channels || []).filter((channel) => channel.referenceKind !== "event");
+  const realGuide = statics.filter((channel) => channel.epg?.guideId && Number(channel.epg.realFutureProgrammes || 0) > 0);
+  const placeholderOnly = statics.filter((channel) =>
+    channel.epg?.guideId
+    && Number(channel.epg.realFutureProgrammes || 0) === 0
+    && Number(channel.epg.placeholderFutureProgrammes || 0) > 0
+  );
+  const staleOrEmpty = statics.filter((channel) =>
+    channel.epg?.guideId
+    && Number(channel.epg.futureProgrammes || 0) === 0
+  );
+  const dlhdOnly = statics.filter((channel) => channel.epg?.generated === "dlhd-linear-schedule");
+  const missing = statics.filter((channel) => !channel.epg);
+  const horizons = realGuide
+    .map((channel) => Number(channel.epg.horizonHours))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  const median = horizons.length
+    ? horizons[Math.floor((horizons.length - 1) / 2)]
+    : 0;
+
+  return {
+    staticChannels: statics.length,
+    realGuideChannels: realGuide.length,
+    placeholderOnlyChannels: placeholderOnly.length,
+    staleOrEmptyGuideChannels: staleOrEmpty.length,
+    dlhdOnlyChannels: dlhdOnly.length,
+    missingChannels: missing.length,
+    horizonHours: {
+      minimum: horizons.length ? Number(horizons[0].toFixed(1)) : 0,
+      median: Number(median.toFixed(1)),
+      maximum: horizons.length ? Number(horizons.at(-1).toFixed(1)) : 0,
+    },
+    under24Hours: realGuide.filter((channel) => Number(channel.epg.horizonHours || 0) < 24).length,
+    under48Hours: realGuide.filter((channel) => Number(channel.epg.horizonHours || 0) < 48).length,
+    atLeast72Hours: realGuide.filter((channel) => Number(channel.epg.horizonHours || 0) >= 72).length,
+    sampleMissing: missing.slice(0, 20).map((channel) => channel.name),
+    samplePlaceholderOnly: placeholderOnly.slice(0, 20).map((channel) => channel.name),
+  };
+}
+
+
 export function protectLastKnownGoodGuide(previousGuide, nextGuide, guideStatus = []) {
   const failedGuides = (guideStatus || []).filter((row) => row?.ok === false);
   const previousProgrammes = programmeCount(previousGuide);
@@ -880,6 +923,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   }
 
   const guideXml = enrichAndBuildGuide(channels, guideDocs, state.overrides || {}, { dlhdReference });
+  const epgCoverage = epgCoverageSummary(channels);
   const previousGuideXml = await loadGuide();
   const guideProtection = protectLastKnownGoodGuide(previousGuideXml, guideXml, guideStatus);
   const snapshot = {
@@ -889,6 +933,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     sourceStatus,
     guideStatus,
     guideSummary: guideSummary(guideDocs),
+    epgCoverage,
     guideProtection: {
       preservedLastKnownGood: guideProtection.preserved,
       failedGuides: guideProtection.failedGuides,
@@ -905,7 +950,13 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
       `EPG fail-safe: preserved last-known-good guide with ${guideProtection.previousProgrammes} programmes because ${guideProtection.failedGuides} upstream guide(s) failed; candidate guide had ${guideProtection.nextProgrammes}`,
     );
   }
-  report(onProgress, { phase: "complete", currentSource: null, outputStaticChannels, outputEvents });
+  console.log(
+    `EPG coverage: ${epgCoverage.realGuideChannels}/${epgCoverage.staticChannels} static channels with real future guide data; `
+    + `${epgCoverage.placeholderOnlyChannels} placeholder-only; ${epgCoverage.staleOrEmptyGuideChannels} stale/empty; `
+    + `${epgCoverage.dlhdOnlyChannels} DLHD-only; ${epgCoverage.missingChannels} missing; `
+    + `horizon median ${epgCoverage.horizonHours.median}h (min ${epgCoverage.horizonHours.minimum}h, max ${epgCoverage.horizonHours.maximum}h)`,
+  );
+  report(onProgress, { phase: "complete", currentSource: null, outputStaticChannels, outputEvents, epgCoverage });
   console.log(`Catalog refresh complete in ${elapsedSeconds(started)}s: ${outputStaticChannels} static + ${outputEvents} events = ${channels.length} channels`);
   return snapshot;
 }

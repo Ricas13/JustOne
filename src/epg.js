@@ -1,5 +1,45 @@
 import { normalize, stripTags, text, xmlDecode, xmlEscape } from "./util.js";
 
+const EPG_QUALITY_SUFFIXES = new Set(["hd", "fhd", "uhd", "4k", "sd", "hevc", "h264", "h265", "1080p", "720p", "2160p"]);
+
+function relaxedChannelName(value) {
+  const parts = normalize(value).split(" ").filter(Boolean);
+  while (parts.length > 1 && EPG_QUALITY_SUFFIXES.has(parts.at(-1))) parts.pop();
+  return parts.join(" ");
+}
+
+function addUniqueName(map, key, id) {
+  if (!key) return;
+  if (!map.has(key)) {
+    map.set(key, id);
+    return;
+  }
+  if (map.get(key) !== id) map.set(key, null);
+}
+
+export function isPlaceholderProgrammeTitle(value) {
+  const key = normalize(value);
+  return new Set([
+    "programa a definir",
+    "programacao a definir",
+    "a definir",
+    "programa por definir",
+    "programacao por definir",
+    "program to be announced",
+    "programme to be announced",
+    "to be announced",
+    "to be confirmed",
+    "tba",
+    "tbd",
+    "no information",
+    "no programme information",
+    "sem informacao",
+    "programacao indisponivel",
+    "sin informacion",
+    "sin informacion disponible",
+  ]).has(key);
+}
+
 export function isGeneratedJustOneGuide(body) {
   const source = String(body || "");
   const tvTag = /<tv\b[^>]*>/i.exec(source)?.[0] || "";
@@ -11,6 +51,7 @@ export function parseXmlTv(body) {
   const source = String(body || "");
   const channels = new Map();
   const names = new Map();
+  const relaxedNames = new Map();
   const programmes = new Map();
 
   // Canonical JustOne XMLTV is output, never input. Throwing here is deliberate:
@@ -32,7 +73,9 @@ export function parseXmlTv(body) {
     channels.set(id, { id, display, icon });
     for (const name of display) {
       const key = normalize(name);
-      if (key && !names.has(key)) names.set(key, id);
+      if (key) addUniqueName(names, key, id);
+      const relaxed = relaxedChannelName(name);
+      if (relaxed) addUniqueName(relaxedNames, relaxed, id);
     }
   }
 
@@ -47,7 +90,7 @@ export function parseXmlTv(body) {
     programmes.set(id, arr);
   }
 
-  return { channels, names, programmes, generatedByJustOne: false };
+  return { channels, names, relaxedNames, programmes, generatedByJustOne: false };
 }
 
 export function parseXmlTvTime(value) {
@@ -90,21 +133,145 @@ export function epgHintsForChannelId(parsed, channelId) {
   return { displayNames, programmes };
 }
 
-function findHit(channel, docs) {
-  const ids = new Set((channel.variants || []).map((v) => v.originalTvgId).filter(Boolean));
-  for (const doc of docs) {
-    for (const id of ids) {
-      if (doc.parsed.channels.has(id)) return { doc, sourceId: id, meta: doc.parsed.channels.get(id) };
+function programmeQuality(programmes, now = Date.now()) {
+  const hints = (programmes || []).map(programmeHint);
+  const future = hints.filter((row) => {
+    const end = Number.isFinite(Number(row.stop)) ? Number(row.stop) : Number(row.start);
+    return Number.isFinite(end) && end >= now - 5 * 60 * 1000;
+  });
+  const real = future.filter((row) => !isPlaceholderProgrammeTitle(row.title));
+  const placeholder = future.filter((row) => isPlaceholderProgrammeTitle(row.title));
+  const realCoverageMs = real.reduce((total, row) => {
+    if (!Number.isFinite(Number(row.start)) || !Number.isFinite(Number(row.stop))) return total;
+    return total + Math.max(0, Number(row.stop) - Math.max(now, Number(row.start)));
+  }, 0);
+  const horizonMs = future.reduce((max, row) => {
+    const end = Number.isFinite(Number(row.stop)) ? Number(row.stop) : Number(row.start);
+    return Number.isFinite(end) ? Math.max(max, end - now) : max;
+  }, 0);
+  return {
+    futureProgrammes: future.length,
+    realFutureProgrammes: real.length,
+    placeholderFutureProgrammes: placeholder.length,
+    realCoverageMs,
+    horizonMs,
+  };
+}
+
+function compareGuideCandidates(a, b) {
+  const aq = a.quality;
+  const bq = b.quality;
+  const aHasReal = aq.realFutureProgrammes > 0;
+  const bHasReal = bq.realFutureProgrammes > 0;
+  if (aHasReal !== bHasReal) return aHasReal ? -1 : 1;
+  if (a.matchKind !== b.matchKind) return a.matchKind === "id" ? -1 : 1;
+  if (aq.realCoverageMs !== bq.realCoverageMs) return bq.realCoverageMs - aq.realCoverageMs;
+  if (aq.realFutureProgrammes !== bq.realFutureProgrammes) return bq.realFutureProgrammes - aq.realFutureProgrammes;
+  if (a.sourceAffinity !== b.sourceAffinity) return a.sourceAffinity ? -1 : 1;
+  if (aq.placeholderFutureProgrammes !== bq.placeholderFutureProgrammes) return aq.placeholderFutureProgrammes - bq.placeholderFutureProgrammes;
+  if (aq.horizonMs !== bq.horizonMs) return bq.horizonMs - aq.horizonMs;
+  const ap = Number.isFinite(Number(a.doc.priority)) ? Number(a.doc.priority) : 100;
+  const bp = Number.isFinite(Number(b.doc.priority)) ? Number(b.doc.priority) : 100;
+  if (ap !== bp) return ap - bp;
+  return a.docOrder - b.docOrder;
+}
+
+function findHits(channel, docs) {
+  const candidates = new Map();
+  const variants = channel.variants || [];
+  const anyVariantSource = new Set(variants.map((row) => String(row.sourceId || "")).filter(Boolean));
+
+  function add(doc, sourceId, matchKind, sourceAffinity, docOrder) {
+    if (!sourceId || !doc?.parsed?.channels?.has(sourceId)) return;
+    const key = `${doc.id}|${sourceId}`;
+    const existing = candidates.get(key);
+    const quality = programmeQuality(doc.parsed.programmes.get(sourceId) || []);
+    const next = {
+      doc,
+      sourceId,
+      meta: doc.parsed.channels.get(sourceId),
+      matchKind,
+      sourceAffinity,
+      docOrder,
+      quality,
+    };
+    if (!existing) {
+      candidates.set(key, next);
+      return;
     }
+    existing.sourceAffinity ||= sourceAffinity;
+    if (matchKind === "id") existing.matchKind = "id";
   }
-  const nameKeys = [channel.name, ...(channel.aliasNames || [])].map(normalize).filter(Boolean);
-  for (const doc of docs) {
-    for (const key of nameKeys) {
+
+  docs.forEach((doc, docOrder) => {
+    for (const variant of variants) {
+      const id = String(variant.originalTvgId || "");
+      if (!id || !doc.parsed.channels.has(id)) continue;
+      add(doc, id, "id", Boolean(doc.sourceId) && String(doc.sourceId) === String(variant.sourceId || ""), docOrder);
+    }
+  });
+
+  const rawNames = [channel.name, ...(channel.aliasNames || []), ...variants.map((row) => row.name)].filter(Boolean);
+  const exactNameKeys = [...new Set(rawNames.map(normalize).filter(Boolean))];
+  const relaxedNameKeys = [...new Set(rawNames.map(relaxedChannelName).filter(Boolean))];
+
+  docs.forEach((doc, docOrder) => {
+    const affinity = Boolean(doc.sourceId) && anyVariantSource.has(String(doc.sourceId));
+    for (const key of exactNameKeys) {
       const id = doc.parsed.names.get(key);
-      if (id) return { doc, sourceId: id, meta: doc.parsed.channels.get(id) };
+      if (id) add(doc, id, "name", affinity, docOrder);
     }
-  }
-  return null;
+    for (const key of relaxedNameKeys) {
+      const id = doc.parsed.relaxedNames?.get(key);
+      if (id) add(doc, id, "name", affinity, docOrder);
+    }
+  });
+
+  return [...candidates.values()].sort(compareGuideCandidates);
+}
+
+
+function mergedProgrammesForHits(hits) {
+  const accepted = [];
+  hits.forEach((hit, rank) => {
+    for (const raw of hit.doc.parsed.programmes.get(hit.sourceId) || []) {
+      const hint = programmeHint(raw);
+      const placeholder = isPlaceholderProgrammeTitle(hint.title);
+      const validRange = Number.isFinite(Number(hint.start)) && Number.isFinite(Number(hint.stop));
+
+      if (!validRange) {
+        if (rank === 0) accepted.push({ raw, hint, placeholder, rank });
+        continue;
+      }
+
+      const overlapping = accepted.filter((row) =>
+        Number.isFinite(Number(row.hint.start))
+        && Number.isFinite(Number(row.hint.stop))
+        && rangesOverlap(hint.start, hint.stop, row.hint.start, row.hint.stop)
+      );
+
+      if (!overlapping.length) {
+        accepted.push({ raw, hint, placeholder, rank });
+        continue;
+      }
+
+      // A concrete programme from a secondary guide is allowed to replace
+      // placeholder-only coverage ("Programa a definir", TBA, etc). Concrete
+      // programmes never replace another concrete programme from the better
+      // ranked guide, which avoids cross-guide duplicate schedules.
+      if (!placeholder && overlapping.every((row) => row.placeholder)) {
+        for (const row of overlapping) accepted.splice(accepted.indexOf(row), 1);
+        accepted.push({ raw, hint, placeholder, rank });
+      }
+    }
+  });
+
+  accepted.sort((a, b) => {
+    const as = Number.isFinite(Number(a.hint.start)) ? Number(a.hint.start) : Number.MAX_SAFE_INTEGER;
+    const bs = Number.isFinite(Number(b.hint.start)) ? Number(b.hint.start) : Number.MAX_SAFE_INTEGER;
+    return as - bs || a.rank - b.rank;
+  });
+  return accepted.map((row) => row.raw);
 }
 
 function remapProgramme(programme, tvgId, fallbackImage = "") {
@@ -181,6 +348,7 @@ function generatedEventProgramme(channel) {
 
 export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdReference = null } = {}) {
   const hits = new Map();
+  const mergedProgrammes = new Map();
   const linearEventsByChannel = new Map();
   for (const event of dlhdReference?.linearEvents || []) {
     for (const linked of event.linkedStaticChannels || []) {
@@ -196,8 +364,12 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
   }
 
   for (const channel of channels) {
-    const hit = findHit(channel, docs);
-    if (hit) hits.set(channel.id, hit);
+    const candidates = findHits(channel, docs);
+    const hit = candidates[0] || null;
+    if (hit) {
+      hits.set(channel.id, hit);
+      mergedProgrammes.set(channel.id, mergedProgrammesForHits(candidates));
+    }
     const override = overrides[channel.id] || overrides[channel.key] || {};
     const dlhdLogo = text(channel.logo || "");
     if (override.logo) channel.logo = override.logo;
@@ -205,10 +377,21 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
     else if (hit?.meta?.icon) channel.logo = hit.meta.icon;
     if (!channel.logo) channel.logo = channel.variants.find((v) => v.logo)?.logo || "";
     const linearEventCount = linearEventsByChannel.get(String(channel.dlhdRefId || ""))?.length || 0;
+    const mergedQuality = hit ? programmeQuality(mergedProgrammes.get(channel.id) || []) : null;
     channel.epg = channel.referenceKind === "event"
       ? { generated: "dlhd-schedule" }
       : (hit
-        ? { guideId: hit.doc.id, sourceId: hit.sourceId, dlhdScheduleFallbacks: linearEventCount }
+        ? {
+          guideId: hit.doc.id,
+          sourceId: hit.sourceId,
+          match: hit.matchKind,
+          candidateGuides: candidates.length,
+          futureProgrammes: mergedQuality.futureProgrammes,
+          realFutureProgrammes: mergedQuality.realFutureProgrammes,
+          placeholderFutureProgrammes: mergedQuality.placeholderFutureProgrammes,
+          horizonHours: Number((mergedQuality.horizonMs / 3600000).toFixed(1)),
+          dlhdScheduleFallbacks: linearEventCount,
+        }
         : (linearEventCount ? { generated: "dlhd-linear-schedule", dlhdScheduleFallbacks: linearEventCount } : null));
   }
 
@@ -231,7 +414,7 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
       continue;
     }
     const hit = hits.get(channel.id);
-    const upstreamProgrammes = hit ? (hit.doc.parsed.programmes.get(hit.sourceId) || []) : [];
+    const upstreamProgrammes = hit ? (mergedProgrammes.get(channel.id) || []) : [];
     const fallbackImage = channel.logo || hit?.meta?.icon || "";
     for (const programme of upstreamProgrammes) {
       out.push(remapProgramme(programme, channel.tvgId, fallbackImage));

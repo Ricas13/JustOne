@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrichAndBuildGuide, epgHintsForChannelId, isGeneratedJustOneGuide, parseXmlTv, parseXmlTvTime, programmeHint } from "../src/epg.js";
+import { enrichAndBuildGuide, epgHintsForChannelId, isGeneratedJustOneGuide, isPlaceholderProgrammeTitle, parseXmlTv, parseXmlTvTime, programmeHint } from "../src/epg.js";
 
 test("EPG is remapped onto canonical JustOne tvg-id and provides logo", () => {
   const parsed = parseXmlTv(`<?xml version="1.0"?><tv><channel id="bbc1.uk"><display-name>BBC One</display-name><icon src="https://logo/bbc.png"/></channel><programme start="20260101000000 +0000" stop="20260101010000 +0000" channel="bbc1.uk"><title>News</title></programme></tv>`);
@@ -122,4 +122,92 @@ test("DLHD events on normal channels fill XMLTV gaps but never duplicate an exis
   assert.doesNotMatch(xml, /<title>Arsenal vs Chelsea<\/title>/);
   assert.match(xml, /<title>Benfica vs Porto<\/title>/);
   assert.equal((xml.match(/channel="justone\.sky"/g) || []).length, 2);
+});
+
+
+test("placeholder programme titles are recognised conservatively", () => {
+  assert.equal(isPlaceholderProgrammeTitle("Programa a definir"), true);
+  assert.equal(isPlaceholderProgrammeTitle("Programação a definir"), true);
+  assert.equal(isPlaceholderProgrammeTitle("TBA"), true);
+  assert.equal(isPlaceholderProgrammeTitle("Jornal da Noite"), false);
+});
+
+test("EPG selection prefers a real future schedule over placeholder-only data", () => {
+  const weak = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="sic.pt"><display-name>SIC</display-name></channel>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="sic.pt"><title>Programa a definir</title></programme>
+  </tv>`);
+  const rich = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="sic.pt"><display-name>SIC</display-name></channel>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="sic.pt"><title>Jornal da Noite</title></programme>
+  </tv>`);
+  const channels = [{
+    id:"sic", key:"sic", tvgId:"justone.sic", name:"SIC", logo:"", aliasNames:[],
+    variants:[{ sourceId:"provider-a", originalTvgId:"sic.pt", name:"SIC HD" }],
+  }];
+  const xml = enrichAndBuildGuide(channels, [
+    { id:"weak", name:"Weak guide", sourceId:"provider-a", priority:10, parsed:weak },
+    { id:"rich", name:"Rich guide", sourceId:"provider-b", priority:50, parsed:rich },
+  ], {});
+  assert.match(xml, /<title>Jornal da Noite<\/title>/);
+  assert.doesNotMatch(xml, /<title>Programa a definir<\/title>/);
+  assert.equal(channels[0].epg.guideId, "rich");
+  assert.equal(channels[0].epg.realFutureProgrammes, 1);
+  assert.equal(channels[0].epg.placeholderFutureProgrammes, 0);
+});
+
+test("secondary guides replace placeholder slots without overwriting concrete primary programmes", () => {
+  const primary = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="rtp1.pt"><display-name>RTP 1</display-name></channel>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="rtp1.pt"><title>Bom Dia Portugal</title></programme>
+    <programme start="20990101010000 +0000" stop="20990101020000 +0000" channel="rtp1.pt"><title>Programa a definir</title></programme>
+    <programme start="20990101020000 +0000" stop="20990101030000 +0000" channel="rtp1.pt"><title>Telejornal</title></programme>
+  </tv>`);
+  const secondary = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="rtp1.pt"><display-name>RTP 1</display-name></channel>
+    <programme start="20990101010000 +0000" stop="20990101020000 +0000" channel="rtp1.pt"><title>Praça da Alegria</title></programme>
+  </tv>`);
+  const channels = [{
+    id:"rtp1", key:"rtp 1", tvgId:"justone.rtp1", name:"RTP 1", logo:"", aliasNames:[],
+    variants:[{ sourceId:"provider-a", originalTvgId:"rtp1.pt", name:"RTP 1 HD" }],
+  }];
+  const xml = enrichAndBuildGuide(channels, [
+    { id:"primary", name:"Primary", sourceId:"provider-a", priority:10, parsed:primary },
+    { id:"secondary", name:"Secondary", sourceId:"provider-b", priority:20, parsed:secondary },
+  ], {});
+  assert.match(xml, /<title>Bom Dia Portugal<\/title>/);
+  assert.match(xml, /<title>Praça da Alegria<\/title>/);
+  assert.match(xml, /<title>Telejornal<\/title>/);
+  assert.doesNotMatch(xml, /<title>Programa a definir<\/title>/);
+});
+
+test("EPG name matching tolerates common quality suffixes when the match is unambiguous", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="sic.xmltv"><display-name>SIC</display-name></channel>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="sic.xmltv"><title>Primeiro Jornal</title></programme>
+  </tv>`);
+  const channels = [{
+    id:"sic-hd", key:"sic hd", tvgId:"justone.sic", name:"SIC HD", logo:"", aliasNames:[],
+    variants:[{ sourceId:"provider-a", originalTvgId:"not-the-guide-id", name:"SIC HD" }],
+  }];
+  const xml = enrichAndBuildGuide(channels, [{ id:"guide", name:"Guide", priority:10, parsed }], {});
+  assert.match(xml, /<title>Primeiro Jornal<\/title>/);
+  assert.equal(channels[0].epg.sourceId, "sic.xmltv");
+  assert.equal(channels[0].epg.match, "name");
+});
+
+test("relaxed EPG names fail closed when the stripped name is ambiguous", () => {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv>
+    <channel id="sport.hd"><display-name>Sports HD</display-name></channel>
+    <channel id="sport.sd"><display-name>Sports SD</display-name></channel>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="sport.hd"><title>HD Show</title></programme>
+    <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="sport.sd"><title>SD Show</title></programme>
+  </tv>`);
+  const channels = [{
+    id:"sport", key:"sports", tvgId:"justone.sports", name:"Sports UHD", logo:"", aliasNames:[],
+    variants:[{ originalTvgId:"missing", name:"Sports UHD" }],
+  }];
+  const xml = enrichAndBuildGuide(channels, [{ id:"guide", name:"Guide", priority:10, parsed }], {});
+  assert.doesNotMatch(xml, /HD Show|SD Show/);
+  assert.equal(channels[0].epg, null);
 });
