@@ -7,6 +7,7 @@ function now() { return new Date().toISOString(); }
 
 export function createRefreshManager(runRefresh = refreshCatalog, { finalize = runRefresh === refreshCatalog } = {}) {
   let currentPromise = null;
+  const completionListeners = new Set();
   let status = {
     running: false,
     id: null,
@@ -106,6 +107,11 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
           },
         };
         console.log(`[refresh ${id}] complete: ${staticChannels} static channels + ${events} events = ${result.channels?.length || 0} outputs`);
+        for (const listener of completionListeners) {
+          Promise.resolve()
+            .then(() => listener({ id, reason, sourceMode, status: snapshot() }))
+            .catch((error) => console.error(`[refresh ${id}] completion listener failed:`, error));
+        }
       } catch (error) {
         status = {
           ...status,
@@ -128,6 +134,11 @@ export function createRefreshManager(runRefresh = refreshCatalog, { finalize = r
     start,
     status: snapshot,
     wait: () => currentPromise,
+    onComplete(listener) {
+      if (typeof listener !== "function") throw new TypeError("refresh completion listener must be a function");
+      completionListeners.add(listener);
+      return () => completionListeners.delete(listener);
+    },
   };
 }
 
