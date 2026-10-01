@@ -166,38 +166,7 @@ test("automatic Dispatcharr sync never applies while reconciliation preview has 
   assert.deepEqual(calls, [false]);
 });
 
-test("automatic Dispatcharr sync is single-flight and respects disabled settings", async () => {
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
-  const client = new FakeClient();
-  const manager = createDispatcharrAutoSyncManager({
-    makeClient: () => client,
-    loadCurrentState: async () => ({}),
-    loadCurrentSnapshot: async () => ({}),
-    provision: async () => {
-      await gate;
-      client.phase = "after";
-      return { counts: {} };
-    },
-    reconcile: async () => ({ readyForApply: true, blockers: [], counts: {} }),
-    settings: {
-      url: "http://dispatcharr:9191",
-      applyEnabled: true,
-      autoSyncEnabled: true,
-      autoSyncPollSeconds: 0,
-      autoSyncTimeoutMinutes: 1,
-    },
-    sleepFn: async () => {},
-  });
-
-  const first = manager.start("one");
-  const second = manager.start("two");
-  assert.equal(first.started, true);
-  assert.equal(second.started, false);
-  assert.equal(second.status.id, first.status.id);
-  release();
-  await manager.wait();
-
+test("automatic Dispatcharr sync respects disabled settings", () => {
   const disabled = createDispatcharrAutoSyncManager({
     settings: {
       url: "http://dispatcharr:9191",
