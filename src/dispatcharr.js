@@ -64,7 +64,10 @@ function desiredEpg() {
     source_type: "xmltv",
     url: withInternalKey(`${config.internalBaseUrl}/epg/guide.xml`),
     is_active: true,
-    refresh_interval: 0,
+    // Dispatcharr measures EPG refresh_interval in hours. Keep this non-zero so
+    // the canonical guide is re-imported even when nobody manually presses
+    // "Provision + refresh" in the JustOne admin UI.
+    refresh_interval: config.dispatcharr.epgRefreshHours,
     priority: 100,
     custom_properties: {
       justone_managed: true,
