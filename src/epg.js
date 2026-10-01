@@ -75,7 +75,7 @@ export function parseXmlTv(body) {
       const key = normalize(name);
       if (key && !names.has(key)) names.set(key, id);
       const relaxed = relaxedChannelName(name);
-      if (relaxed && relaxed !== key) addRelaxedName(relaxedNames, relaxed, id);
+      if (relaxed) addRelaxedName(relaxedNames, relaxed, id);
     }
   }
 
@@ -230,9 +230,6 @@ function findHits(channel, docs) {
   return [...candidates.values()].sort(compareGuideCandidates);
 }
 
-function findHit(channel, docs) {
-  return findHits(channel, docs)[0] || null;
-}
 
 function mergedProgrammesForHits(hits) {
   const accepted = [];
