@@ -1,5 +1,6 @@
 import http from "node:http";
 import { config, withInternalKey, withStreamProxyKey } from "./config.js";
+import { dispatcharrAutoSyncManager } from "./dispatcharr-auto-sync-manager.js";
 import { refreshManager } from "./refresh-manager.js";
 import { buildM3u } from "./m3u.js";
 import { provisionDispatcharrInputs } from "./dispatcharr.js";
@@ -121,6 +122,7 @@ export function createAdminServer() {
           channels: snapshot.channels.length,
           dlhd: snapshot.dlhdStatus || null,
           refresh: refreshManager.status(),
+          dispatcharrAutoSync: dispatcharrAutoSyncManager.status(),
           streamProxy: { enabled: config.streamProxy.enabled, masterEnabled: config.streamProxy.enabled && config.streamProxy.masterEnabled },
         });
       }
@@ -179,6 +181,12 @@ export function createAdminServer() {
           providerRefreshMinutes: config.providerRefreshMinutes,
           dlhdRefreshMinutes: config.dlhdRefreshMinutes,
           providerCacheMaxAgeMinutes: config.providerCacheMaxAgeMinutes,
+        });
+      }
+      if (req.method === "GET" && path === "/api/dispatcharr/auto-sync/status") {
+        return json(res, 200, {
+          enabled: config.dispatcharr.autoSyncEnabled === true && config.dispatcharr.applyEnabled === true,
+          ...dispatcharrAutoSyncManager.status(),
         });
       }
 
