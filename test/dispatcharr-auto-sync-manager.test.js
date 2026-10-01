@@ -299,3 +299,72 @@ test("a stale pre-existing Dispatcharr error waits for the fresh import instead 
   assert.equal(manager.status().phase, "complete");
   assert.equal(manager.status().lastError, null);
 });
+
+
+test("automatic sync waits for every managed input, not just the first one that refreshes", async () => {
+  let queued = false;
+  let poll = 0;
+  let reconcileAtPoll = 0;
+  const account = (id, stampValue) => ({
+    id,
+    name: `JustOne | Provider ${id}`,
+    status: "success",
+    updated_at: stampValue,
+    custom_properties: {
+      justone_managed: true,
+      justone_role: "filtered_m3u",
+      justone_source_id: String(id),
+    },
+  });
+  const epg = (stampValue) => ({
+    id: 9,
+    name: "JustOne | Canonical EPG",
+    status: "success",
+    updated_at: stampValue,
+    custom_properties: { justone_managed:true, justone_role:"canonical_epg" },
+  });
+  const client = {
+    async list(path) {
+      const oldStamp = "2026-10-01T10:00:00Z";
+      const newStamp = "2026-10-01T11:00:00Z";
+      if (path === "/api/m3u/accounts/") {
+        return [
+          account(1, queued && poll >= 1 ? newStamp : oldStamp),
+          account(2, queued && poll >= 2 ? newStamp : oldStamp),
+        ];
+      }
+      if (path === "/api/epg/sources/") {
+        return [epg(queued && poll >= 1 ? newStamp : oldStamp)];
+      }
+      throw new Error(`unexpected list ${path}`);
+    },
+  };
+
+  const manager = createDispatcharrAutoSyncManager({
+    makeClient: () => client,
+    loadCurrentState: async () => ({}),
+    loadCurrentSnapshot: async () => ({ channels: [] }),
+    provision: async () => {
+      queued = true;
+      return { counts: {} };
+    },
+    reconcile: async (_snapshot, options) => {
+      reconcileAtPoll = poll;
+      return { readyForApply: true, blockers: [], counts: options.apply ? { update: 1 } : {} };
+    },
+    settings: {
+      url: "http://dispatcharr:9191",
+      applyEnabled: true,
+      autoSyncEnabled: true,
+      autoSyncPollSeconds: 0,
+      autoSyncTimeoutMinutes: 1,
+    },
+    sleepFn: async () => { poll += 1; },
+  });
+
+  manager.start("per-input-wait");
+  await manager.wait();
+
+  assert.ok(reconcileAtPoll >= 2);
+  assert.equal(manager.status().phase, "complete");
+});
