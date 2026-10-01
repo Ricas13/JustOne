@@ -181,6 +181,8 @@ export function createAdminServer() {
           providerRefreshMinutes: config.providerRefreshMinutes,
           dlhdRefreshMinutes: config.dlhdRefreshMinutes,
           providerCacheMaxAgeMinutes: config.providerCacheMaxAgeMinutes,
+          dispatcharrAutoSyncEnabled: config.dispatcharr.autoSyncEnabled === true && config.dispatcharr.applyEnabled === true,
+          dispatcharrEpgRefreshHours: config.dispatcharr.epgRefreshHours,
         });
       }
       if (req.method === "GET" && path === "/api/dispatcharr/auto-sync/status") {
