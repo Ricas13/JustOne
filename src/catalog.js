@@ -18,7 +18,7 @@ import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, vari
 import { enrichAndBuildGuide, epgHintsForChannelId, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
 import { createDlhdMatcher, isEventLikeRow } from "./dlhd-matcher.js";
-import { parseProviderEventRow, resolveProviderEvents } from "./provider-events.js";
+import { excludeClaimedRows, parseProviderEventRow, providerEventRetainable, resolveProviderEvents } from "./provider-events.js";
 import { loadCachedXmltv, saveCachedXmltv } from "./upstream-xmltv-cache.js";
 import { text, timeoutSignal } from "./util.js";
 
@@ -881,7 +881,9 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   let providerEvents = { rows: [], refs: [], registry: previous.providerEvents || {}, status: null };
   if (providerEventOptions) {
     providerEvents = resolveProviderEvents({
-      items: providerEventItems,
+      // DLHD stays authoritative: rows already mapped to an event, directly or
+      // through EPG-assisted matching, never become provider-only events.
+      items: excludeClaimedRows(providerEventItems, sourceRows),
       dlhdEvents: dlhdReference?.events || [],
       previousRegistry: previous.providerEvents || {},
       now: refreshNow,
@@ -944,7 +946,9 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   if (failedSourceIds.size) {
     const byId = new Map(channels.map((channel) => [channel.id, channel]));
     for (const old of previous.channels || []) {
-      if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
+      const retainableProviderEvent = providerEventOptions
+        && providerEventRetainable(old, { now: refreshNow, tailMinutes: config.providerEvents.tailMinutes });
+      if (allowedDlhdIds && !retainableProviderEvent && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
       if (!existingChannelAllowedForCountries(old, allowedCountries)) continue;
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   clusterProviderEvents,
   eventSignature,
+  excludeClaimedRows,
   parseProviderEventRow,
+  providerEventRetainable,
   resolveProviderEvents,
   signaturesMatch,
   zonedTimeMs,
@@ -81,9 +83,20 @@ test("weekday clock times, quality prefixes and generic slot names", () => {
   }
 });
 
-test("UPCOMING month/day/time is parsed", () => {
-  const parsed = parseProviderEventRow(row("US| QMJHL TV 07 [Ronde 3 - Match 6: MON @ ROU * | UPCOMING | Sun May 4th 4:00PM]", "AM | USA LIVE EVENTS"), { ...opts, now: Date.UTC(2026, 4, 3, 12) });
-  assert.equal(parsed.start, Date.UTC(2026, 4, 4, 16, 0, 0));
+test("month/day/time is parsed, with or without the UPCOMING marker, and weekdays are validated", () => {
+  const may3 = { ...opts, now: Date.UTC(2026, 4, 3, 12) };
+  const marker = parseProviderEventRow(row("US| QMJHL TV 07 [Ronde 3 - Match 6: MON @ ROU * | UPCOMING | Mon May 4th 4:00PM]", "AM | USA LIVE EVENTS"), may3);
+  assert.equal(marker.start, Date.UTC(2026, 4, 4, 16, 0, 0));
+  const plain = parseProviderEventRow(row("PPV| LIVE EVENT 07 [Mon May 4th 4:00PM Canelo vs Mbilli]"), may3);
+  assert.equal(plain.title, "Canelo vs Mbilli");
+  assert.equal(plain.start, Date.UTC(2026, 4, 4, 16, 0, 0));
+  // 4 May is a Sunday in 2025, not in 2026: the year is chosen so the weekday agrees.
+  assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Sun May 4th 4:00PM Canelo vs Mbilli]"), may3).start, Date.UTC(2025, 4, 4, 16, 0, 0));
+  // A weekday that matches no nearby year is rejected rather than guessed.
+  assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Tue Feb 30th 4:00PM Canelo vs Mbilli]"), may3).start, null);
+  // Dec -> Jan rollover picks the nearest year.
+  const dec = parseProviderEventRow(row("PPV| LIVE EVENT 07 [Jan 2 8pm Canelo vs Mbilli]"), { ...opts, now: Date.UTC(2026, 11, 31, 20) });
+  assert.equal(dec.start, Date.UTC(2027, 0, 2, 20, 0, 0));
 });
 
 test("configured provider time zone is honoured", () => {
@@ -226,4 +239,143 @@ test("the number of created provider events is capped, biggest events first", ()
   assert.equal(result.refs.length, 1);
   assert.equal(result.refs[0].name, "Big Fight A vs Big Fight B");
   assert.equal(result.status.capped, 1);
+});
+
+test("timestamps with Z or an offset are absolute; impossible dates are rejected", () => {
+  const z = parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-10-31T15:58:00Z)]"), { ...opts, timezone: "Europe/London" });
+  assert.equal(z.title, "Fight Night");
+  assert.equal(z.start, Date.UTC(2026, 9, 31, 15, 58));
+  const offset = parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-10-31 20:00:00+02:00)]"), opts);
+  assert.equal(offset.start, Date.UTC(2026, 9, 31, 18, 0));
+  assert.equal(parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-02-30 20:00:00)]"), opts).start, null);
+  assert.equal(zonedTimeMs("UTC", 2026, 13, 1, 0, 0), null);
+  assert.equal(zonedTimeMs("UTC", 2026, 10, 31, 25, 0), null);
+});
+
+test("either the display name or the tvg-name may carry the bracketed title", () => {
+  const generic = { name: "PPV| PRIME US 007 [Canelo vs Mbilli (2026-10-31 15:58:00)]", tvgName: "PRIME US 007", group: "VIP | PPV", url: "http://x/1" };
+  assert.equal(parseProviderEventRow(generic, opts).title, "Canelo vs Mbilli");
+  const reversed = { name: "PRIME US 007", tvgName: "PPV| PRIME US 007 [Canelo vs Mbilli (2026-10-31 15:58:00)]", group: "VIP | PPV", url: "http://x/2" };
+  assert.equal(parseProviderEventRow(reversed, opts).title, "Canelo vs Mbilli");
+});
+
+test("hostile rows are rejected cheaply", () => {
+  const bracketBomb = row(`PPV 1 ${"[ABC]".repeat(100_000)}`);
+  assert.equal(parseProviderEventRow(bracketBomb, opts), null);
+  assert.equal(parseProviderEventRow({ ...row("PPV 1 [Fight Night]"), group: "AM | USA FLO" }, opts), null);
+  const longTitle = parseProviderEventRow(row(`PPV 1 [${"A".repeat(500)} vs ${"B".repeat(500)}]`), opts);
+  assert.equal(longTitle, null);
+});
+
+test("women's and youth fixtures do not merge with the senior fixture", () => {
+  assert.equal(signaturesMatch(eventSignature("Chelsea Women vs Arsenal Women", "women"), eventSignature("Chelsea vs Arsenal", "")), false);
+  const items = [row("PPV| LIVE EVENT 1 [Chelsea vs Arsenal (2026-11-01 16:00:00)]"), row("PPV| LIVE EVENT 2 [Chelsea Women vs Arsenal Women (2026-11-01 13:00:00)]"), row("PPV| LIVE EVENT 3 [Chelsea U21 vs Arsenal U21 (2026-11-01 13:00:00)]")]
+    .map((r) => ({ source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) }));
+  assert.equal(clusterProviderEvents(items).length, 3);
+});
+
+test("event identity does not depend on which provider row arrives first", () => {
+  const short = { source: source("a"), row: row("X [Canelo v Mbilli (2026-10-31 15:00:00)]"), parsed: null };
+  const long = { source: source("b"), row: row("Y [Canelo Alvarez vs Christian Mbilli (2026-10-31 15:00:00)]"), parsed: null };
+  for (const item of [short, long]) item.parsed = parseProviderEventRow(item.row, opts);
+  const ab = resolveProviderEvents({ items: [short, long], now: NOW });
+  const ba = resolveProviderEvents({ items: [long, short], now: NOW });
+  assert.equal(ab.refs[0].id, ba.refs[0].id);
+  // Provider A disappears on the next refresh: the same event keeps its id and tvg-id.
+  const onlyLong = resolveProviderEvents({ items: [long], previousRegistry: ab.registry, now: NOW + 10 * 60_000 });
+  assert.equal(onlyLong.refs[0].id, ab.refs[0].id);
+  assert.equal(onlyLong.refs[0].tvgId, ab.refs[0].tvgId);
+});
+
+test("an event keeps its first-seen estimate when a different provider row names it", () => {
+  const a = row("PPV| LIVE EVENT 26 [Canelo Alvarez vs Christian Mbilli]", "VIP | PPV-SPORT EVENTS");
+  const b = row("PPV| LIVE EVENT 27 [Canelo v Mbilli]", "VIP | PPV-SPORT EVENTS");
+  const first = resolveProviderEvents({ items: [{ source: source("a"), row: a, parsed: parseProviderEventRow(a, opts) }], now: NOW });
+  const later = resolveProviderEvents({ items: [{ source: source("b"), row: b, parsed: parseProviderEventRow(b, opts) }], previousRegistry: first.registry, now: NOW + 3_600_000 });
+  assert.equal(later.refs[0].id, first.refs[0].id);
+  assert.equal(later.refs[0].start, NOW);
+});
+
+test("a clock-only time keeps its first resolved day across midnight instead of reappearing", () => {
+  const r = row("PPV| LIVE EVENT 02 [10am Canelo v Mbilli]");
+  const at = (now, previousRegistry) => resolveProviderEvents({
+    items: [{ source: source("a"), row: r, parsed: parseProviderEventRow(r, { ...opts, now }) }], previousRegistry, now,
+  });
+  const noon = at(Date.UTC(2026, 9, 31, 13, 0));
+  assert.equal(noon.refs[0].start, Date.UTC(2026, 9, 31, 10, 0));
+  // Still listed through the evening and past midnight, refreshed regularly.
+  let registry = noon.registry;
+  let result;
+  for (const hour of [18, 23, 29, 34]) { // 18:00, 23:00, 05:00+1d, 10:00+1d
+    result = at(Date.UTC(2026, 9, 31, 13) + (hour - 13) * 3_600_000, registry);
+    registry = result.registry;
+    assert.equal(result.refs.length, 0, `hour ${hour} must stay expired, not become tomorrow's event`);
+  }
+  assert.equal(result.status.expired, 1);
+});
+
+test("a title that disappears for a long time is a new occurrence", () => {
+  const r = row("PPV| LIVE EVENT 26 [MAIN STAGE Live From Coachella 2026]", "VIP | PPV-SPORT EVENTS");
+  const items = [{ source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) }];
+  const first = resolveProviderEvents({ items, now: NOW });
+  const stale = resolveProviderEvents({ items, previousRegistry: first.registry, now: NOW + 6 * 3_600_000 });
+  assert.equal(stale.refs.length, 0);
+  const days = resolveProviderEvents({ items, previousRegistry: first.registry, now: NOW + 2 * 24 * 3_600_000 });
+  assert.equal(days.refs.length, 1, "after being gone for over 12h the same title is a fresh occurrence");
+  assert.equal(days.refs[0].start, NOW + 2 * 24 * 3_600_000);
+});
+
+test("the registry only remembers events that need it and stays bounded", () => {
+  const dated = row("PPV| UFC [BG] 21 [SOME FIGHT (2026-11-14 16:00:00)]", "VIP | UFC PPV");
+  const far = resolveProviderEvents({ items: [{ source: source("a"), row: dated, parsed: parseProviderEventRow(dated, opts) }], now: NOW });
+  assert.deepEqual(far.registry, {}, "a not-yet-active dated event needs no memory");
+  const items = Array.from({ length: 2500 }, (_, i) => {
+    const r = row(`PPV| LIVE EVENT ${i} [Untimed Gala Number${i} Spectacular${i}]`, "VIP | PPV-SPORT EVENTS");
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
+  });
+  const big = resolveProviderEvents({ items, now: NOW });
+  assert.ok(Object.keys(big.registry).length <= 2000);
+  assert.equal(big.refs.length, 150);
+});
+
+test("clustering stays fast on thousands of events and thousands of slots", () => {
+  const distinct = Array.from({ length: 5000 }, (_, i) => {
+    const r = row(`PPV| LIVE EVENT ${i} [Alpha${i} Team vs Beta${i} Club (2026-10-31 14:00:00)]`);
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
+  });
+  let t = Date.now();
+  assert.equal(clusterProviderEvents(distinct).length, 5000);
+  const distinctMs = Date.now() - t;
+  const slots = Array.from({ length: 5000 }, (_, i) => {
+    const r = row(`PPV| LIVE EVENT ${i} [Canelo vs Mbilli (2026-10-31 14:00:00)]`);
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
+  });
+  t = Date.now();
+  assert.equal(clusterProviderEvents(slots).length, 1);
+  assert.ok(distinctMs < 400 && Date.now() - t < 400, `too slow: ${distinctMs}ms / ${Date.now() - t}ms`);
+});
+
+test("rows already mapped to a DLHD event (direct or EPG-assisted) are not provider-only events", () => {
+  const r = row("PPV| LIVE EVENT 03 [Canelo vs Mbilli (2026-10-31 15:00:00)]");
+  const other = row("PPV| LIVE EVENT 04 [Cage Warriors 213 (2026-10-31 14:30:00)]");
+  const items = [r, other].map((x) => ({ source: source("a"), row: x, parsed: parseProviderEventRow(x, opts) }));
+  const assisted = [{ source: source("a"), row: r, reference: { kind: "event", id: "event-dlhd-1" } }];
+  const remaining = excludeClaimedRows(items, assisted);
+  assert.deepEqual(remaining.map((x) => x.row), [other]);
+  // A static-channel mapping does not claim the row.
+  assert.equal(excludeClaimedRows(items, [{ source: source("a"), row: r, reference: { kind: "channel", id: "c" } }]).length, 2);
+});
+
+test("a published provider event survives a source outage until its window ends", () => {
+  const channel = { referenceKind: "event", event: { source: "provider", end: NOW + 3_600_000 } };
+  assert.equal(providerEventRetainable(channel, { now: NOW, tailMinutes: 60 }), true);
+  assert.equal(providerEventRetainable(channel, { now: NOW + 3_600_000 + 59 * 60_000, tailMinutes: 60 }), true);
+  assert.equal(providerEventRetainable(channel, { now: NOW + 3_600_000 + 61 * 60_000, tailMinutes: 60 }), false);
+  assert.equal(providerEventRetainable({ referenceKind: "event", event: { end: NOW + 1 } }, { now: NOW }), false, "DLHD events keep the existing rule");
+  assert.equal(providerEventRetainable({ referenceKind: "channel", event: null }, { now: NOW }), false);
+});
+
+test("with nothing to find the resolver produces no rows, refs or registry changes", () => {
+  const empty = resolveProviderEvents({ items: [], now: NOW, previousRegistry: {} });
+  assert.deepEqual({ rows: empty.rows, refs: empty.refs, registry: empty.registry }, { rows: [], refs: [], registry: {} });
 });
