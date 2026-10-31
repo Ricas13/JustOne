@@ -7,10 +7,11 @@ import {
   parseProviderEventRow,
   providerEventRetainable,
   resolveProviderEvents,
+  sameProviderOccurrence,
   signaturesMatch,
   zonedTimeMs,
 } from "../src/provider-events.js";
-import { finalizeSnapshot, syncGuideEvents } from "../src/finalize.js";
+import { finalizeSnapshot, removeStaleProviderEvents, syncGuideEvents } from "../src/finalize.js";
 import { eventArtworkPng } from "../src/artwork.js";
 import { config } from "../src/config.js";
 import { DEFAULT_PROVIDER_EVENT_GROUPS } from "../src/provider-events.js";
@@ -93,7 +94,8 @@ test("month/day/time is parsed, with or without the UPCOMING marker, and weekday
   // 4 May is a Sunday in 2025, not in 2026: the year is chosen so the weekday agrees.
   assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Sun May 4th 4:00PM Canelo vs Mbilli]"), may3).start, Date.UTC(2025, 4, 4, 16, 0, 0));
   // A weekday that matches no nearby year is rejected rather than guessed.
-  assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Tue Feb 30th 4:00PM Canelo vs Mbilli]"), may3).start, null);
+  assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Tue Feb 30th 4:00PM Canelo vs Mbilli]"), may3), null);
+  assert.equal(parseProviderEventRow(row("PPV| LIVE EVENT 07 [Wed May 4th 4:00PM Canelo vs Mbilli]"), may3), null, "May 4 is never a Wednesday near 2026");
   // Dec -> Jan rollover picks the nearest year.
   const dec = parseProviderEventRow(row("PPV| LIVE EVENT 07 [Jan 2 8pm Canelo vs Mbilli]"), { ...opts, now: Date.UTC(2026, 11, 31, 20) });
   assert.equal(dec.start, Date.UTC(2027, 0, 2, 20, 0, 0));
@@ -247,7 +249,9 @@ test("timestamps with Z or an offset are absolute; impossible dates are rejected
   assert.equal(z.start, Date.UTC(2026, 9, 31, 15, 58));
   const offset = parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-10-31 20:00:00+02:00)]"), opts);
   assert.equal(offset.start, Date.UTC(2026, 9, 31, 18, 0));
-  assert.equal(parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-02-30 20:00:00)]"), opts).start, null);
+  assert.equal(parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-02-30 20:00:00)]"), opts), null, "an impossible date must not become an event that starts now");
+  assert.equal(parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-10-31 20:00:00+25:00)]"), opts), null, "offset hours are validated");
+  assert.equal(parseProviderEventRow(row("X| PPV 1 [Fight Night (2026-10-31 20:00:00+0530)]"), opts).start, Date.UTC(2026, 9, 31, 14, 30));
   assert.equal(zonedTimeMs("UTC", 2026, 13, 1, 0, 0), null);
   assert.equal(zonedTimeMs("UTC", 2026, 10, 31, 25, 0), null);
 });
@@ -314,21 +318,34 @@ test("a clock-only time keeps its first resolved day across midnight instead of 
   assert.equal(result.status.expired, 1);
 });
 
-test("a title that disappears for a long time is a new occurrence", () => {
+test("a title confirmed absent for a long time is a new occurrence, an unobserved gap is not", () => {
   const r = row("PPV| LIVE EVENT 26 [MAIN STAGE Live From Coachella 2026]", "VIP | PPV-SPORT EVENTS");
   const items = [{ source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) }];
   const first = resolveProviderEvents({ items, now: NOW });
   const stale = resolveProviderEvents({ items, previousRegistry: first.registry, now: NOW + 6 * 3_600_000 });
   assert.equal(stale.refs.length, 0);
-  const days = resolveProviderEvents({ items, previousRegistry: first.registry, now: NOW + 2 * 24 * 3_600_000 });
-  assert.equal(days.refs.length, 1, "after being gone for over 12h the same title is a fresh occurrence");
-  assert.equal(days.refs[0].start, NOW + 2 * 24 * 3_600_000);
+
+  // Nothing ran for two days (service down): the event was never seen to disappear, so it is still the old one.
+  const unobserved = resolveProviderEvents({ items, previousRegistry: first.registry, now: NOW + 2 * 24 * 3_600_000 });
+  assert.equal(unobserved.refs.length, 0);
+
+  // A successful refresh a day later without the title confirms it was gone...
+  const gone = resolveProviderEvents({ items: [], previousRegistry: first.registry, now: NOW + 24 * 3_600_000 });
+  // ...so when it returns it is a fresh occurrence with a new estimated start.
+  const back = resolveProviderEvents({ items, previousRegistry: gone.registry, now: NOW + 2 * 24 * 3_600_000 });
+  assert.equal(back.refs.length, 1);
+  assert.equal(back.refs[0].start, NOW + 2 * 24 * 3_600_000);
+
+  // If a source was down during those refreshes, absence is unconfirmed.
+  const failedScan = resolveProviderEvents({ items: [], previousRegistry: first.registry, now: NOW + 24 * 3_600_000, sourcesIncomplete: true });
+  const afterFailure = resolveProviderEvents({ items, previousRegistry: failedScan.registry, now: NOW + 2 * 24 * 3_600_000, sourcesIncomplete: true });
+  assert.equal(afterFailure.refs.length, 0);
 });
 
 test("the registry only remembers events that need it and stays bounded", () => {
   const dated = row("PPV| UFC [BG] 21 [SOME FIGHT (2026-11-14 16:00:00)]", "VIP | UFC PPV");
   const far = resolveProviderEvents({ items: [{ source: source("a"), row: dated, parsed: parseProviderEventRow(dated, opts) }], now: NOW });
-  assert.deepEqual(far.registry, {}, "a not-yet-active dated event needs no memory");
+  assert.deepEqual(Object.keys(far.registry), ["__meta"], "a not-yet-active dated event needs no memory");
   const items = Array.from({ length: 2500 }, (_, i) => {
     const r = row(`PPV| LIVE EVENT ${i} [Untimed Gala Number${i} Spectacular${i}]`, "VIP | PPV-SPORT EVENTS");
     return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
@@ -338,21 +355,20 @@ test("the registry only remembers events that need it and stays bounded", () => 
   assert.equal(big.refs.length, 150);
 });
 
-test("clustering stays fast on thousands of events and thousands of slots", () => {
-  const distinct = Array.from({ length: 5000 }, (_, i) => {
-    const r = row(`PPV| LIVE EVENT ${i} [Alpha${i} Team vs Beta${i} Club (2026-10-31 14:00:00)]`);
+test("clustering does a bounded number of comparisons, even when events share common words", () => {
+  const parsed = (title, i) => {
+    const r = row(`PPV| LIVE EVENT ${i} [${title} (2026-10-31 14:00:00)]`);
     return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
-  });
-  let t = Date.now();
-  assert.equal(clusterProviderEvents(distinct).length, 5000);
-  const distinctMs = Date.now() - t;
-  const slots = Array.from({ length: 5000 }, (_, i) => {
-    const r = row(`PPV| LIVE EVENT ${i} [Canelo vs Mbilli (2026-10-31 14:00:00)]`);
-    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
-  });
-  t = Date.now();
-  assert.equal(clusterProviderEvents(slots).length, 1);
-  assert.ok(distinctMs < 400 && Date.now() - t < 400, `too slow: ${distinctMs}ms / ${Date.now() - t}ms`);
+  };
+  // Every title shares "Alpha"/"Beta"/"Team"/"Other" - the lexicographically smallest tokens are all common.
+  const distinct = Array.from({ length: 4000 }, (_, i) => parsed(`Alpha Team${i} vs Beta Other${i}`, i));
+  const stats = { comparisons: 0 };
+  assert.equal(clusterProviderEvents(distinct, stats).length, 4000);
+  assert.ok(stats.comparisons < 40_000, `${stats.comparisons} comparisons for 4000 unrelated events`);
+  const slots = Array.from({ length: 4000 }, (_, i) => parsed("Canelo vs Mbilli", i));
+  const slotStats = { comparisons: 0 };
+  assert.equal(clusterProviderEvents(slots, slotStats).length, 1);
+  assert.ok(slotStats.comparisons < 40_000, `${slotStats.comparisons} comparisons for 4000 identical slots`);
 });
 
 test("rows already mapped to a DLHD event (direct or EPG-assisted) are not provider-only events", () => {
@@ -377,5 +393,130 @@ test("a published provider event survives a source outage until its window ends"
 
 test("with nothing to find the resolver produces no rows, refs or registry changes", () => {
   const empty = resolveProviderEvents({ items: [], now: NOW, previousRegistry: {} });
-  assert.deepEqual({ rows: empty.rows, refs: empty.refs, registry: empty.registry }, { rows: [], refs: [], registry: {} });
+  assert.deepEqual({ rows: empty.rows, refs: empty.refs, registry: Object.keys(empty.registry) }, { rows: [], refs: [], registry: ["__meta"] });
+});
+
+const at = (title, stamp, src = "a", group = "VIP | PPV-SPORT EVENTS") => {
+  const r = row(`PPV| LIVE EVENT ${src}${title.length} [${title}${stamp ? ` (${stamp})` : ""}]`, group);
+  return { source: source(src), row: r, parsed: parseProviderEventRow(r, opts) };
+};
+
+test("the same title at two different times the same day gets two distinct events and ids", () => {
+  const now = Date.UTC(2026, 9, 31, 15, 0);
+  const result = resolveProviderEvents({
+    items: [at("Cricket Live", "2026-10-31 08:00:00", "a"), at("Cricket Live", "2026-10-31 18:00:00", "b")],
+    now,
+  });
+  assert.equal(result.refs.length, 2);
+  assert.equal(new Set(result.refs.map((x) => x.id)).size, 2);
+  assert.equal(new Set(result.refs.map((x) => x.tvgId)).size, 2);
+  assert.ok(result.refs.every((x) => x.tvgId.startsWith("justone.pevent.")));
+  assert.equal(Object.keys(result.registry).filter((k) => k !== "__meta").length, 2);
+});
+
+test("a remembered identity goes to the closest occurrence, each identity at most once", () => {
+  const first = resolveProviderEvents({
+    items: [at("Cricket Live", "2026-10-31 22:00:00", "a"), at("Cricket Live", "2026-11-01 08:00:00", "b")],
+    now: Date.UTC(2026, 10, 1, 4, 30), // both occurrences are inside their windows
+  });
+  assert.equal(first.refs.length, 2);
+  const [early, late] = [...first.refs].sort((x, y) => x.start - y.start);
+  // The 06:00 row is 2h from the 08:00 occurrence and 8h from the 22:00 one: both are
+  // "compatible", but the closer one must win regardless of registry order.
+  const again = resolveProviderEvents({
+    items: [at("Cricket Live", "2026-11-01 06:00:00", "c")],
+    previousRegistry: first.registry,
+    now: Date.UTC(2026, 10, 1, 5, 0),
+  });
+  assert.equal(again.refs[0].id, late.id);
+  assert.notEqual(again.refs[0].id, early.id);
+  // Two clusters never share one remembered identity.
+  const two = resolveProviderEvents({
+    items: [at("Cricket Live", "2026-11-01 07:00:00", "a"), at("Cricket Live", "2026-11-01 17:00:00", "b")],
+    previousRegistry: first.registry,
+    now: Date.UTC(2026, 10, 1, 14, 0),
+  });
+  assert.equal(two.refs.length, 2);
+  assert.equal(new Set(two.refs.map((x) => x.id)).size, 2);
+});
+
+test("a clock-only event does not inherit another clock time's identity", () => {
+  const morning = resolveProviderEvents({ items: [at("10am Cricket Live", "", "a")], now: Date.UTC(2026, 9, 31, 13, 0) });
+  const later = resolveProviderEvents({
+    items: [at("11pm Cricket Live", "", "b")],
+    previousRegistry: morning.registry,
+    now: Date.UTC(2026, 9, 31, 22, 0),
+  });
+  assert.equal(later.refs.length, 1);
+  assert.notEqual(later.refs[0].id, morning.refs[0].id);
+  assert.equal(later.refs[0].start, Date.UTC(2026, 9, 31, 23, 0));
+});
+
+test("a full registry fails closed: estimated events that cannot be remembered are not published", () => {
+  const now = Date.UTC(2026, 9, 31, 13, 0);
+  const make = (n, at_) => Array.from({ length: n }, (_, i) => {
+    const r = row(`PPV| LIVE EVENT ${i} [EventUnique${i} Spectacular${i}]`, "VIP | PPV-SPORT EVENTS");
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, { ...opts, now: at_ }) };
+  });
+  const first = resolveProviderEvents({ items: make(2010, now), now });
+  assert.equal(first.status.unremembered, 11, "2000 slots (one is the meta entry) fit; the rest are dropped");
+  const later = Date.UTC(2026, 9, 31, 19, 0);
+  const second = resolveProviderEvents({ items: make(2010, later), previousRegistry: first.registry, now: later });
+  assert.equal(second.refs.length, 0, "nothing that expired is re-created because it was evicted");
+  assert.equal(second.status.expired + second.status.unremembered, 2010);
+});
+
+test("the cluster result does not depend on provider order, and abbreviations do not chain different names", () => {
+  const rows = ["Canelo Alvarez vs Christian Mbilli", "Canelo vs Mbilli", "Canelo Junior vs Mbilli"].map((t, i) => at(t, "2026-10-31 15:00:00", `s${i}`));
+  const shapes = new Set();
+  for (const order of [[0, 1, 2], [1, 0, 2], [2, 1, 0], [2, 0, 1], [1, 2, 0], [0, 2, 1]]) {
+    const clusters = clusterProviderEvents(order.map((i) => rows[i]));
+    shapes.add(clusters.map((c) => c.items.map((x) => x.parsed.title).sort().join("+")).sort().join(" | "));
+  }
+  assert.equal(shapes.size, 1, [...shapes].join("\n"));
+  const [shape] = shapes;
+  assert.ok(!shape.includes("Canelo Alvarez vs Christian Mbilli+Canelo Junior"), "the two specific names must not merge");
+});
+
+test("DST: a repeated hour takes the first occurrence, a skipped hour shifts forward", () => {
+  assert.equal(zonedTimeMs("Europe/London", 2026, 3, 29, 1, 30), Date.UTC(2026, 2, 29, 1, 30), "01:30 does not exist -> 02:30 BST");
+  assert.equal(zonedTimeMs("Europe/London", 2026, 10, 25, 1, 30), Date.UTC(2026, 9, 25, 0, 30), "01:30 happens twice -> the BST one");
+  assert.equal(zonedTimeMs("America/New_York", 2026, 3, 8, 2, 30), Date.UTC(2026, 2, 8, 7, 30), "02:30 does not exist -> 03:30 EDT");
+  assert.equal(zonedTimeMs("America/New_York", 2026, 11, 1, 1, 30), Date.UTC(2026, 10, 1, 5, 30), "01:30 happens twice -> the EDT one");
+  assert.equal(zonedTimeMs("Europe/London", 2026, 7, 1, 20, 0), Date.UTC(2026, 6, 1, 19, 0));
+});
+
+test("an authoritative timestamp does not strip date-like words from the title", () => {
+  const parsed = parseProviderEventRow(row("PPV 01 [The Dec 25 5pm Showdown (2026-10-31 15:00:00)]"), opts);
+  assert.equal(parsed.title, "The Dec 25 5pm Showdown");
+  assert.equal(parsed.start, Date.UTC(2026, 9, 31, 15, 0));
+});
+
+test("provider events from a preserved guide are removed once they are no longer published", () => {
+  const guide = [
+    '<?xml version="1.0"?>', "<tv>",
+    '  <channel id="justone.pevent.old-event-aaaaaaaa"><display-name>Old</display-name></channel>',
+    '  <channel id="justone.pevent.live-event-bbbbbbbb"><display-name>Live</display-name></channel>',
+    '  <channel id="justone.event.dlhd-cccccccc"><display-name>DLHD event</display-name></channel>',
+    '  <channel id="justone.bbc"><display-name>BBC One</display-name></channel>',
+    '  <programme start="20261031100000 +0000" stop="20261031130000 +0000" channel="justone.pevent.old-event-aaaaaaaa"><title>Old</title></programme>',
+    '  <programme start="20261031100000 +0000" stop="20261031130000 +0000" channel="justone.pevent.live-event-bbbbbbbb"><title>Live</title></programme>',
+    '  <programme start="20261031100000 +0000" stop="20261031130000 +0000" channel="justone.bbc"><title>News</title></programme>',
+    "</tv>",
+  ].join("\n");
+  const live = [{ referenceKind: "event", tvgId: "justone.pevent.live-event-bbbbbbbb" }];
+  const cleaned = removeStaleProviderEvents(guide, live);
+  assert.ok(!cleaned.includes("old-event-aaaaaaaa"));
+  assert.ok(cleaned.includes("live-event-bbbbbbbb"));
+  assert.ok(cleaned.includes("justone.event.dlhd-cccccccc"), "DLHD event entries are untouched");
+  assert.ok(cleaned.includes('channel="justone.bbc"'));
+  // Feature switched off: no provider events are published, none may survive.
+  assert.ok(!removeStaleProviderEvents(guide, []).includes("justone.pevent."));
+  assert.ok(!syncGuideEvents(guide, []).includes("justone.pevent."));
+});
+
+test("a retained variant only follows the same occurrence of an event", () => {
+  const old = { event: { start: Date.UTC(2026, 9, 31, 10, 0) } };
+  assert.equal(sameProviderOccurrence(old, { event: { start: Date.UTC(2026, 9, 31, 12, 0) } }), true);
+  assert.equal(sameProviderOccurrence(old, { event: { start: Date.UTC(2026, 10, 1, 10, 0) } }), false);
 });

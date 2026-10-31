@@ -80,19 +80,31 @@ function calendarValid(year, month, day, hour, minute, second = 0) {
   return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day;
 }
 
+function wallClockMatches(ms, zone, year, month, day, hour, minute, second) {
+  const p = zoneParts(ms, zone);
+  return p.year === year && p.month === month && p.day === day && p.hour === hour && p.minute === minute && p.second === second;
+}
+
 /**
  * Wall-clock time in `zone` -> epoch milliseconds, or null for an impossible
- * calendar date (Feb 30, hour 25...). A wall-clock time skipped by a DST jump
- * resolves to the instant just after the jump; a repeated hour resolves to the
- * first occurrence.
+ * calendar date (Feb 30, hour 25...).
+ *
+ * DST policy (same as java.time): a repeated hour (clocks going back) resolves to
+ * its first occurrence; a time that does not exist (clocks going forward) is
+ * shifted forward by the length of the gap, e.g. London 01:30 on the spring change
+ * is 02:30 BST, New York 02:30 is 03:30 EDT.
  */
 export function zonedTimeMs(zone, year, month, day, hour, minute, second = 0) {
   if (!calendarValid(year, month, day, hour, minute, second)) return null;
   const tz = validZone(zone);
   const base = Date.UTC(year, month - 1, day, hour, minute, second);
-  let guess = base;
-  for (let i = 0; i < 2; i++) guess = base - zoneOffsetMs(guess, tz);
-  return guess;
+  const beforeOffset = zoneOffsetMs(base - 24 * HOUR, tz);
+  const afterOffset = zoneOffsetMs(base + 24 * HOUR, tz);
+  const first = base - beforeOffset;
+  if (wallClockMatches(first, tz, year, month, day, hour, minute, second)) return first;
+  const second_ = base - afterOffset;
+  if (wallClockMatches(second_, tz, year, month, day, hour, minute, second)) return second_;
+  return first; // inside a DST gap
 }
 
 function to24h(hour, ampm) {
@@ -205,6 +217,11 @@ function parseEventName(raw, row, { now = Date.now(), timezone = "UTC", groupRe 
   let start = null;
   let timeSource = null;
 
+  // An explicit schedule that is present but unusable (impossible date, bad offset,
+  // weekday that contradicts the date, a zone we cannot honour) makes the row
+  // ineligible: it must not silently turn into an event that "starts now".
+  let explicitButInvalid = false;
+
   // Full timestamp, optionally with a "Z" / "+01:00" offset; without one it is
   // wall-clock time in the configured provider time zone.
   const iso = /\(\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?\s*\)/i.exec(inner);
@@ -212,29 +229,40 @@ function parseEventName(raw, row, { now = Date.now(), timezone = "UTC", groupRe 
     const parts = [Number(iso[1]), Number(iso[2]), Number(iso[3]), Number(iso[4]), Number(iso[5]), Number(iso[6] || 0)];
     if (iso[7]) {
       const offset = /^([+-])(\d{2}):?(\d{2})?$/.exec(iso[7]);
-      const offsetMs = offset ? (offset[1] === "-" ? -1 : 1) * (Number(offset[2]) * 60 + Number(offset[3] || 0)) * 60_000 : 0;
-      start = calendarValid(...parts) ? Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]) - offsetMs : null;
+      const hours = offset ? Number(offset[2]) : 0;
+      const minutes = offset ? Number(offset[3] || 0) : 0;
+      const offsetOk = !offset || (hours <= 14 && minutes <= 59);
+      const offsetMs = offset ? (offset[1] === "-" ? -1 : 1) * (hours * 60 + minutes) * 60_000 : 0;
+      start = offsetOk && calendarValid(...parts) ? Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]) - offsetMs : null;
     } else {
       start = zonedTimeMs(timezone, ...parts);
     }
     if (start != null) timeSource = "title-timestamp";
+    else explicitButInvalid = true;
     inner = text(inner.replace(iso[0], " "));
   }
 
   // Month/day with a time, with or without a weekday and the provider's
-  // "| UPCOMING |" marker: "Sun May 4th 4:00PM", "May 4 at 16:00".
+  // "| UPCOMING |" marker: "Sun May 4th 4:00PM", "May 4 at 16:00". Skipped when a
+  // full timestamp was already read, so date-like words in a title ("The Dec 25
+  // 5pm Showdown") are never stripped.
   inner = inner.replace(/\*?\s*\|\s*UPCOMING\s*\|/i, " ");
-  const dated = /(?:\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?,?\s+)?\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+|@\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*(ET|EST|EDT|CT|CST|CDT|PT|PST|PDT|MT|MST|MDT|BST|CET|CEST|GMT|UTC))?(?![\w:])/i.exec(inner);
+  const dated = start == null && !explicitButInvalid
+    ? /(?:\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?,?\s+)?\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+|@\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*(ET|EST|EDT|CT|CST|CDT|PT|PST|PDT|MT|MST|MDT|BST|CET|CEST|GMT|UTC))?(?![\w:])/i.exec(inner)
+    : null;
   if (dated && (dated[5] != null || dated[6])) {
-    // A US/EU zone abbreviation means the clock is not in the configured zone: strip it, but do not guess.
-    if (start == null && !dated[7]) {
+    if (dated[7]) {
+      explicitButInvalid = true; // a clock in another zone than the configured one: not guessed
+    } else {
       const weekday = dated[1] ? WEEKDAYS.indexOf(dated[1].toLowerCase()) : null;
       const month = MONTHS.get(dated[2].toLowerCase());
       start = monthDayMs(timezone, now, month, Number(dated[3]), to24h(dated[4], dated[6]), Number(dated[5] || 0), weekday);
       if (start != null) timeSource = "title-date";
+      else explicitButInvalid = true;
     }
     inner = text(inner.replace(dated[0], " "));
   }
+  if (explicitButInvalid) return null;
 
   inner = inner.replace(LEADING_TAG_RE, "").replace(QUALITY_PREFIX_RE, "");
   inner = text(inner.replace(/^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\s*[-:|]\s*/i, ""));
@@ -366,7 +394,7 @@ function deserializeSignature(stored) {
 
 const MAX_START_GAP_MS = 8 * HOUR;
 
-function startsCompatible(a, b) {
+export function startsCompatible(a, b) {
   return a == null || b == null || Math.abs(a - b) <= MAX_START_GAP_MS;
 }
 
@@ -379,55 +407,103 @@ function signatureSides(signature) {
   return signature.kind === "match" ? [signature.a, signature.b] : [signature.tokens];
 }
 
-function smallest(set) {
-  let best = null;
-  for (const token of set) if (best == null || token < best) best = token;
-  return best;
+function signatureKey(signature) {
+  const sides = signatureSides(signature).map((side) => [...side].sort().join(" "));
+  return `${signature.kind}|${signature.qualifier}|${sides.sort().join("||")}`;
+}
+
+/**
+ * Candidate lookup for signature matching without comparing against everything.
+ *
+ * Two signatures match only when, side by side, one token set contains the other.
+ * So a stored signature is always reachable one of two ways: (1) the query side is
+ * the smaller one, so ANY of its tokens occurs in the stored signature (use the
+ * one with the smallest bucket); (2) the stored side is the smaller one, so the
+ * token chosen for it when it was added occurs in the query. Choosing the globally
+ * rarest token (`freq`) keeps those buckets small even when every event shares
+ * words such as "team" or "club".
+ */
+function createSignatureIndex(freq) {
+  const byAll = new Map();
+  const byChosen = new Map();
+  const push = (map, key, payload) => {
+    const list = map.get(key);
+    if (list) { if (!list.includes(payload)) list.push(payload); } else map.set(key, [payload]);
+  };
+  const chosenToken = (side) => {
+    let best = null;
+    let bestFreq = Infinity;
+    for (const token of side) {
+      const f = freq.get(token) || 0;
+      if (f < bestFreq || (f === bestFreq && token < best)) { best = token; bestFreq = f; }
+    }
+    return best;
+  };
+  return {
+    add(signature, payload) {
+      for (const token of signatureTokens(signature)) push(byAll, token, payload);
+      for (const side of signatureSides(signature)) push(byChosen, chosenToken(side), payload);
+    },
+    candidates(signature) {
+      const found = new Set();
+      for (const side of signatureSides(signature)) {
+        let rarest = null;
+        let rarestSize = Infinity;
+        for (const token of side) {
+          const size = byAll.get(token)?.length ?? 0;
+          if (size < rarestSize) { rarest = token; rarestSize = size; }
+        }
+        if (rarest != null) for (const payload of byAll.get(rarest) || []) found.add(payload);
+        for (const token of side) for (const payload of byChosen.get(token) || []) found.add(payload);
+      }
+      return found;
+    },
+  };
 }
 
 /**
  * Group rows that describe the same event.
  *
- * Two signatures match only when, side by side, one token set contains the other.
- * So a matching cluster is always reachable one of two ways, and both lookups use
- * small buckets: (1) the item side is the smaller one, so any of its tokens occurs
- * in the cluster (use the rarest); (2) the cluster side is the smaller one, so its
- * smallest token occurs among the item's tokens. Common words ("team", "club")
- * therefore never force a scan of every cluster.
+ * Rows are processed in a fixed order (most specific title first), so the result
+ * does not depend on the order of providers. A row joins a cluster only if it is
+ * compatible with every distinct title already in it, which keeps abbreviations
+ * that merely bridge two different names ("Canelo vs Mbilli" between "Canelo
+ * Alvarez vs Mbilli" and "Canelo Junior vs Mbilli") from chaining them together.
+ * `stats.comparisons` counts signature comparisons (used by tests).
  */
-export function clusterProviderEvents(items) {
-  const clusters = [];
-  const byAll = new Map();     // every token of a cluster's signature -> clusters
-  const byChosen = new Map();  // smallest token of each cluster side -> clusters
-  const push = (map, key, cluster) => {
-    const list = map.get(key);
-    if (list) list.push(cluster); else map.set(key, [cluster]);
-  };
-  for (const item of items) {
+export function clusterProviderEvents(items, stats = null) {
+  const entries = items.map((item) => {
     const signature = eventSignature(item.parsed.title, item.parsed.qualifier);
-    const sides = signatureSides(signature);
-    const candidates = new Set();
-    for (const side of sides) {
-      let rarest = null;
-      for (const token of side) {
-        const size = byAll.get(token)?.length ?? 0;
-        if (rarest == null || size < rarest.size) rarest = { token, size };
-      }
-      if (rarest) for (const candidate of byAll.get(rarest.token) || []) candidates.add(candidate);
-      for (const token of side) for (const candidate of byChosen.get(token) || []) candidates.add(candidate);
-    }
+    return { item, signature, key: signatureKey(signature), size: signatureTokens(signature).length };
+  });
+  const freq = new Map();
+  for (const entry of entries) for (const token of new Set(signatureTokens(entry.signature))) freq.set(token, (freq.get(token) || 0) + 1);
+  entries.sort((a, b) => b.size - a.size
+    || (a.item.parsed.title < b.item.parsed.title ? -1 : a.item.parsed.title > b.item.parsed.title ? 1 : 0)
+    || String(a.item.source?.id).localeCompare(String(b.item.source?.id))
+    || String(a.item.row?.url).localeCompare(String(b.item.row?.url)));
+
+  const clusters = [];
+  const index = createSignatureIndex(freq);
+  for (const { item, signature, key } of entries) {
     let cluster = null;
-    for (const candidate of candidates) {
-      if (signaturesMatch(candidate.signature, signature) && startsCompatible(candidate.anchor, item.parsed.start)) {
-        cluster = candidate;
-        break;
+    for (const candidate of index.candidates(signature)) {
+      if (!startsCompatible(candidate.anchor, item.parsed.start)) continue;
+      let compatible = true;
+      for (const [knownKey, known] of candidate.sigs) {
+        if (knownKey === key) continue;
+        if (stats) stats.comparisons = (stats.comparisons || 0) + 1;
+        if (!signaturesMatch(known, signature)) { compatible = false; break; }
       }
+      if (compatible) { cluster = candidate; break; }
     }
     if (!cluster) {
-      cluster = { signature, items: [], starts: [], anchor: null, start: null, core: null };
+      cluster = { signature, sigs: new Map(), items: [], starts: [], anchor: null, start: null, core: null };
       clusters.push(cluster);
-      for (const token of signatureTokens(signature)) push(byAll, token, cluster);
-      for (const side of sides) push(byChosen, smallest(side), cluster);
+    }
+    if (!cluster.sigs.has(key)) {
+      cluster.sigs.set(key, signature);
+      index.add(signature, cluster);
     }
     cluster.items.push(item);
     // Tokens every member agrees on: an order-independent basis for the event id.
@@ -477,21 +553,67 @@ export function providerEventRetainable(channel, { now = Date.now(), tailMinutes
   return Number.isFinite(end) && now <= end + tailMinutes * MINUTE;
 }
 
+/** Two channels with the same id are the same occurrence only if their start times are compatible. */
+export function sameProviderOccurrence(a, b) {
+  const start = (channel) => (Number.isFinite(Number(channel?.event?.start)) ? Number(channel.event.start) : null);
+  return startsCompatible(start(a), start(b));
+}
+
 // Registry: identity and time memory carried between refreshes.
-const REAPPEAR_GAP_MS = 12 * HOUR;       // absent this long => the same title is a new occurrence
+const META_KEY = "__meta";
+const REAPPEAR_GAP_MS = 12 * HOUR;       // absent from successful scans this long => a new occurrence
 const REGISTRY_MAX_AGE_MS = 3 * 24 * HOUR;
 const REGISTRY_MAX_ENTRIES = 2000;
+const CLOCK_TOLERANCE_MS = 2 * HOUR;
 
-function findPreviousIdentity(registry, signature, start, clockOnly) {
-  for (const [id, entry] of Object.entries(registry || {})) {
-    const stored = deserializeSignature(entry?.sig);
-    if (!stored || !signaturesMatch(stored, signature)) continue;
-    // A clock-only time ("10am") is re-derived as "the nearest 10am" on each
-    // refresh, so it can move by a day without being a different event.
-    const sameClock = clockOnly && entry.clock === true;
-    if (sameClock || startsCompatible(Number(entry.start) || null, start)) return { id, entry };
+function clockOfDayDistance(a, b) {
+  const diff = Math.abs(a - b) % (24 * HOUR);
+  return Math.min(diff, 24 * HOUR - diff);
+}
+
+/**
+ * Pair clusters with the identities remembered from earlier refreshes. Every pair
+ * that could be the same occurrence is scored by how close the start times are,
+ * and the closest pairs are assigned first, each identity at most once.
+ */
+function assignPreviousIdentities(clusters, previousRegistry) {
+  const previous = [];
+  const freq = new Map();
+  for (const [id, entry] of Object.entries(previousRegistry || {})) {
+    if (id === META_KEY) continue;
+    const signature = deserializeSignature(entry?.sig);
+    if (signature) previous.push({ id, entry, signature });
   }
-  return null;
+  const index = createSignatureIndex(freq);
+  for (const item of previous) index.add(item.signature, item);
+
+  const pairs = [];
+  clusters.forEach((cluster, clusterIndex) => {
+    const clockOnly = cluster.clockOnly;
+    for (const candidate of index.candidates(cluster.signature)) {
+      if (!signaturesMatch(candidate.signature, cluster.signature)) continue;
+      const prevStart = Number.isFinite(Number(candidate.entry.start)) ? Number(candidate.entry.start) : null;
+      let distance;
+      if (clockOnly && candidate.entry.clock === true && prevStart != null && cluster.start != null) {
+        // "10am" is re-derived as the nearest 10am each refresh, so it may move by whole
+        // days; it is the same event only if the clock time itself still agrees.
+        distance = clockOfDayDistance(prevStart, cluster.start);
+        if (distance > CLOCK_TOLERANCE_MS) continue;
+      } else if (startsCompatible(prevStart, cluster.start)) {
+        distance = prevStart == null || cluster.start == null ? 0 : Math.abs(prevStart - cluster.start);
+      } else continue;
+      pairs.push({ distance, clusterIndex, candidate });
+    }
+  });
+  pairs.sort((a, b) => a.distance - b.distance || a.candidate.id.localeCompare(b.candidate.id) || a.clusterIndex - b.clusterIndex);
+  const assigned = new Map();
+  const taken = new Set();
+  for (const pair of pairs) {
+    if (assigned.has(pair.clusterIndex) || taken.has(pair.candidate.id)) continue;
+    assigned.set(pair.clusterIndex, pair.candidate);
+    taken.add(pair.candidate.id);
+  }
+  return assigned;
 }
 
 /**
@@ -499,10 +621,12 @@ function findPreviousIdentity(registry, signature, start, clockOnly) {
  *
  * items:            [{ source, row, parsed }] for rows DLHD did not match.
  * dlhdEvents:       standalone DLHD event references (clusters that match one are attached to it).
- * previousRegistry: { [eventId]: { firstSeen, lastSeen, start, sig } }. It keeps an event's
+ * previousRegistry: { [eventId]: { firstSeen, lastSeen, start, clock, sig } }. It keeps an event's
  *                   identity stable across refreshes (whichever provider row arrives first),
  *                   remembers the estimated start of events whose rows carry no date, and
  *                   stops an expired event from being re-created.
+ * sourcesIncomplete: true when a source failed this refresh; an event missing from a failed
+ *                   source has not been confirmed gone, so gaps are not treated as disappearance.
  */
 export function resolveProviderEvents({
   items = [],
@@ -512,11 +636,10 @@ export function resolveProviderEvents({
   leadMinutes = 240,
   tailMinutes = 60,
   maxEvents = 150,
+  sourcesIncomplete = false,
 } = {}) {
   const rows = [];
   const refs = [];
-  const built = [];
-  const registry = {};
   const status = {
     candidateRows: items.length,
     clusters: 0,
@@ -526,6 +649,7 @@ export function resolveProviderEvents({
     notYetActive: 0,
     estimatedTimes: 0,
     capped: 0,
+    unremembered: 0,
     mappings: 0,
   };
 
@@ -534,10 +658,10 @@ export function resolveProviderEvents({
     signature: eventSignature(ref.name, qualifierOf(ref.name)),
   }));
 
+  // 1. Cluster, then attach clusters that DLHD already lists.
+  const fresh = [];
   for (const cluster of clusterProviderEvents(items)) {
     status.clusters += 1;
-    const lead = displayTitle(cluster);
-
     const attached = dlhdSignatures.find((candidate) =>
       signaturesMatch(candidate.signature, cluster.signature) && startsCompatible(candidate.ref.start ?? null, cluster.start));
     if (attached) {
@@ -545,53 +669,95 @@ export function resolveProviderEvents({
       for (const item of cluster.items) rows.push({ source: item.source, row: item.row, reference: attached.ref, matchReason: "provider-event-dlhd" });
       continue;
     }
-
-    const category = categoryFor(lead.group);
     const dated = cluster.items.some((x) => x.parsed.timeSource === "title-timestamp" || x.parsed.timeSource === "title-date");
-    const clockOnly = !dated && cluster.start != null;
+    cluster.dated = dated;
+    cluster.clockOnly = !dated && cluster.start != null;
+    fresh.push(cluster);
+  }
 
-    // Identity: reuse the previous id for the same event (matched by signature, not
-    // by which row came first); otherwise mint one from the cluster's own tokens.
-    const previous = findPreviousIdentity(previousRegistry, cluster.signature, cluster.start, clockOnly);
-    const continuing = previous && now - Number(previous.entry.lastSeen || 0) <= REAPPEAR_GAP_MS;
+  // 2. Reconcile with remembered identities (best start-time match, each identity once).
+  const assigned = assignPreviousIdentities(fresh, previousRegistry);
+  const previousRun = Number(previousRegistry?.[META_KEY]?.lastRun) || 0;
+  const usedIds = new Set(Object.keys(previousRegistry || {}));
+  const mint = (base) => {
+    let id = base;
+    for (let n = 1; usedIds.has(id); n++) id = `${base}-${hash(`${base}|${n}`, 4)}`;
+    return id;
+  };
+
+  const planned = [];
+  fresh.forEach((cluster, clusterIndex) => {
+    const lead = displayTitle(cluster);
+    const category = categoryFor(lead.group);
+    const previous = assigned.get(clusterIndex) || null;
+    // Same occurrence if it was seen in the previous successful run, or recently enough, or
+    // a source is down (absence from a failed source is not a confirmed disappearance).
+    const continuing = Boolean(previous) && (
+      sourcesIncomplete
+      || Number(previous.entry.lastSeen || 0) >= previousRun
+      || now - Number(previous.entry.lastSeen || 0) <= REAPPEAR_GAP_MS);
+
     let id = previous?.id;
     if (!id) {
       const core = cluster.core?.size ? [...cluster.core] : signatureTokens(cluster.signature);
       const sigKey = normalize(`${core.sort().join(" ")}|${cluster.signature.qualifier}`);
-      const dayKey = dated ? new Date(cluster.start).toISOString().slice(0, 10) : "";
-      id = `pevent-${slug(lead.title).slice(0, 48)}-${hash(`${sigKey}|${dayKey}`, 8)}`;
+      // Hour precision: the same title at 08:00 and 18:00 are different occurrences.
+      const when = cluster.dated ? new Date(cluster.start).toISOString().slice(0, 13) : "";
+      id = mint(`pevent-${slug(lead.title).slice(0, 48)}-${hash(`${sigKey}|${when}`, 8)}`);
+      usedIds.add(id);
     }
-    const short = id.replace(/^pevent-/, "").replace(/-[0-9a-f]{8}$/, "");
-    const suffix = id.slice(-8);
 
     let start = cluster.start;
     let timeSource = start == null ? null : (cluster.items.find((x) => x.parsed.start != null)?.parsed.timeSource || "title-timestamp");
-    let firstSeen = continuing ? Number(previous.entry.firstSeen) || now : now;
-    if (clockOnly && continuing && Number.isFinite(Number(previous.entry.start))) {
+    const firstSeen = continuing ? Number(previous.entry.firstSeen) || now : now;
+    const previousStart = continuing && Number.isFinite(Number(previous.entry.start)) ? Number(previous.entry.start) : null;
+    if (cluster.clockOnly && previousStart != null) {
       // "10am" with no date: keep the day it was first resolved to instead of
       // re-deriving "the nearest 10am" on every refresh (which drifts across midnight).
-      start = Number(previous.entry.start);
+      start = previousStart;
     }
     const estimated = start == null;
     if (estimated) {
       // No row carries a time and DLHD does not list the event: treat it as
       // starting when it first appeared in the provider playlist.
-      start = continuing && Number.isFinite(Number(previous.entry.start)) ? Number(previous.entry.start) : firstSeen;
+      start = previousStart ?? firstSeen;
       timeSource = "first-seen";
       status.estimatedTimes += 1;
     }
     const end = start + eventDurationMinutes(category, lead.title) * MINUTE;
-
-    // Remember identity/time only where it is needed: events that were published,
-    // or whose time is an estimate/clock guess (so an expired slot is not re-created).
     const expired = now > end + tailMinutes * MINUTE;
     const notYet = now < start - leadMinutes * MINUTE;
-    if (estimated || clockOnly || (!expired && !notYet)) {
-      registry[id] = { firstSeen, lastSeen: now, start, clock: clockOnly, sig: serializeSignature(cluster.signature) };
-    }
-    if (expired) { status.expired += 1; continue; }
-    if (notYet) { status.notYetActive += 1; continue; }
+    planned.push({
+      cluster, lead, category, id, start, end, timeSource, estimated, expired, notYet,
+      known: Boolean(previous),
+      needsMemory: estimated || cluster.clockOnly,
+      entry: { firstSeen, lastSeen: now, start, clock: cluster.clockOnly === true, sig: serializeSignature(cluster.signature) },
+    });
+  });
 
+  // 3. Decide what the (bounded) registry remembers. An event whose time is only an
+  // estimate must be remembered or it would look brand new on every refresh, so when
+  // the registry is full, estimated events that do not fit are not published at all.
+  const wantsEntry = (p) => p.needsMemory || (!p.expired && !p.notYet);
+  const keepOrder = planned.filter(wantsEntry).sort((a, b) =>
+    (b.known - a.known) || (b.needsMemory - a.needsMemory) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const registry = {};
+  for (const plan of keepOrder.slice(0, REGISTRY_MAX_ENTRIES - 1)) registry[plan.id] = plan.entry;
+  // Entries not seen this refresh are carried over briefly (a short outage keeps estimates).
+  for (const [id, entry] of Object.entries(previousRegistry || {})) {
+    if (id === META_KEY || registry[id]) continue;
+    if (Object.keys(registry).length >= REGISTRY_MAX_ENTRIES - 1) break;
+    if (now - Number(entry?.lastSeen || 0) < REGISTRY_MAX_AGE_MS) registry[id] = entry;
+  }
+  registry[META_KEY] = { lastRun: now };
+
+  // 4. Publish.
+  const built = [];
+  for (const plan of planned) {
+    if (plan.needsMemory && !registry[plan.id]) { status.unremembered += 1; continue; }
+    if (plan.expired) { status.expired += 1; continue; }
+    if (plan.notYet) { status.notYetActive += 1; continue; }
+    const { cluster, lead, category, id } = plan;
     const name = lead.competition ? `${lead.competition}: ${lead.title}` : lead.title;
     const aliases = [...new Set([lead.title, ...cluster.items.map((x) => x.parsed.title)])];
     const ref = {
@@ -599,7 +765,7 @@ export function resolveProviderEvents({
       source: "provider",
       id,
       key: normalize(`event|${id}`),
-      tvgId: `justone.event.${short}.${suffix}`,
+      tvgId: `justone.pevent.${id.replace(/^pevent-/, "")}`,
       dlhdId: "",
       name,
       logo: "",
@@ -607,13 +773,13 @@ export function resolveProviderEvents({
       group: `Events | ${category}`,
       linkedChannels: [],
       linkedStaticChannels: [],
-      start,
-      end,
-      time: clockLabel(start),
+      start: plan.start,
+      end: plan.end,
+      time: clockLabel(plan.start),
       category,
-      upcoming: start > now,
-      timeSource,
-      timeEstimated: estimated,
+      upcoming: plan.start > now,
+      timeSource: plan.timeSource,
+      timeEstimated: plan.estimated,
     };
     built.push({
       ref,
@@ -623,21 +789,13 @@ export function resolveProviderEvents({
 
   // Safety cap: keep the events carried by the most slots (the big ones), then the
   // ones closest to now, so a very large provider list cannot flood the lineup.
-  built.sort((a, b) => b.rows.length - a.rows.length || Math.abs(a.ref.start - now) - Math.abs(b.ref.start - now));
+  built.sort((a, b) => b.rows.length - a.rows.length || Math.abs(a.ref.start - now) - Math.abs(b.ref.start - now) || (a.ref.id < b.ref.id ? -1 : 1));
   for (const entry of built.slice(0, maxEvents)) {
     refs.push(entry.ref);
     rows.push(...entry.rows);
   }
   status.capped = Math.max(0, built.length - maxEvents);
   status.created = refs.length;
-
-  // Carry over entries not seen this refresh for a short while (so a brief provider
-  // outage does not forget an estimated start), then bound the whole registry.
-  for (const [id, entry] of Object.entries(previousRegistry || {})) {
-    if (!registry[id] && now - Number(entry?.lastSeen || 0) < REGISTRY_MAX_AGE_MS) registry[id] = entry;
-  }
-  const entries = Object.entries(registry).sort((a, b) => Number(b[1].lastSeen) - Number(a[1].lastSeen)).slice(0, REGISTRY_MAX_ENTRIES);
-
   status.mappings = rows.length;
-  return { rows, refs, registry: Object.fromEntries(entries), status };
+  return { rows, refs, registry, status };
 }

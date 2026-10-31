@@ -211,8 +211,28 @@ function regexEscape(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function syncGuideEvents(guideXml, channels) {
+// Provider-only events use the "justone.pevent." id prefix. A preserved
+// last-known-good guide can still carry ones that have since expired or been
+// switched off, so they are removed here unless they are currently published.
+export function removeStaleProviderEvents(guideXml, channels) {
   let xml = String(guideXml || "");
+  const live = new Set((channels || []).filter((channel) => channel?.referenceKind === "event").map((channel) => channel.tvgId));
+  const staleIds = new Set();
+  for (const match of xml.matchAll(/\b(?:id|channel)=(?:"(justone\.pevent\.[^"]*)"|'(justone\.pevent\.[^']*)')/g)) {
+    const id = match[1] || match[2];
+    if (!live.has(id)) staleIds.add(id);
+  }
+  for (const id of staleIds) {
+    const escaped = regexEscape(id);
+    xml = xml
+      .replace(new RegExp(`\\s*<channel\\b[^>]*\\bid=(?:"${escaped}"|'${escaped}')[^>]*>[\\s\\S]*?<\\/channel>\\s*`, "gi"), "\n")
+      .replace(new RegExp(`\\s*<programme\\b(?=[^>]*\\bchannel=(?:"${escaped}"|'${escaped}'))[^>]*>[\\s\\S]*?<\\/programme>\\s*`, "gi"), "\n");
+  }
+  return xml;
+}
+
+export function syncGuideEvents(guideXml, channels) {
+  let xml = removeStaleProviderEvents(guideXml, channels);
   const events = (channels || []).filter((channel) => channel?.referenceKind === "event" && channel?.tvgId);
   for (const channel of events) {
     const id = regexEscape(channel.tvgId);

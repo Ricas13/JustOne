@@ -18,7 +18,7 @@ import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, vari
 import { enrichAndBuildGuide, epgHintsForChannelId, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
 import { createDlhdMatcher, isEventLikeRow } from "./dlhd-matcher.js";
-import { excludeClaimedRows, parseProviderEventRow, providerEventRetainable, resolveProviderEvents } from "./provider-events.js";
+import { excludeClaimedRows, parseProviderEventRow, providerEventRetainable, resolveProviderEvents, sameProviderOccurrence } from "./provider-events.js";
 import { loadCachedXmltv, saveCachedXmltv } from "./upstream-xmltv-cache.js";
 import { text, timeoutSignal } from "./util.js";
 
@@ -438,8 +438,7 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
 
         // Rows DLHD did not recognise as an event may still be a provider-listed
         // event slot ("LIVE EVENT 03 [Title]"); they are resolved after the scan.
-        if (providerEventOptions && !acceptedEvent && providerEventRows.length < providerEventOptions.maxRows
-            && (row.tvgName || row.name || "").includes("[")) {
+        if (providerEventOptions && !acceptedEvent && providerEventRows.length < providerEventOptions.maxRows) {
           const parsed = parseProviderEventRow(row, providerEventOptions);
           if (parsed) providerEventRows.push({ source, row, parsed });
         }
@@ -890,6 +889,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
       leadMinutes: config.providerEvents.leadMinutes,
       tailMinutes: config.providerEvents.tailMinutes,
       maxEvents: config.providerEvents.maxEvents,
+      sourcesIncomplete: sourceStatus.some((status) => !status.ok),
     });
     sourceRows.push(...providerEvents.rows);
     for (const row of providerEvents.rows) matchedRefIds.add(row.reference.id);
@@ -946,9 +946,15 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   if (failedSourceIds.size) {
     const byId = new Map(channels.map((channel) => [channel.id, channel]));
     for (const old of previous.channels || []) {
-      const retainableProviderEvent = providerEventOptions
-        && providerEventRetainable(old, { now: refreshNow, tailMinutes: config.providerEvents.tailMinutes });
-      if (allowedDlhdIds && !retainableProviderEvent && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
+      if (old.referenceKind === "event" && old.event?.source === "provider") {
+        // Provider-only events: kept only while their own window is still open, and
+        // only for the same occurrence. Their id may be reused by a later occurrence
+        // of the same title, so presence in the current catalogue is not enough.
+        if (!providerEventOptions
+          || !providerEventRetainable(old, { now: refreshNow, tailMinutes: config.providerEvents.tailMinutes })) continue;
+        const sameId = byId.get(old.id);
+        if (sameId && !sameProviderOccurrence(old, sameId)) continue;
+      } else if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
       if (!existingChannelAllowedForCountries(old, allowedCountries)) continue;
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;
