@@ -130,7 +130,7 @@ function londonDateMs(year, month, day, hour, minute) {
   for (let i=0;i<2;i++) guess = base - londonOffsetMinutes(guess)*60_000;
   return guess;
 }
-function eventDurationMinutes(category, title) {
+export function eventDurationMinutes(category, title) {
   const hay = normalize(`${category} ${title}`);
   if (/\b(?:cricket|test match)\b/.test(hay)) return 480;
   if (/\b(?:golf)\b/.test(hay)) return 360;

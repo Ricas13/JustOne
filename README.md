@@ -27,6 +27,28 @@ DLHD is used only for **names, availability, event relationships and optional lo
 
 If `DLHD_API_KEY` is configured, JustOne prefers DLHD's structured channels/schedule API. Otherwise it reads the public 24/7 catalogue and public schedule pages.
 
+## Provider-listed events (PPV / live-event slots)
+
+Most IPTV providers publish every live event on a numbered slot channel and put the real title in brackets, often with a start time:
+
+```text
+US| PRIME US 007 [Canelo Alvarez vs. Christian Mbilli (2026-10-31 15:58:00)]
+PPV| LIVE EVENT 02 [10am Canelo v Mbilli]
+PPV| UFC [BG] 21 [CAGE WARRIORS 213 (2026-11-14 14:30:00)]
+```
+
+DLHD still decides first: a row that matches a DLHD event is handled exactly as before. Rows DLHD did not match are then considered as **provider events**, so a PPV that DLHD does not list is no longer lost:
+
+1. Only rows in a PPV / live-event group are considered (`PROVIDER_EVENT_GROUPS`). Placeholders such as `[EVENT ONLY]`, `[NO EVENT]`, `[BK]` and `[LIVE DURING EVENTS ONLY]` are ignored.
+2. Rows describing the same event (any number of slots, providers and accounts, with different spellings such as `Canelo v Mbilli` / `Canelo Alvarez vs. Christian Mbilli`) become **one** event channel with all slots as ordered failover variants. Prelims, press conferences, weigh-ins, free fights and replays stay separate events, and `UFC 334` never merges with `UFC 335`.
+3. A cluster that matches a standalone DLHD event is attached to that DLHD event instead of creating a duplicate channel.
+4. The start time is taken from the first thing that works: an ISO timestamp in the title, a clock time (`10am`, `17:45 pm`, `15.00`, `7:15am Sun`, `Sun May 4th 4:00PM`), the same event on a sibling slot that has a time, or the DLHD event. If nothing in the playlist or DLHD carries a time, the event is treated as starting when JustOne first saw it (remembered across refreshes) and its guide entry says `(start time estimated)`. JustOne does not look times up anywhere else.
+5. The end is the start plus a duration based on the sport (3 h by default). Every event gets its own XMLTV programme with that start/end.
+6. Events are published from `PROVIDER_EVENT_LEAD_MINUTES` before the start until `PROVIDER_EVENT_TAIL_MINUTES` after the end, then drop out. At most `PROVIDER_EVENT_MAX_EVENTS` are created, keeping the events carried by the most slots first.
+7. Event channels have no logo of their own, so JustOne draws the same generated poster it uses for every other event (competition, `VS` badges, team initials).
+
+Timestamps in provider titles have no time zone; they are read as `PROVIDER_EVENT_TIMEZONE` (default `UTC`, any IANA name such as `Europe/London`). Set `PROVIDER_EVENTS_ENABLED=false` to turn the feature off. The refresh log and `dlhdStatus.providerEvents` report how many events were created, attached to DLHD, expired, estimated or capped.
+
 ## Architecture
 
 ```text

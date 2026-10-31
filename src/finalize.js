@@ -188,7 +188,9 @@ function eventXml(channel) {
   if (!Number.isFinite(Number(event.start))) return "";
   const start = Number(event.start);
   const end = Number.isFinite(Number(event.end)) ? Number(event.end) : start + 3 * 60 * 60 * 1000;
-  const description = event.competition || event.originalCategory || "DLHD scheduled event";
+  const description = event.source === "provider"
+    ? [event.competition || event.originalCategory || "Live event", event.timeEstimated ? "(start time estimated)" : ""].filter(Boolean).join(" ")
+    : event.competition || event.originalCategory || "DLHD scheduled event";
   const rows = [
     `  <channel id="${xmlEscape(channel.tvgId)}">`,
     `    <display-name>${xmlEscape(channel.name)}</display-name>`,
@@ -235,7 +237,7 @@ export function finalizeSnapshot(snapshot, state = {}, { providerOrders = null }
   const staticCount = cloned.channels.filter((ch) => ch.referenceKind !== "event").length;
   const eventCount = cloned.channels.filter((ch) => ch.referenceKind === "event").length;
   const matchedStaticIds = new Set(cloned.channels.filter((ch) => ch.referenceKind !== "event").map((ch) => ch.dlhdRefId).filter(Boolean));
-  const matchedEventIds = new Set(cloned.channels.filter((ch) => ch.referenceKind === "event").map((ch) => ch.dlhdRefId).filter(Boolean));
+  const matchedEventIds = new Set(cloned.channels.filter((ch) => ch.referenceKind === "event" && ch.event?.source !== "provider").map((ch) => ch.dlhdRefId).filter(Boolean));
 
   const orderingSummary = {};
   for (const [cc, label] of [["GB","UK"],["PT","PT"],["US","USA"]]) {
