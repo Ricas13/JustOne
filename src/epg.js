@@ -347,7 +347,7 @@ function generatedEventProgramme(channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && needsSportsTag(event.category, event.name) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category, event.name || channel.name) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(event.source === "provider" ? "Event listed by the IPTV provider." : "DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
     channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
     "  </programme>",

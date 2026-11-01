@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { eventTypeFor } from "../src/finalize.js";
 import { addCategory, eventIsSport, inferChannelCategory, needsSportsTag } from "../src/guide-categories.js";
 import { config } from "../src/config.js";
 import { enrichAndBuildGuide, parseXmlTv } from "../src/epg.js";
@@ -48,7 +49,6 @@ test("GUIDE_CATEGORIES_ENABLED=false disables inference", () => {
   finally { config.guideCategories.enabled = prev; }
 });
 
-import { eventTypeFor } from "../src/finalize.js";
 import { parseProtectedSchedule } from "../src/dlhd.js";
 
 test("explicit Sports-branded channels beat Movie/Kids brand rules", () => {
@@ -113,4 +113,31 @@ test("gap-fill with generic Events category and a music title gets no Sports tag
   assert.match(music, /<title>Coachella 2026<\/title>/);
   assert.doesNotMatch(music, /<category>Sports<\/category>/);
   assert.equal((gapFill("Events", "Arsenal vs Chelsea").match(/<category>Sports<\/category>/g) || []).length, 1);
+});
+
+test("BBL stays Cricket when the category says Cricket", () => {
+  assert.equal(eventTypeFor({ category: "Cricket", name: "BBL: Sydney Sixers vs Perth Scorchers" }), "Cricket");
+});
+
+test("clear sport evidence beats non-sport title words under a generic category", () => {
+  assert.equal(needsSportsTag("Events", "NBA Season Opener"), true);
+  assert.equal(needsSportsTag("Events", "Music City Bowl"), true);
+  assert.equal(needsSportsTag("Events", "F1 Festival of Speed"), true);
+  assert.equal(needsSportsTag("Events", "Coachella 2026"), false);
+});
+
+test("mixed-content brands (AMC, HBO) are not inferred as Movie; film channels still are", () => {
+  assert.equal(inferChannelCategory({ name: "AMC" }), null);
+  assert.equal(inferChannelCategory({ name: "HBO" }), null);
+  assert.equal(inferChannelCategory({ name: "HBO Movies" }), "Movie");
+  assert.equal(inferChannelCategory({ name: "Film4" }), "Movie");
+});
+
+test("addCategory scans malformed XML in linear time", () => {
+  const a = '<programme channel="a"><title>A</title>' + "<category>not-closed ".repeat(40000) + "</programme>";
+  const b = '<programme channel="a">' + "<!-- x ".repeat(40000) + "</programme>";
+  const t = Date.now();
+  addCategory(a, "Movie", { onlyIfNone: true });
+  addCategory(b, "Movie", { onlyIfNone: true });
+  assert.ok(Date.now() - t < 1000, `took ${Date.now() - t}ms`);
 });

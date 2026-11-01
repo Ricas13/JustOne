@@ -33,7 +33,7 @@ export function eventTypeFor(ref = {}) {
   const hay = normalize(`${ref.category || ""} ${ref.name || ref.title || ""}`);
 
   if (/\b(?:nfl|american football|college football)\b/.test(hay)) return "American Football";
-  if (/\b(?:basketball|nba|wnba|euroleague|acb|bbl|vtb united league|liga femenina|eurocup|baloncesto)\b/.test(hay)) return "Basketball";
+  if (/\b(?:basketball|nba|wnba|euroleague|acb|vtb united league|liga femenina|eurocup|baloncesto)\b/.test(hay)) return "Basketball";
   if (/\b(?:baseball|mlb|beisbol)\b/.test(hay)) return "Baseball";
   if (/\b(?:ice hockey|nhl|khl|mhl|ahl|echl|qmjhl|ohl|ushl|whl|euro hockey tour)\b/.test(hay)) return "Ice Hockey";
   if (/\b(?:handball)\b/.test(hay)) return "Handball";
@@ -201,7 +201,7 @@ function eventXml(channel) {
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.competition ? `    <sub-title>${xmlEscape(event.competition)}</sub-title>` : "",
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && needsSportsTag(event.category, event.name) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category, event.originalName || event.name || channel.name) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(description)}</desc>`,
     event.programmeArtwork ? `    <icon src="${xmlEscape(event.programmeArtwork)}" />` : "",
     "  </programme>",
