@@ -73,6 +73,18 @@ export const config = {
     failClosed: boolEnv("DLHD_FAIL_CLOSED", true),
     staticCountries: csvEnv("DLHD_STATIC_COUNTRIES", "ALL"),
   },
+  // Events listed by the IPTV providers themselves (numbered "LIVE EVENT 03 [Title]"
+  // slots) that DLHD does not carry. They are clustered per event, attached to a
+  // standalone DLHD event when one matches, and expire after their time window.
+  providerEvents: {
+    enabled: boolEnv("PROVIDER_EVENTS_ENABLED", true),
+    groups: String(process.env.PROVIDER_EVENT_GROUPS || "\\bppv\\b|live\\s*events?|\\bevents?\\b|\\bevento\\b|\\bdazn\\b"),
+    timezone: String(process.env.PROVIDER_EVENT_TIMEZONE || "UTC"),
+    leadMinutes: intEnv("PROVIDER_EVENT_LEAD_MINUTES", 240),
+    tailMinutes: intEnv("PROVIDER_EVENT_TAIL_MINUTES", 60),
+    maxRowsPerSource: intEnv("PROVIDER_EVENT_MAX_ROWS_PER_SOURCE", 5000),
+    maxEvents: intEnv("PROVIDER_EVENT_MAX_EVENTS", 150),
+  },
   dispatcharr: {
     url: cleanUrl(process.env.DISPATCHARR_URL),
     apiKey: String(process.env.DISPATCHARR_API_KEY || ""),

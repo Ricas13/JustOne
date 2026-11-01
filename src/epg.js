@@ -340,7 +340,7 @@ function generatedEventProgramme(channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    `    <desc>${xmlEscape("DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
+    `    <desc>${xmlEscape(event.source === "provider" ? "Event listed by the IPTV provider." : "DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
     channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
     "  </programme>",
   ].filter(Boolean).join("\n");

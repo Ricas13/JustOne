@@ -18,6 +18,7 @@ import { canonicalGroup, canonicalIdentity, countryOf, isBackup, qualityOf, vari
 import { enrichAndBuildGuide, epgHintsForChannelId, guideSummary, parseXmlTv } from "./epg.js";
 import { buildDlhdReference, parse247Html, parseProtectedChannels, parseProtectedSchedule, parseScheduleHtml } from "./dlhd.js";
 import { createDlhdMatcher, isEventLikeRow } from "./dlhd-matcher.js";
+import { excludeClaimedRows, parseProviderEventRow, providerEventRetainable, resolveProviderEvents, sameProviderOccurrence } from "./provider-events.js";
 import { loadCachedXmltv, saveCachedXmltv } from "./upstream-xmltv-cache.js";
 import { text, timeoutSignal } from "./util.js";
 
@@ -282,7 +283,10 @@ function buildRawChannels(sourceRows, state, previous) {
       dlhdRefId: ref?.id || null,
       dlhdId: ref?.dlhdId || null,
       event: ref?.kind === "event"
-        ? { start: ref.start, end: ref.end, time: ref.time, category: ref.category, linkedChannels: ref.linkedChannels || [] }
+        ? {
+            start: ref.start, end: ref.end, time: ref.time, category: ref.category, linkedChannels: ref.linkedChannels || [],
+            ...(ref.source === "provider" ? { source: "provider", timeSource: ref.timeSource, timeEstimated: ref.timeEstimated === true } : {}),
+          }
         : null,
     };
     channel.aliasNames.add(text(item.row.tvgName || item.row.name));
@@ -368,8 +372,9 @@ function shouldKeepEpgCandidate(row, allowedCountries) {
   return Boolean(cc && allowedCountries.has(cc));
 }
 
-async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto") {
+async function scanSource(source, matcher, allowedCountries, onProgress, sourceMode = "auto", providerEventOptions = null) {
   const kept = [];
+  const providerEventRows = [];
   const epgCandidates = [];
   const matchedRefs = new Set();
   let matchedInputRows = 0;
@@ -431,6 +436,13 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
         }
         if (accepted) matchedInputRows += 1;
 
+        // Rows DLHD did not recognise as an event may still be a provider-listed
+        // event slot ("LIVE EVENT 03 [Title]"); they are resolved after the scan.
+        if (providerEventOptions && !acceptedEvent && providerEventRows.length < providerEventOptions.maxRows) {
+          const parsed = parseProviderEventRow(row, providerEventOptions);
+          if (parsed) providerEventRows.push({ source, row, parsed });
+        }
+
         const needsEpg = shouldKeepEpgCandidate(row, allowedCountries)
           && (!accepted || (isEventLikeRow(row) && !acceptedEvent));
         if (needsEpg && epgCandidates.length < MAX_EPG_CANDIDATES_PER_SOURCE) {
@@ -479,6 +491,7 @@ async function scanSource(source, matcher, allowedCountries, onProgress, sourceM
   return {
     ...stats,
     kept,
+    providerEventRows,
     epgCandidates,
     matchedInputRows,
     matchedRefs,
@@ -760,6 +773,16 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
 
   const { reference: dlhdReference, status: dlhdStatus } = await loadDlhdReference(previous);
   const matcher = dlhdReference ? createDlhdMatcher(dlhdReference, state.aliases || {}) : null;
+  const refreshNow = Date.now();
+  const providerEventOptions = matcher && config.providerEvents.enabled
+    ? {
+        now: refreshNow,
+        timezone: config.providerEvents.timezone,
+        groupRe: new RegExp(config.providerEvents.groups, "i"),
+        maxRows: config.providerEvents.maxRowsPerSource,
+      }
+    : null;
+  const providerEventItems = [];
 
   if (dlhdStatus?.channelsError) console.warn(`DLHD channels refresh warning: ${dlhdStatus.channelsError}`);
   if (dlhdStatus?.scheduleError) console.warn(`DLHD schedule refresh warning: ${dlhdStatus.scheduleError}`);
@@ -790,7 +813,8 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
       outputMappings: 0,
     });
     try {
-      const scanned = await scanSource(source, matcher, allowedCountries, onProgress, sourceMode);
+      const scanned = await scanSource(source, matcher, allowedCountries, onProgress, sourceMode, providerEventOptions);
+      providerEventItems.push(...scanned.providerEventRows);
       rawSourceRows += scanned.rows;
       matchedInputRows += scanned.matchedInputRows;
       sourceRows.push(...scanned.kept);
@@ -853,6 +877,35 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     console.log(`EPG-assisted matching: no additional mappings from ${epgCandidates.length} candidate rows`);
   }
 
+  let providerEvents = { rows: [], refs: [], registry: previous.providerEvents || {}, status: null };
+  if (providerEventOptions) {
+    providerEvents = resolveProviderEvents({
+      // DLHD stays authoritative: rows already mapped to an event, directly or
+      // through EPG-assisted matching, never become provider-only events.
+      items: excludeClaimedRows(providerEventItems, sourceRows),
+      dlhdEvents: dlhdReference?.events || [],
+      previousRegistry: previous.providerEvents || {},
+      now: refreshNow,
+      leadMinutes: config.providerEvents.leadMinutes,
+      tailMinutes: config.providerEvents.tailMinutes,
+      maxEvents: config.providerEvents.maxEvents,
+      failedSourceIds: sourceStatus.filter((status) => !status.ok).map((status) => status.id),
+    });
+    sourceRows.push(...providerEvents.rows);
+    for (const row of providerEvents.rows) matchedRefIds.add(row.reference.id);
+    for (const status of sourceStatus) {
+      const mappings = providerEvents.rows.filter((row) => row.source.id === status.id).length;
+      if (!mappings) continue;
+      status.outputMappings = Number(status.outputMappings || 0) + mappings;
+      status.providerEventMappings = mappings;
+    }
+    const st = providerEvents.status;
+    console.log(
+      `Provider events: ${st.candidateRows} candidate rows -> ${st.clusters} events; ${st.created} created, `
+      + `${st.attachedToDlhd} attached to DLHD events, ${st.expired} expired, ${st.notYetActive} not yet active, ${st.estimatedTimes} with estimated times, ${st.capped} over the cap`,
+    );
+  }
+
   if (dlhdReference) {
     const allRefs = [...(dlhdReference.channels || []), ...(dlhdReference.events || [])];
     const refById = new Map(allRefs.map((ref) => [ref.id, ref]));
@@ -876,6 +929,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     dlhdStatus.matchedChannelReferences = matchedChannels;
     dlhdStatus.matchedEventReferences = matchedEvents;
     dlhdStatus.totalReferences = targetRefs.length;
+    dlhdStatus.providerEvents = providerEvents.status;
     dlhdStatus.unmatchedReferences = targetRefs
       .filter((ref) => !matchedRefIds.has(ref.id))
       .slice(0, 200)
@@ -886,13 +940,21 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
   let channels = buildRawChannels(sourceRows, state, previous);
   const failedSourceIds = new Set(sourceStatus.filter((row) => !row.ok).map((row) => row.id));
   const allowedDlhdIds = dlhdReference
-    ? new Set([...(dlhdReference.channels || []), ...(dlhdReference.events || [])].map((ref) => ref.id))
+    ? new Set([...(dlhdReference.channels || []), ...(dlhdReference.events || []), ...providerEvents.refs].map((ref) => ref.id))
     : null;
 
   if (failedSourceIds.size) {
     const byId = new Map(channels.map((channel) => [channel.id, channel]));
     for (const old of previous.channels || []) {
-      if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
+      if (old.referenceKind === "event" && old.event?.source === "provider") {
+        // Provider-only events: kept only while their own window is still open, and
+        // only for the same occurrence. Their id may be reused by a later occurrence
+        // of the same title, so presence in the current catalogue is not enough.
+        if (!providerEventOptions
+          || !providerEventRetainable(old, { now: refreshNow, tailMinutes: config.providerEvents.tailMinutes })) continue;
+        const sameId = byId.get(old.id);
+        if (sameId && !sameProviderOccurrence(old, sameId)) continue;
+      } else if (allowedDlhdIds && (!old.dlhdRefId || !allowedDlhdIds.has(old.dlhdRefId))) continue;
       if (!existingChannelAllowedForCountries(old, allowedCountries)) continue;
       const retained = (old.variants || []).filter((variant) => failedSourceIds.has(variant.sourceId));
       if (!retained.length) continue;
@@ -942,6 +1004,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
     },
     dlhdStatus,
     dlhdReference,
+    providerEvents: providerEvents.registry,
   };
   await saveSnapshot(snapshot);
   await saveGuide(guideProtection.xml);
