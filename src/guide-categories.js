@@ -26,9 +26,19 @@ export function eventIsSport(category) {
   return !/^(?:music|tv\s*&\s*entertainment)$/i.test(String(category || "").trim());
 }
 
-/** True when a generated programme should get the generic Sports tag: a sport, and not already tagged Sport(s). */
-export function needsSportsTag(category) {
-  return eventIsSport(category) && !/^sports?$/i.test(String(category || "").trim());
+const NON_SPORT_TITLE_RE = /\b(?:concert|music|festival|rock in rio|coachella|tomorrowland|glastonbury|jeopardy|tv shows?|premiere|episode|season)\b/i;
+const GENERIC_CATEGORY_RE = /^(?:events?|other|general|live|upcoming)?$/i;
+
+/**
+ * True when a generated programme should get the generic Sports tag: it is a sport
+ * and not already tagged Sport(s). A generic or missing category (DLHD defaults to
+ * "Events") is judged by the title, so a festival or concert is not filed under Sports.
+ */
+export function needsSportsTag(category, name = "") {
+  const cat = String(category || "").trim();
+  if (!eventIsSport(cat) || /^sports?$/i.test(cat)) return false;
+  if (GENERIC_CATEGORY_RE.test(cat) && NON_SPORT_TITLE_RE.test(String(name || ""))) return false;
+  return true;
 }
 
 /**
@@ -44,5 +54,8 @@ export function addCategory(programmeXml, label, { onlyIfNone = false } = {}) {
   const existing = [...visible.matchAll(/<category\b[^>]*>([\s\S]*?)<\/category>/gi)].map((m) => m[1].trim().toLowerCase());
   if (onlyIfNone && existing.length) return xml;
   if (existing.includes(label.toLowerCase())) return xml;
-  return xml.replace(/<\/programme>/i, `  <category>${label}</category>\n</programme>`);
+  // Insert before the real (last) closing tag, so a "</programme>" inside CDATA or a comment cannot swallow it.
+  const close = xml.toLowerCase().lastIndexOf("</programme>");
+  if (close < 0) return xml;
+  return `${xml.slice(0, close)}  <category>${label}</category>\n${xml.slice(close)}`;
 }

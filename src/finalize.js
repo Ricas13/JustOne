@@ -201,7 +201,7 @@ function eventXml(channel) {
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.competition ? `    <sub-title>${xmlEscape(event.competition)}</sub-title>` : "",
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && needsSportsTag(event.category) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category, event.name) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(description)}</desc>`,
     event.programmeArtwork ? `    <icon src="${xmlEscape(event.programmeArtwork)}" />` : "",
     "  </programme>",

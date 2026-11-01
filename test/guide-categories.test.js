@@ -80,10 +80,10 @@ test("double-encoded DLHD titles are fully decoded", () => {
   assert.equal(events[0].name ?? events[0].title, "Brighton & Hove v X");
 });
 
-function gapFill(category) {
+function gapFill(category, name = "Gap Event") {
   const parsed = parseXmlTv(`<?xml version="1.0"?><tv><channel id="b.uk"><display-name>BBC One</display-name></channel></tv>`);
   const channels = [{ id: "b", key: "bbc one", tvgId: "justone.b", name: "BBC One", logo: "", aliasNames: [], dlhdRefId: "channel-b", referenceKind: "channel", variants: [{ originalTvgId: "b.uk" }] }];
-  const dlhdReference = { linearEvents: [{ id: "g", name: "Gap Event", category, start: Date.UTC(2026, 8, 18, 20, 30), end: Date.UTC(2026, 8, 18, 22, 30), linkedStaticChannels: [{ id: "channel-b" }] }] };
+  const dlhdReference = { linearEvents: [{ id: "g", name, category, start: Date.UTC(2026, 8, 18, 20, 30), end: Date.UTC(2026, 8, 18, 22, 30), linkedStaticChannels: [{ id: "channel-b" }] }] };
   return enrichAndBuildGuide(channels, [{ id: "g", name: "G", parsed }], {}, { dlhdReference });
 }
 
@@ -93,4 +93,24 @@ test("gap-fill programmes: music is not Sports, Sports is not duplicated, footba
   assert.doesNotMatch(music, /<category>Sports<\/category>/);
   assert.equal((gapFill("Sports").match(/<category>Sports<\/category>/g) || []).length, 1);
   assert.equal((gapFill("Football").match(/<category>Sports<\/category>/g) || []).length, 1);
+});
+
+test("addCategory inserts before the real closing tag, not a fake one in CDATA or a comment", () => {
+  const p = `<programme channel="c"><desc><![CDATA[fake </programme> end]]></desc><!-- </programme> --><title>F</title></programme>`;
+  const out = addCategory(p, "Movie", { onlyIfNone: true });
+  assert.ok(out.endsWith("<category>Movie</category>\n</programme>"), out);
+});
+
+test("generic 'Events' category: festival titles are not Sports, sport titles are", () => {
+  assert.equal(needsSportsTag("Events", "Coachella 2026"), false);
+  assert.equal(needsSportsTag("Events", "Arsenal vs Chelsea"), true);
+  assert.equal(needsSportsTag("", "Glastonbury Live"), false);
+  assert.equal(needsSportsTag("Football", "Festival of Football"), true);
+});
+
+test("gap-fill with generic Events category and a music title gets no Sports tag", () => {
+  const music = gapFill("Events", "Coachella 2026");
+  assert.match(music, /<title>Coachella 2026<\/title>/);
+  assert.doesNotMatch(music, /<category>Sports<\/category>/);
+  assert.equal((gapFill("Events", "Arsenal vs Chelsea").match(/<category>Sports<\/category>/g) || []).length, 1);
 });
