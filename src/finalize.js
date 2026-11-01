@@ -1,4 +1,5 @@
 import { config, withInternalKey } from "./config.js";
+import { eventIsSport } from "./guide-categories.js";
 import { countryGroup, countryName, countryOf } from "./identity.js";
 import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
@@ -32,14 +33,14 @@ export function eventTypeFor(ref = {}) {
   const hay = normalize(`${ref.category || ""} ${ref.name || ref.title || ""}`);
 
   if (/\b(?:nfl|american football|college football)\b/.test(hay)) return "American Football";
-  if (/\b(?:basketball|nba|wnba|euroleague|acb)\b/.test(hay)) return "Basketball";
+  if (/\b(?:basketball|nba|wnba|euroleague|acb|bbl|vtb united league|liga femenina|eurocup|baloncesto)\b/.test(hay)) return "Basketball";
   if (/\b(?:baseball|mlb|beisbol)\b/.test(hay)) return "Baseball";
-  if (/\b(?:ice hockey|nhl|khl|mhl|ahl)\b/.test(hay)) return "Ice Hockey";
+  if (/\b(?:ice hockey|nhl|khl|mhl|ahl|echl|qmjhl|ohl|ushl|whl|euro hockey tour)\b/.test(hay)) return "Ice Hockey";
   if (/\b(?:handball)\b/.test(hay)) return "Handball";
   if (/\b(?:volleyball|volei)\b/.test(hay)) return "Volleyball";
   if (/\b(?:rugby|six nations)\b/.test(hay)) return "Rugby";
   if (/\b(?:cricket|ipl|ashes)\b/.test(hay)) return "Cricket";
-  if (/\b(?:tennis|wta|atp|wimbledon|roland garros)\b/.test(hay)) return "Tennis";
+  if (/\b(?:tennis|wta|atp|roland garros)\b|(?<!afc )\bwimbledon\b/.test(hay)) return "Tennis";
   if (/\b(?:golf|pga|lpga|ryder cup)\b/.test(hay)) return "Golf";
   if (/\b(?:formula 1|f1|formula e|motogp|moto gp|nascar|indycar|motorsport|rally|wrc|grand prix|supercars|superbike|gt world)\b/.test(hay)) return "Motorsport";
   if (/\b(?:boxing|mma|ufc|wwe|wrestling|bellator|pfl|fight night)\b/.test(hay)) return "Combat Sports";
@@ -47,10 +48,10 @@ export function eventTypeFor(ref = {}) {
   if (/\b(?:cycling|tour de|giro d|vuelta)\b/.test(hay)) return "Cycling";
   if (/\b(?:darts|pdc)\b/.test(hay)) return "Darts";
   if (/\b(?:snooker|billiards)\b/.test(hay)) return "Snooker";
-  if (/\b(?:rock in rio|festival|concert|music)\b/.test(hay)) return "Music";
+  if (/\b(?:rock in rio|festival|concert|music|coachella|tomorrowland|glastonbury|live from)\b/.test(hay)) return "Music";
   if (/\b(?:jeopardy|tv shows?|premiere|episode|season)\b/.test(hay)) return "TV & Entertainment";
 
-  if (/\b(?:soccer|football|futsal|premier league|champions league|europa league|conference league|la liga|liga i|liga 1|liga 2|serie a|serie b|allsvenskan|superettan|brasileirao|eredivisie|bundesliga|mls|nws|copa|cup|division)\b/.test(hay)) return "Football";
+  if (/\b(?:soccer|football|futsal|premier league|champions league|europa league|conference league|la liga|liga i|liga 1|liga 2|serie a|serie b|allsvenskan|superettan|brasileirao|eredivisie|bundesliga|mls|nws|copa|cup|division|league one|league two|national league|eerste divisie|challenger pro league|pro league|primeira liga|segunda liga|serie [abc]|ligue [123]|eliteserien|ekstraklasa|i liga|prva liga|botola|premiership|nwsl|a league|k league|j league|fc|afc|liga)\b/.test(hay)) return "Football";
 
   return "Other";
 }
@@ -200,6 +201,7 @@ function eventXml(channel) {
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.competition ? `    <sub-title>${xmlEscape(event.competition)}</sub-title>` : "",
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
+    config.guideCategories.enabled && eventIsSport(event.category) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(description)}</desc>`,
     event.programmeArtwork ? `    <icon src="${xmlEscape(event.programmeArtwork)}" />` : "",
     "  </programme>",

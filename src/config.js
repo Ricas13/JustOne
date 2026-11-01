@@ -85,6 +85,11 @@ export const config = {
     maxRowsPerSource: intEnv("PROVIDER_EVENT_MAX_ROWS_PER_SOURCE", 5000),
     maxEvents: intEnv("PROVIDER_EVENT_MAX_EVENTS", 150),
   },
+  // Generic XMLTV categories (Movie / Sports / Kids / News) so Jellyfin's Live TV
+  // "Upcoming ..." rows have something to sort programmes by.
+  guideCategories: {
+    enabled: boolEnv("GUIDE_CATEGORIES_ENABLED", true),
+  },
   dispatcharr: {
     url: cleanUrl(process.env.DISPATCHARR_URL),
     apiKey: String(process.env.DISPATCHARR_API_KEY || ""),

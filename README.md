@@ -349,3 +349,5 @@ Internal listener (default `8091`, `media_net` only):
 ## Still deliberately absent
 
 JustOne still contains no DLHD playback resolver, FFmpeg remuxing/transcoding, fMP4/CMAF-to-TS remuxing, warm-standby upstream, timeshift buffer or DVR engine. The native proxy deliberately remains a small live MPEG-TS relay/allocator rather than becoming another full IPTV server.
+
+Guide categories: Jellyfin builds its "Movies / Sports / Kids / News" Live TV rows from XMLTV `<category>` values. Where a provider programme has no category, JustOne infers `Movie`, `Kids`, `Sports` or `News` from the channel name, and generated event programmes are tagged `Sports`. Provider-supplied categories are never overridden. Set `GUIDE_CATEGORIES_ENABLED=false` to turn this off.
