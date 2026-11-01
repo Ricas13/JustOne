@@ -27,7 +27,7 @@ export function eventIsSport(category) {
 }
 
 const NON_SPORT_TITLE_RE = /\b(?:concert|music|festival|rock in rio|coachella|tomorrowland|glastonbury|jeopardy|tv shows?|premiere|episode|season)\b/i;
-const SPORT_TITLE_RE = /\b(?:vs?\.?|nba|nfl|nhl|mlb|wnba|f1|formula (?:1|e|one)|motogp|nascar|ufc|wwe|premier league|champions league|europa league|la liga|serie a|bundesliga|ligue 1|league|cup|bowl|playoffs?|finals?|grand prix|open|match|game|derby|fc|cf|sc)\b/i;
+const SPORT_TITLE_RE = /\b(?:vs\.?|nba|nfl|nhl|mlb|wnba|f1|formula (?:1|e|one)|motogp|nascar|ufc|wwe|premier league|champions league|europa league|la liga|serie a|bundesliga|ligue 1|playoffs?|grand prix|bowl|derby)\b|\S\s+v\.?\s+\S/i;
 const GENERIC_CATEGORY_RE = /^(?:events?|other|general|live|upcoming)?$/i;
 
 /**
@@ -70,7 +70,7 @@ export function addCategory(programmeXml, label, { onlyIfNone = false } = {}) {
   if (!label) return xml;
   // Ignore comments and CDATA so category-looking text inside them is not mistaken for a tag.
   const visible = stripCommentsAndCdata(xml);
-  const existing = [...visible.matchAll(/<category\b[^>]*>([^<]*)<\/category>/gi)].map((m) => m[1].trim().toLowerCase());
+  const existing = [...visible.matchAll(/<category\b[^<>]*>([^<]*)<\/category\s*>/gi)].map((m) => m[1].trim().toLowerCase());
   if (onlyIfNone && existing.length) return xml;
   if (existing.includes(label.toLowerCase())) return xml;
   // Insert before the real (last) closing tag, so a "</programme>" inside CDATA or a comment cannot swallow it.

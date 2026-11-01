@@ -141,3 +141,28 @@ test("addCategory scans malformed XML in linear time", () => {
   addCategory(b, "Movie", { onlyIfNone: true });
   assert.ok(Date.now() - t < 1000, `took ${Date.now() - t}ms`);
 });
+
+test("unfinished <category openings are scanned in linear time", () => {
+  const x = '<programme channel="c"><title>F</title>' + "<category lang='en' ".repeat(40000) + "</programme>";
+  const t = Date.now();
+  addCategory(x, "Movie", { onlyIfNone: true });
+  assert.ok(Date.now() - t < 1000, `took ${Date.now() - t}ms`); // quadratic scanning takes tens of seconds here
+});
+
+test("a provider category closed with '</category >' is preserved", () => {
+  const p = '<programme channel="a"><category lang="en">Drama</category ></programme>';
+  assert.equal(addCategory(p, "Movie", { onlyIfNone: true }), p);
+});
+
+test("music titles with ambiguous words (open, v, league) are not Sports", () => {
+  for (const t of ["Open Air Music Festival 2026", "Open Air Concert", "V Festival", "League of Legends Music Festival", "Open Mic Music Night"]) {
+    assert.equal(needsSportsTag("Events", t), false, t);
+  }
+  assert.equal(needsSportsTag("Events", "Arsenal v Chelsea"), true);
+});
+
+test("final event classification keeps clear sport evidence over entertainment words", () => {
+  assert.equal(eventTypeFor({ category: "Events", name: "Music City Bowl" }), "American Football");
+  assert.equal(eventTypeFor({ category: "Events", name: "Premier League Season Preview" }), "Football");
+  assert.equal(eventTypeFor({ category: "Events", name: "Coachella 2026" }), "Music");
+});
