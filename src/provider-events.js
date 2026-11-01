@@ -274,8 +274,11 @@ function parseEventName(raw, row, { now = Date.now(), timezone = "UTC", groupRe 
     : weekdayLast ? { day: weekdayLast[4], hour: weekdayLast[1], minute: weekdayLast[2], ampm: weekdayLast[3], whole: weekdayLast[0] } : null;
   // A bare number after a weekday ("Sun 5 Nations") is not a clock: it needs minutes or am/pm.
   if (wc && (wc.minute != null || wc.ampm)) {
+    // An advertised time that is not a time ("Sat 25:00", "Sun 99pm") makes the row ineligible.
+    if (to24h(wc.hour, wc.ampm) > 23 || Number(wc.minute || 0) > 59) return null;
     if (start == null) {
       start = nearestWeekdayMs(timezone, now, WEEKDAYS.indexOf(wc.day.toLowerCase()), to24h(wc.hour, wc.ampm), Number(wc.minute || 0));
+      if (start == null) return null;
       timeSource = "title-weekday";
     }
     inner = text(inner.replace(wc.whole, " "));
@@ -435,6 +438,13 @@ function signatureKey(signature) {
   return `${signature.kind}|${signature.qualifier}|${sides.sort().join("||")}`;
 }
 
+const UNTIMED_BUCKET = "u";
+const BUCKET_MS = MAX_START_GAP_MS;
+
+function timeBucket(start) {
+  return start == null ? UNTIMED_BUCKET : Math.floor(start / BUCKET_MS);
+}
+
 /**
  * Candidate lookup for signature matching without comparing against everything.
  *
@@ -442,16 +452,27 @@ function signatureKey(signature) {
  * So a stored signature is always reachable one of two ways: (1) the query side is
  * the smaller one, so ANY of its tokens occurs in the stored signature (use the
  * one with the smallest bucket); (2) the stored side is the smaller one, so the
- * token chosen for it when it was added occurs in the query. Choosing the globally
- * rarest token (`freq`) keeps those buckets small even when every event shares
+ * token chosen for it when it was added occurs in the query. Any ONE side of the
+ * query reaches every true match, so the cheaper side is used. Choosing the
+ * globally rarest token (`freq`) keeps buckets small even when every event shares
  * words such as "team" or "club".
+ *
+ * Payloads are also partitioned by a time bucket. A cluster's start times all lie
+ * within one tolerance window, so a timed query only needs the buckets next to its
+ * own start plus the untimed bucket; identical titles on distant dates are never
+ * scanned against each other.
  */
 function createSignatureIndex(freq) {
-  const byAll = new Map();
+  const byAll = new Map();     // token -> Map(bucket -> payloads)
+  const allCount = new Map();  // token -> payload count
   const byChosen = new Map();
-  const push = (map, key, payload) => {
-    const list = map.get(key);
-    if (list) { if (!list.includes(payload)) list.push(payload); } else map.set(key, [payload]);
+  const chosenCount = new Map();
+  const push = (map, counts, key, bucket, payload) => {
+    let buckets = map.get(key);
+    if (!buckets) { buckets = new Map(); map.set(key, buckets); }
+    const list = buckets.get(bucket);
+    if (list) { if (!list.includes(payload)) { list.push(payload); counts.set(key, (counts.get(key) || 0) + 1); } }
+    else { buckets.set(bucket, [payload]); counts.set(key, (counts.get(key) || 0) + 1); }
   };
   const chosenToken = (side) => {
     let best = null;
@@ -462,15 +483,25 @@ function createSignatureIndex(freq) {
     }
     return best;
   };
+  const collect = (buckets, wanted, found, stats) => {
+    if (!buckets) return;
+    // A timed query reads only its neighbouring buckets (plus the untimed one); an
+    // untimed query has no time to narrow by and reads them all.
+    const lists = wanted
+      ? [...wanted, UNTIMED_BUCKET].map((bucket) => buckets.get(bucket))
+      : buckets.values();
+    for (const list of lists) {
+      if (!list) continue;
+      for (const payload of list) { found.add(payload); if (stats) stats.candidates = (stats.candidates || 0) + 1; }
+    }
+  };
   return {
-    add(signature, payload) {
-      for (const token of signatureTokens(signature)) push(byAll, token, payload);
-      for (const side of signatureSides(signature)) push(byChosen, chosenToken(side), payload);
+    add(signature, payload, bucket = UNTIMED_BUCKET) {
+      for (const token of signatureTokens(signature)) push(byAll, allCount, token, bucket, payload);
+      for (const side of signatureSides(signature)) push(byChosen, chosenCount, chosenToken(side), bucket, payload);
     },
-    candidates(signature) {
-      // Any ONE side is enough to reach every true match (a match relates both sides),
-      // so use the side whose lookup is cheaper. A constant opponent ("... vs Beta")
-      // then costs nothing: the varying side drives the lookup.
+    candidates(signature, start = null, stats = null) {
+      const wanted = start == null ? null : new Set([timeBucket(start) - 1, timeBucket(start), timeBucket(start) + 1]);
       let best = null;
       let bestCost = Infinity;
       for (const side of signatureSides(signature)) {
@@ -478,17 +509,17 @@ function createSignatureIndex(freq) {
         let rarestSize = Infinity;
         let cost = 0;
         for (const token of side) {
-          const size = byAll.get(token)?.length ?? 0;
+          const size = allCount.get(token) ?? 0;
           if (size < rarestSize) { rarest = token; rarestSize = size; }
-          cost += byChosen.get(token)?.length ?? 0;
+          cost += chosenCount.get(token) ?? 0;
         }
         cost += rarestSize === Infinity ? 0 : rarestSize;
         if (cost < bestCost) { best = { side, rarest }; bestCost = cost; }
       }
       const found = new Set();
       if (!best) return found;
-      if (best.rarest != null) for (const payload of byAll.get(best.rarest) || []) found.add(payload);
-      for (const token of best.side) for (const payload of byChosen.get(token) || []) found.add(payload);
+      if (best.rarest != null) collect(byAll.get(best.rarest), wanted, found, stats);
+      for (const token of best.side) collect(byChosen.get(token), wanted, found, stats);
       return found;
     },
   };
@@ -497,12 +528,14 @@ function createSignatureIndex(freq) {
 /**
  * Group rows that describe the same event.
  *
- * Rows are processed in a fixed order (most specific title first), so the result
- * does not depend on the order of providers. A row joins a cluster only if it is
- * compatible with every distinct title already in it, which keeps abbreviations
- * that merely bridge two different names ("Canelo vs Mbilli" between "Canelo
- * Alvarez vs Mbilli" and "Canelo Junior vs Mbilli") from chaining them together.
- * `stats.comparisons` counts signature comparisons (used by tests).
+ * Rows are processed in a fixed order (most specific title first, then start time),
+ * so the result does not depend on the order of providers. A row joins a cluster
+ * only if it is compatible with every distinct title already in it, which keeps
+ * abbreviations that merely bridge two different names ("Canelo vs Mbilli" between
+ * "Canelo Alvarez vs Mbilli" and "Canelo Junior vs Mbilli") from chaining them
+ * together, and only if the cluster's whole start-time span stays within tolerance.
+ * `stats.comparisons` counts signature comparisons and `stats.candidates` the
+ * candidates examined (used by tests).
  */
 export function clusterProviderEvents(items, stats = null) {
   const entries = items.map((item) => {
@@ -521,7 +554,7 @@ export function clusterProviderEvents(items, stats = null) {
   const index = createSignatureIndex(freq);
   for (const { item, signature, key } of entries) {
     let cluster = null;
-    for (const candidate of index.candidates(signature)) {
+    for (const candidate of index.candidates(signature, item.parsed.start, stats)) {
       if (!spanCompatible(candidate, item.parsed.start)) continue;
       let compatible = true;
       for (const [knownKey, known] of candidate.sigs) {
@@ -532,12 +565,14 @@ export function clusterProviderEvents(items, stats = null) {
       if (compatible) { cluster = candidate; break; }
     }
     if (!cluster) {
-      cluster = { signature, sigs: new Map(), items: [], starts: [], minStart: null, maxStart: null, start: null, core: null };
+      // The bucket is fixed by the first timed start: every later member lies within
+      // one tolerance window of it, so lookups that include its neighbours find it.
+      cluster = { signature, sigs: new Map(), items: [], starts: [], minStart: null, maxStart: null, start: null, core: null, bucket: timeBucket(item.parsed.start) };
       clusters.push(cluster);
     }
     if (!cluster.sigs.has(key)) {
       cluster.sigs.set(key, signature);
-      index.add(signature, cluster);
+      index.add(signature, cluster, cluster.bucket);
     }
     cluster.items.push(item);
     // Tokens every member agrees on: an order-independent basis for the event id.
@@ -652,24 +687,32 @@ function assignPreviousIdentities(clusters, previousRegistry) {
   return assigned;
 }
 
-function tombstoneKeys(cluster) {
-  return [...cluster.sigs.values()].map((signature) => hash(signatureKey(signature), 12));
-}
+const MAX_TRACKED_SOURCES = 64;
+
+const tombstoneKey = (signature) => hash(signatureKey(signature), 12);
+const unionSources = (a, b) => (Array.isArray(a) && Array.isArray(b) ? [...new Set([...a, ...b])].slice(0, MAX_TRACKED_SOURCES) : null);
 
 /**
  * Turn scanned provider rows into event mappings.
  *
  * items:            [{ source, row, parsed }] for rows DLHD did not match.
  * dlhdEvents:       standalone DLHD event references (clusters that match one are attached to it).
- * previousRegistry: { [eventId]: { firstSeen, lastSeen, start, clock, sources, sig }, __meta }.
+ * previousRegistry: { [eventId]: { firstSeen, lastSeen, start, clock, sources, goneAt, sig }, __meta }.
  *                   It keeps an event's identity stable across refreshes (whichever provider row
  *                   arrives first), remembers the estimated start of events whose rows carry no
- *                   date, and (as compact tombstones in __meta) stops an expired event from being
- *                   re-created without letting expired events crowd out new ones.
- *                   An id identifies a recurring programme slot: if a title is confirmed gone and
+ *                   date, and (as compact tombstones in __meta.tombs) stops an expired event from
+ *                   being re-created without letting expired events crowd out new ones.
+ *                   An id identifies a recurring programme slot: once a title is confirmed gone and
  *                   later returns, it is a new occurrence (new start) under the same id/tvg-id.
- * failedSourceIds:  sources that failed this refresh. An event is only "confirmed gone" when none
- *                   of the sources that carried it failed, so an unrelated outage changes nothing.
+ * failedSourceIds:  sources that failed this refresh. A listing counts as "gone" only if a refresh
+ *                   in which every source that carried it succeeded did not see it (`goneAt`); a
+ *                   failed scan never confirms that, however the source behaves afterwards.
+ *
+ * Tombstones: { [leadSignatureHash]: { t: lastSeen, s: sources, m: member signature hashes, g: goneAt,
+ *   u: 1 + f: firstSeen when the event was NOT admitted only because the registry was full } }.
+ * A new cluster is suppressed only if its lead (most specific) signature belongs to a tombstone, so a
+ * generic alias shared with an old event ("Night Show") cannot hide a different one ("Music Night Show").
+ * If the tombstone table overflows, new estimated events are not published for a few days (fail closed).
  */
 export function resolveProviderEvents({
   items = [],
@@ -690,10 +733,12 @@ export function resolveProviderEvents({
     attachedToDlhd: 0,
     created: 0,
     expired: 0,
+    suppressed: 0,
     notYetActive: 0,
     estimatedTimes: 0,
     capped: 0,
     unremembered: 0,
+    overflowSuppressed: 0,
     mappings: 0,
   };
 
@@ -716,23 +761,30 @@ export function resolveProviderEvents({
     const dated = cluster.items.some((x) => x.parsed.timeSource === "title-timestamp" || x.parsed.timeSource === "title-date");
     cluster.dated = dated;
     cluster.clockOnly = !dated && cluster.start != null;
-    cluster.sources = [...new Set(cluster.items.map((item) => item.source?.id).filter(Boolean))].slice(0, 8);
+    const sourceIds = [...new Set(cluster.items.map((item) => item.source?.id).filter(Boolean))];
+    // Every contributing source is remembered; if there are too many to track, null means
+    // "unknown", which later failure handling treats conservatively.
+    cluster.sources = sourceIds.length <= MAX_TRACKED_SOURCES ? sourceIds : null;
+    cluster.leadKey = tombstoneKey(cluster.signature);
+    cluster.memberKeys = [...cluster.sigs.values()].map(tombstoneKey);
     fresh.push(cluster);
   }
 
   // 2. Reconcile with remembered identities (best start-time match, each identity once).
   const assigned = assignPreviousIdentities(fresh, previousRegistry);
-  const lastRun = Number(previousRegistry?.[META_KEY]?.lastRun);
-  // Missing or implausible run metadata is not evidence that anything was seen last run.
-  const previousRun = Number.isFinite(lastRun) && lastRun > 0 && lastRun <= now + HOUR ? lastRun : null;
-  const previousTombs = previousRegistry?.[META_KEY]?.tombs && typeof previousRegistry[META_KEY].tombs === "object"
-    ? previousRegistry[META_KEY].tombs : {};
-  // Absence is only confirmed if none of the sources that carried the entry failed.
+  const meta = previousRegistry?.[META_KEY] && typeof previousRegistry[META_KEY] === "object" ? previousRegistry[META_KEY] : {};
+  const previousTombs = meta.tombs && typeof meta.tombs === "object" ? meta.tombs : {};
+  const tombIndex = new Map();
+  for (const [key, tomb] of Object.entries(previousTombs)) {
+    tombIndex.set(key, key);
+    for (const member of Array.isArray(tomb?.m) ? tomb.m : []) if (!tombIndex.has(member)) tombIndex.set(member, key);
+  }
+  const overflowAt = Number(meta.overflowAt);
+  const inOverflow = Number.isFinite(overflowAt) && overflowAt > 0 && now - overflowAt < REGISTRY_MAX_AGE_MS;
+
+  // Absence is only confirmed by a refresh in which none of the sources that carried the listing failed.
   const unconfirmed = (sources) => failed.size > 0 && (!Array.isArray(sources) || sources.some((id) => failed.has(id)));
-  const seenBefore = (lastSeen, sources) =>
-    unconfirmed(sources)
-    || (previousRun != null && Number(lastSeen || 0) >= previousRun)
-    || now - Number(lastSeen || 0) <= REAPPEAR_GAP_MS;
+  const confirmedGone = (goneAt, lastSeen) => Number.isFinite(Number(goneAt)) && now - Number(lastSeen || 0) > REAPPEAR_GAP_MS;
 
   const usedIds = new Set(Object.keys(previousRegistry || {}));
   const mint = (base) => {
@@ -742,17 +794,18 @@ export function resolveProviderEvents({
   };
 
   const tombs = {};
+  const touchedTombs = new Set();
   const planned = [];
   fresh.forEach((cluster, clusterIndex) => {
     const lead = displayTitle(cluster);
     const category = categoryFor(lead.group);
     const previous = assigned.get(clusterIndex) || null;
-    const continuing = Boolean(previous) && seenBefore(previous.entry.lastSeen, previous.entry.sources);
+    const continuing = Boolean(previous) && !confirmedGone(previous.entry.goneAt, previous.entry.lastSeen);
 
     let start = cluster.start;
     let timeSource = start == null ? null : (cluster.items.find((x) => x.parsed.start != null)?.parsed.timeSource || "title-timestamp");
-    const firstSeen = continuing ? Number(previous.entry.firstSeen) || now : now;
-    const previousStart = continuing && Number.isFinite(Number(previous.entry.start)) ? Number(previous.entry.start) : null;
+    let firstSeen = continuing ? Number(previous.entry.firstSeen) || now : now;
+    let previousStart = continuing && Number.isFinite(Number(previous.entry.start)) ? Number(previous.entry.start) : null;
     if (cluster.clockOnly && previousStart != null) {
       // "10am" with no date: keep the day it was first resolved to instead of
       // re-deriving "the nearest 10am" on every refresh (which drifts across midnight).
@@ -761,13 +814,23 @@ export function resolveProviderEvents({
     const estimated = start == null;
     const needsMemory = estimated || cluster.clockOnly;
 
-    // An estimated/clock-only event that already expired is remembered as a tombstone
-    // (not as a full entry), so a title that stays in the playlist is not re-created.
+    let tombKey = null;
     let suppressed = false;
+    let overflowSuppressed = false;
     if (needsMemory && !previous) {
-      for (const key of tombstoneKeys(cluster)) {
-        const tomb = previousTombs[key];
-        if (tomb && seenBefore(tomb.t, tomb.s)) { suppressed = true; break; }
+      tombKey = tombIndex.get(cluster.leadKey) || null;
+      const tomb = tombKey ? previousTombs[tombKey] : null;
+      if (tomb && confirmedGone(tomb.g, tomb.t)) {
+        tombKey = null; // confirmed gone for long enough: this is a new occurrence
+      } else if (tomb) {
+        touchedTombs.add(tombKey);
+        if (tomb.u && Number.isFinite(Number(tomb.f))) {
+          // Left out earlier only because the registry was full: admit it now, keeping its original first-seen time.
+          firstSeen = Number(tomb.f);
+          previousStart = firstSeen;
+        } else suppressed = true;
+      } else if (estimated && inOverflow) {
+        overflowSuppressed = true;
       }
     }
     if (estimated) {
@@ -775,14 +838,14 @@ export function resolveProviderEvents({
       // starting when it first appeared in the provider playlist.
       start = previousStart ?? firstSeen;
       timeSource = "first-seen";
-      if (!suppressed) status.estimatedTimes += 1;
+      if (!suppressed && !overflowSuppressed) status.estimatedTimes += 1;
     }
     const end = start + eventDurationMinutes(category, lead.title) * MINUTE;
-    const expired = suppressed || now > end + tailMinutes * MINUTE;
-    const notYet = !suppressed && now < start - leadMinutes * MINUTE;
+    const expired = suppressed || overflowSuppressed || now > end + tailMinutes * MINUTE;
+    const notYet = !expired && now < start - leadMinutes * MINUTE;
 
     let id = previous?.id;
-    if (!id && !suppressed) {
+    if (!id && !suppressed && !overflowSuppressed) {
       const core = cluster.core?.size ? [...cluster.core] : signatureTokens(cluster.signature);
       const sigKey = normalize(`${core.sort().join(" ")}|${cluster.signature.qualifier}`);
       // Hour precision: the same title at 08:00 and 18:00 are different occurrences.
@@ -791,13 +854,18 @@ export function resolveProviderEvents({
       usedIds.add(id);
     }
 
-    if (needsMemory && expired) {
-      for (const key of tombstoneKeys(cluster)) tombs[key] = { t: now, s: cluster.sources };
+    if (suppressed) {
+      // Refresh the matched tombstone only; a suppressed cluster never adds tombstones of its own.
+      const tomb = previousTombs[tombKey];
+      tombs[tombKey] = { ...tomb, t: now, g: undefined, s: unionSources(tomb.s, cluster.sources) };
+    } else if (needsMemory && expired) {
+      tombs[cluster.leadKey] = { t: now, s: cluster.sources, m: cluster.memberKeys };
     }
     planned.push({
-      cluster, lead, category, id, start, end, timeSource, estimated, expired, notYet,
+      cluster, lead, category, id, start, end, timeSource, estimated, expired, notYet, suppressed, overflowSuppressed,
       known: Boolean(previous),
       needsMemory,
+      firstSeen,
       entry: { firstSeen, lastSeen: now, start, clock: cluster.clockOnly === true, sources: cluster.sources, sig: serializeSignature(cluster.signature) },
     });
   });
@@ -805,38 +873,50 @@ export function resolveProviderEvents({
   // 3. Decide what the (bounded) registry remembers: active events only. An event
   // whose time is only an estimate must be remembered or it would look brand new on
   // every refresh, so when the registry is full an estimated event that does not fit
-  // is not published. Expired events live in tombstones and never take these slots.
+  // is held back (as an "unadmitted" tombstone that keeps its first-seen time and can
+  // be admitted once there is room). Expired events live in tombstones and never take these slots.
   const wantsEntry = (p) => p.id && !(p.needsMemory && p.expired) && (p.needsMemory || (!p.expired && !p.notYet));
   const keepOrder = planned.filter(wantsEntry).sort((a, b) =>
     (b.known - a.known) || (b.needsMemory - a.needsMemory) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const registry = {};
   for (const plan of keepOrder.slice(0, REGISTRY_MAX_ENTRIES)) registry[plan.id] = plan.entry;
-  // Active entries not seen this refresh are carried over briefly (a short outage keeps estimates).
-  // An entry that matched a cluster this refresh was already handled above (kept, or
-  // turned into a tombstone because it expired) and must not be carried over again.
+  for (const plan of planned) {
+    if (plan.needsMemory && !plan.expired && plan.id && !registry[plan.id]) {
+      tombs[plan.cluster.leadKey] = { u: 1, f: plan.firstSeen, t: now, s: plan.cluster.sources, m: plan.cluster.memberKeys };
+    }
+  }
+
+  // Entries and tombstones nothing matched this refresh were absent from the scans. That only
+  // counts as "gone" if every source that carried them succeeded; it is recorded, never inferred later.
   const consumed = new Set(planned.filter((plan) => plan.known).map((plan) => plan.id));
   for (const [id, entry] of Object.entries(previousRegistry || {})) {
     if (id === META_KEY || registry[id] || consumed.has(id)) continue;
     if (Object.keys(registry).length >= REGISTRY_MAX_ENTRIES) break;
-    if (now - Number(entry?.lastSeen || 0) < REGISTRY_MAX_AGE_MS) registry[id] = entry;
+    if (now - Number(entry?.lastSeen || 0) >= REGISTRY_MAX_AGE_MS) continue;
+    const goneAt = Number.isFinite(Number(entry.goneAt)) ? Number(entry.goneAt) : (unconfirmed(entry.sources) ? undefined : now);
+    registry[id] = { ...entry, goneAt };
   }
-  // An estimated event that did not fit is suppressed (tombstoned), not forgotten: otherwise it
-  // would be published as "new" the moment a slot frees up although it has been listed all along.
-  for (const plan of planned) {
-    if (plan.needsMemory && !plan.expired && plan.id && !registry[plan.id]) {
-      for (const key of tombstoneKeys(plan.cluster)) tombs[key] = { t: now, s: plan.cluster.sources };
-    }
-  }
-  // Tombstones: refreshed when seen, otherwise kept for a few days, bounded.
   for (const [key, tomb] of Object.entries(previousTombs)) {
-    if (!tombs[key] && now - Number(tomb?.t || 0) < REGISTRY_MAX_AGE_MS) tombs[key] = tomb;
+    if (tombs[key] || touchedTombs.has(key)) continue;
+    if (now - Number(tomb?.t || 0) >= REGISTRY_MAX_AGE_MS) continue;
+    const g = Number.isFinite(Number(tomb.g)) ? Number(tomb.g) : (unconfirmed(tomb.s) ? undefined : now);
+    tombs[key] = { ...tomb, g };
   }
-  const tombEntries = Object.entries(tombs).sort((a, b) => Number(b[1].t) - Number(a[1].t)).slice(0, TOMBSTONE_MAX_ENTRIES);
-  registry[META_KEY] = { lastRun: now, tombs: Object.fromEntries(tombEntries) };
+  const tombEntries = Object.entries(tombs).sort((a, b) => Number(b[1].t) - Number(a[1].t) || (a[0] < b[0] ? -1 : 1));
+  const kept = tombEntries.slice(0, TOMBSTONE_MAX_ENTRIES);
+  registry[META_KEY] = {
+    lastRun: now,
+    tombs: Object.fromEntries(kept),
+    // Evicted tombstones can no longer suppress their events, so while that is possible new
+    // estimated events are not published (fail closed) rather than risk resurrecting them.
+    ...(tombEntries.length > kept.length ? { overflowAt: now } : inOverflow ? { overflowAt } : {}),
+  };
 
   // 4. Publish.
   const built = [];
   for (const plan of planned) {
+    if (plan.suppressed) { status.suppressed += 1; continue; }
+    if (plan.overflowSuppressed) { status.overflowSuppressed += 1; continue; }
     if (plan.needsMemory && !plan.expired && !registry[plan.id]) { status.unremembered += 1; continue; }
     if (plan.expired) { status.expired += 1; continue; }
     if (plan.notYet) { status.notYetActive += 1; continue; }

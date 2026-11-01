@@ -315,7 +315,7 @@ test("a clock-only time keeps its first resolved day across midnight instead of 
     registry = result.registry;
     assert.equal(result.refs.length, 0, `hour ${hour} must stay expired, not become tomorrow's event`);
   }
-  assert.equal(result.status.expired, 1);
+  assert.equal(result.status.expired + result.status.suppressed, 1);
 });
 
 test("a title confirmed absent for a long time is a new occurrence, an unobserved gap is not", () => {
@@ -595,22 +595,27 @@ test("a cluster's whole start-time span stays within tolerance, whatever order r
   assert.equal(clusterProviderEvents(rows).length, 2);
 });
 
-test("missing or malformed run metadata is not evidence of a recent sighting", () => {
+test("continuity depends on recorded confirmed absence, not on run metadata", () => {
   const day = Date.UTC(2026, 9, 29, 13, 0);
   const seeded = resolveProviderEvents({ items: [at("Concert Festival Grand Show", "", "a")], now: day });
   const [id] = Object.keys(seeded.registry).filter((k) => k !== "__meta");
   const now = day + 48 * 3_600_000;
-  const rebuilt = (registry) => {
+  const run = (registry) => {
     const item = at("Concert Festival Grand Show", "", "a");
     return resolveProviderEvents({ items: [{ ...item, parsed: parseProviderEventRow(item.row, { ...opts, now }) }], previousRegistry: registry, now });
   };
-  for (const meta of [undefined, { lastRun: "soon" }, { lastRun: -5 }, { lastRun: now + 10 * 24 * 3_600_000 }]) {
+  // No successful scan ever saw it gone, whatever the metadata says (missing, garbage, in the future).
+  for (const meta of [undefined, { lastRun: "soon" }, { lastRun: -5 }, { lastRun: now + 10 * 24 * 3_600_000 }, { tombs: "nope" }]) {
     const registry = { [id]: seeded.registry[id] };
     if (meta) registry.__meta = meta;
-    const result = rebuilt(registry);
-    assert.equal(result.refs.length, 1, `meta ${JSON.stringify(meta)}: a 48h-old estimate must be treated as a new occurrence`);
-    assert.equal(result.refs[0].start, now);
+    assert.equal(run(registry).refs.length, 0, `meta ${JSON.stringify(meta)}`);
   }
+  // Once a scan with all its sources healthy missed it, it is gone and the title is a new occurrence.
+  const absent = resolveProviderEvents({ items: [], previousRegistry: seeded.registry, now: day + 24 * 3_600_000 });
+  assert.ok(Number.isFinite(absent.registry[id].goneAt));
+  const back = run(absent.registry);
+  assert.equal(back.refs.length, 1);
+  assert.equal(back.refs[0].start, now);
 });
 
 test("a weekday and a clock are one expression in either order", () => {
@@ -643,4 +648,120 @@ test("stale guide cleanup only looks at an element's own id / channel attribute"
   const started = process.hrtime.bigint();
   assert.equal(removeStaleProviderEvents(`<tv>\n${many}\n</tv>`, []).includes("justone.pevent"), false);
   assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 2000);
+});
+
+test("a tombstone suppresses only the event it was written for, not one that shares a generic alias", () => {
+  const at12 = Date.UTC(2026, 9, 31, 12, 0), at17 = Date.UTC(2026, 9, 31, 17, 0), at18 = Date.UTC(2026, 9, 31, 18, 0);
+  const pair = (now, titles) => titles.map(([title, src]) => ({ ...at(title, "", src), parsed: parseProviderEventRow(at(title, "", src).row, { ...opts, now }) }));
+  const first = resolveProviderEvents({ items: pair(at12, [["Comedy Night Show", "a"], ["Night Show", "b"]]), now: at12 });
+  assert.equal(first.refs.length, 1);
+  const expired = resolveProviderEvents({ items: pair(at17, [["Comedy Night Show", "a"], ["Night Show", "b"]]), previousRegistry: first.registry, now: at17 });
+  assert.equal(expired.refs.length, 0);
+  const next = resolveProviderEvents({ items: pair(at18, [["Music Night Show", "a"], ["Night Show", "b"]]), previousRegistry: expired.registry, now: at18 });
+  assert.deepEqual(next.refs.map((r) => r.name), ["Music Night Show"], "the different event is published");
+  // The old event stays suppressed when only its generic alias is left, and the suppressed cluster adds no tombstones.
+  const tombsBefore = Object.keys(expired.registry.__meta.tombs).length;
+  const alias = resolveProviderEvents({ items: pair(at18, [["Night Show", "b"]]), previousRegistry: expired.registry, now: at18 });
+  assert.equal(alias.refs.length, 0);
+  assert.equal(alias.status.suppressed, 1);
+  assert.equal(Object.keys(alias.registry.__meta.tombs).length, tombsBefore);
+});
+
+test("an event held back only because the registry was full is admitted later, keeping its first-seen time", () => {
+  const wide = { maxEvents: 5000 };
+  const t10 = Date.UTC(2026, 9, 31, 10, 0), t11 = Date.UTC(2026, 9, 31, 11, 0), t1410 = Date.UTC(2026, 9, 31, 14, 10);
+  const fresh = (now) => { const r = row("PPV| LIVE EVENT 9999 [Fresh New Gala Special]", "VIP | PPV-SPORT EVENTS"); return { source: source("a"), row: r, parsed: parseProviderEventRow(r, { ...opts, now }) }; };
+  const run1 = resolveProviderEvents({ items: untimed(1000, t10), now: t10, ...wide });
+  const run2 = resolveProviderEvents({ items: [...untimed(1000, t11), fresh(t11)], previousRegistry: run1.registry, now: t11, ...wide });
+  assert.equal(run2.status.unremembered, 1);
+  assert.equal(run2.refs.length, 1000);
+  const run3 = resolveProviderEvents({ items: [...untimed(1000, t1410), fresh(t1410)], previousRegistry: run2.registry, now: t1410, ...wide });
+  assert.deepEqual(run3.refs.map((r) => r.name), ["Fresh New Gala Special"]);
+  assert.equal(run3.refs[0].start, t11, "estimated start is when it was first seen, not when it was admitted");
+});
+
+test("tombstone overflow fails closed instead of resurrecting an evicted expired event", () => {
+  const t12 = Date.UTC(2026, 9, 31, 12, 0), t17 = Date.UTC(2026, 9, 31, 17, 0), t1701 = Date.UTC(2026, 9, 31, 17, 1);
+  const wide = { maxEvents: 50_000 };
+  const run1 = resolveProviderEvents({ items: untimed(20_001, t12), now: t12, ...wide });
+  assert.equal(run1.refs.length, 1000);
+  const run2 = resolveProviderEvents({ items: untimed(20_001, t17), previousRegistry: run1.registry, now: t17, ...wide });
+  assert.equal(run2.refs.length, 0);
+  assert.ok(Number.isFinite(run2.registry.__meta.overflowAt), "the overflow is recorded");
+  const run3 = resolveProviderEvents({ items: untimed(20_001, t1701), previousRegistry: run2.registry, now: t1701, ...wide });
+  assert.equal(run3.refs.length, 0, "nothing continuously listed comes back");
+  assert.ok(run3.status.overflowSuppressed >= 1);
+});
+
+test("a failed scan followed by recovery does not start a new occurrence", () => {
+  const day = (n) => Date.UTC(2026, 9, 31 + n, 13, 0);
+  const festival = (now) => [{ ...at("Festival Grand Show", "", "a"), parsed: parseProviderEventRow(at("Festival Grand Show", "", "a").row, { ...opts, now }) }];
+  const d1 = resolveProviderEvents({ items: festival(day(0)), now: day(0) });
+  const d2 = resolveProviderEvents({ items: [], previousRegistry: d1.registry, now: day(1), failedSourceIds: ["a"] });
+  const d3 = resolveProviderEvents({ items: festival(day(2)), previousRegistry: d2.registry, now: day(2), failedSourceIds: [] });
+  assert.equal(d3.refs.length, 0, "no successful scan ever saw it gone");
+});
+
+test("every contributing source is tracked, however many there are", () => {
+  const day = (n) => Date.UTC(2026, 9, 31 + n, 13, 0);
+  const nine = (now) => Array.from({ length: 9 }, (_, i) => ({ ...at("Festival Grand Show", "", `s${i}`), parsed: parseProviderEventRow(at("Festival Grand Show", "", `s${i}`).row, { ...opts, now }) }));
+  const d1 = resolveProviderEvents({ items: nine(day(0)), now: day(0) });
+  assert.equal(Object.values(d1.registry).find((e) => e.sources).sources.length, 9);
+  const d2 = resolveProviderEvents({ items: [], previousRegistry: d1.registry, now: day(1), failedSourceIds: ["s8"] });
+  const d3 = resolveProviderEvents({ items: nine(day(2)).slice(0, 1), previousRegistry: d2.registry, now: day(2), failedSourceIds: ["s8"] });
+  assert.equal(d3.refs.length, 0, "s8 carried the event and was down, so its absence was never confirmed");
+  // Beyond the tracking limit the list is unknown (null) and every failure is treated as relevant.
+  const many = (now) => Array.from({ length: 70 }, (_, i) => ({ ...at("Festival Grand Show", "", `m${i}`), parsed: parseProviderEventRow(at("Festival Grand Show", "", `m${i}`).row, { ...opts, now }) }));
+  const m1 = resolveProviderEvents({ items: many(day(0)), now: day(0) });
+  assert.equal(Object.values(m1.registry).find((e) => "sources" in e).sources, null);
+  const m2 = resolveProviderEvents({ items: [], previousRegistry: m1.registry, now: day(1), failedSourceIds: ["unrelated"] });
+  assert.equal(Object.values(m2.registry).find((e) => "sources" in e).goneAt, undefined);
+});
+
+test("identical titles on many different dates are separated without scanning each other", () => {
+  const parsed = (i) => {
+    const date = new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+    const r = row(`PPV| LIVE EVENT ${i} [Canelo vs Mbilli (${date} 14:00:00)]`);
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
+  };
+  const stats = { comparisons: 0, candidates: 0 };
+  const clusters = clusterProviderEvents(Array.from({ length: 4000 }, (_, i) => parsed(i)), stats);
+  assert.equal(clusters.length, 4000);
+  assert.ok(stats.candidates < 40_000, `${stats.candidates} candidates examined for 4000 separate days`);
+  // Untimed rows still reach the timed clusters of the same title.
+  const untimedRow = { source: source("a"), row: row("PPV| LIVE EVENT 9 [Canelo vs Mbilli]"), parsed: null };
+  untimedRow.parsed = parseProviderEventRow(untimedRow.row, opts);
+  assert.equal(clusterProviderEvents([parsed(1), untimedRow]).length, 1);
+});
+
+test("stale guide cleanup understands XML: comments, CDATA, self-closing tags and quoted '>'", () => {
+  const stale = "justone.pevent.fake";
+  const bbc = '<channel id="bbc"><display-name>BBC One</display-name></channel>';
+  const gone = (guide, channels = []) => removeStaleProviderEvents(guide, channels);
+  // A commented-out channel must not swallow the real one that follows.
+  const commented = gone(`<tv>\n  <!-- <channel id="${stale}"> commented out -->\n  ${bbc}\n</tv>`);
+  assert.ok(commented.includes(bbc) && commented.endsWith("</tv>"));
+  // A self-closing stale channel is removed on its own.
+  const selfClosing = gone(`<tv><channel id="${stale}" />${bbc}</tv>`);
+  assert.ok(selfClosing.includes(bbc) && !selfClosing.includes(stale));
+  // A quoted ">" inside another attribute does not hide the id.
+  const quoted = gone(`<tv><channel note="foo > bar" id="${stale}"><display-name>Old</display-name></channel>${bbc}</tv>`);
+  assert.ok(!quoted.includes(stale) && quoted.includes(bbc));
+  // CDATA containing a closing tag does not end the element early.
+  const cdata = gone(`<tv><programme channel="${stale}" start="a" stop="b"><title><![CDATA[ </programme> ]]></title></programme><programme channel="bbc" start="a" stop="b"><title>News</title></programme></tv>`);
+  assert.ok(!cdata.includes(stale) && !cdata.includes("CDATA") && cdata.includes('<title>News</title>') && cdata.endsWith("</tv>"));
+  // Currently published ids and foreign ids are kept.
+  const live = gone(`<tv><channel id="${stale}"></channel></tv>`, [{ referenceKind: "event", tvgId: stale }]);
+  assert.ok(live.includes(stale));
+  // Malformed input with many unclosed opening tags still terminates (each element name is
+  // searched for a closing tag once, not once per opening tag) and keeps what it cannot parse.
+  const malformed = `<tv>${'<channel id="x">'.repeat(20_000)}</tv>`;
+  assert.equal(gone(malformed.replace("<tv>", `<tv><channel id="${stale}"/>`)).includes(stale), false);
+});
+
+test("an invalid weekday-clock time makes the row ineligible", () => {
+  const fri = { ...opts, now: Date.UTC(2026, 9, 30, 12, 0) };
+  for (const raw of ["Saturday 25:00 Canelo vs Mbilli", "Canelo vs Mbilli Sunday 99pm", "Sat 7:75pm Canelo vs Mbilli"]) {
+    assert.equal(parseProviderEventRow(row(`PPV 01 [${raw}]`), fri), null, raw);
+  }
 });

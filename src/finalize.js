@@ -214,18 +214,94 @@ function regexEscape(value) {
 // Provider-only events use the "justone.pevent." id prefix. A preserved
 // last-known-good guide can still carry ones that have since expired or been
 // switched off, so they are removed here unless they are currently published.
+/**
+ * Index just past the `>` that closes the tag starting at `from`, honouring quoted attribute
+ * values (which may contain `>`), plus the attribute text and whether the tag is self-closing.
+ */
+function readTag(xml, from) {
+  let quote = "";
+  for (let i = from + 1; i < xml.length; i++) {
+    const ch = xml[i];
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === ">") {
+      const inner = xml.slice(from + 1, i);
+      return { end: i + 1, selfClosing: inner.endsWith("/"), attrs: inner.replace(/^[^\s/>]+/, "") };
+    }
+  }
+  return null;
+}
+
+/** Skip a comment, CDATA section, processing instruction or declaration starting at `from`; -1 if `from` is none of those. */
+function skipMarkup(xml, from) {
+  const closers = [["<!--", "-->"], ["<![CDATA[", "]]>"], ["<?", "?>"], ["<!", ">"]];
+  for (const [open, close] of closers) {
+    if (!xml.startsWith(open, from)) continue;
+    const end = xml.indexOf(close, from + open.length);
+    return end < 0 ? xml.length : end + close.length;
+  }
+  return -1;
+}
+
+/** Index just past the closing tag of `name` that follows `from`, skipping comments and CDATA; -1 if there is none. */
+function findClosingTag(xml, from, name) {
+  const needle = `</${name}`;
+  for (let i = xml.indexOf("<", from); i >= 0; i = xml.indexOf("<", i + 1)) {
+    const skipped = skipMarkup(xml, i);
+    if (skipped >= 0) { i = skipped - 1; continue; }
+    if (xml.startsWith(needle, i) && /[\s>]/.test(xml[i + needle.length] || ">")) {
+      const gt = xml.indexOf(">", i);
+      return gt < 0 ? -1 : gt + 1;
+    }
+  }
+  return -1;
+}
+
+function attributeValue(attrs, name) {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
+  return m ? (m[1] ?? m[2]) : null;
+}
+
+// Provider-only events use the "justone.pevent." id prefix. A preserved
+// last-known-good guide can still carry ones that have since expired or been
+// switched off, so they are removed here unless they are currently published.
+// One linear pass over the document: elements are found by walking tags (not by
+// pattern-matching text), so comments, CDATA, self-closing tags, quoted ">" and
+// lookalike attributes (data-id, backup-channel) cannot make it delete anything else.
 export function removeStaleProviderEvents(guideXml, channels) {
+  const xml = String(guideXml || "");
+  if (!xml.includes("justone.pevent.")) return xml;
   const live = new Set((channels || []).filter((channel) => channel?.referenceKind === "event").map((channel) => channel.tvgId));
-  // Only the element's own `id` / `channel` attribute counts, never a suffix of another
-  // attribute name (data-id, backup-channel) or a value elsewhere in the element.
-  const attribute = (attrs, name) => {
-    const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
-    return m ? (m[1] ?? m[2]) : null;
-  };
   const stale = (id) => typeof id === "string" && id.startsWith("justone.pevent.") && !live.has(id);
-  return String(guideXml || "")
-    .replace(/<channel\b([^>]*)>[\s\S]*?<\/channel>[ \t]*\r?\n?/gi, (whole, attrs) => (stale(attribute(attrs, "id")) ? "" : whole))
-    .replace(/<programme\b([^>]*)>[\s\S]*?<\/programme>[ \t]*\r?\n?/gi, (whole, attrs) => (stale(attribute(attrs, "channel")) ? "" : whole));
+  const out = [];
+  let copiedTo = 0;
+  const unclosed = new Set(); // element names with no closing tag anywhere after this point
+  let i = 0;
+  while ((i = xml.indexOf("<", i)) >= 0) {
+    const skipped = skipMarkup(xml, i);
+    if (skipped >= 0) { i = skipped; continue; }
+    const m = /^<(channel|programme)(?=[\s/>])/.exec(xml.slice(i, i + 12));
+    if (!m) { i += 1; continue; }
+    const name = m[1];
+    const tag = readTag(xml, i);
+    if (!tag) break;
+    let end = tag.end;
+    if (!tag.selfClosing) {
+      if (unclosed.has(name)) { i = tag.end; continue; }
+      end = findClosingTag(xml, tag.end, name);
+      if (end < 0) { unclosed.add(name); i = tag.end; continue; }
+    }
+    if (stale(attributeValue(tag.attrs, name === "channel" ? "id" : "channel"))) {
+      out.push(xml.slice(copiedTo, i));
+      const trailing = /^[ \t]*\r?\n?/.exec(xml.slice(end, end + 8))[0].length;
+      copiedTo = end + trailing;
+      i = copiedTo;
+    } else {
+      i = end;
+    }
+  }
+  out.push(xml.slice(copiedTo));
+  return out.join("");
 }
 
 export function syncGuideEvents(guideXml, channels) {
