@@ -6,6 +6,8 @@
 
 // Order matters: a kids' movie channel is "Kids", a sports-news channel is "Sports".
 const CHANNEL_RULES = [
+  // An explicit "Sports" in the name wins over brand rules ("Showtime Sports", "Nick Sports").
+  ["Sports", /\bsports?\b/i],
   ["Kids", /\b(?:kids?|junior|jr|nick(?:elodeon|toons|\s?jr)?|teennick|cartoon(?:ito)?|disney|boomerang|toons?|cbeebies|cbbc|baby\s?tv|children|clan|pop\s?max|gulli|tiji|piwi)\b/i],
   ["Movie", /\b(?:cinema|movies?|films?|film4|cinemax|hbo|showtime|starz|sundance|tcm|amc|flix|epix|encore|cine(?:latino)?|pelicul\w*|filmes|kino)\b/i],
   ["Sports", /\b(?:sports?|espn[a-z0-9]*|tsn\d*|laliga\s?tv|sporting\s?tv|benfica\s?tv|mutv|lfctv|chelsea\s?tv|bein|dazn|eurosport|golf|tennis|nba|nfl|nhl|mlb|mls|supersport|racing|motorsport|motogp|f1|ufc|wwe|fight|sportsnet|setanta|sporttv|sport\s?tv|arena\s?sport|premier\s?league|laliga|bundesliga|serie\s?a|ligue\s?1)\b/i],
@@ -24,6 +26,11 @@ export function eventIsSport(category) {
   return !/^(?:music|tv\s*&\s*entertainment)$/i.test(String(category || "").trim());
 }
 
+/** True when a generated programme should get the generic Sports tag: a sport, and not already tagged Sport(s). */
+export function needsSportsTag(category) {
+  return eventIsSport(category) && !/^sports?$/i.test(String(category || "").trim());
+}
+
 /**
  * Add `<category>label</category>` to a programme's XML unless it already has one
  * with that name; keeps whatever the provider supplied. `onlyIfNone` skips
@@ -32,7 +39,9 @@ export function eventIsSport(category) {
 export function addCategory(programmeXml, label, { onlyIfNone = false } = {}) {
   const xml = String(programmeXml || "");
   if (!label) return xml;
-  const existing = [...xml.matchAll(/<category\b[^>]*>([\s\S]*?)<\/category>/gi)].map((m) => m[1].trim().toLowerCase());
+  // Ignore comments and CDATA so category-looking text inside them is not mistaken for a tag.
+  const visible = xml.replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "");
+  const existing = [...visible.matchAll(/<category\b[^>]*>([\s\S]*?)<\/category>/gi)].map((m) => m[1].trim().toLowerCase());
   if (onlyIfNone && existing.length) return xml;
   if (existing.includes(label.toLowerCase())) return xml;
   return xml.replace(/<\/programme>/i, `  <category>${label}</category>\n</programme>`);

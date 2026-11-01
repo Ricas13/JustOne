@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addCategory, eventIsSport, inferChannelCategory } from "../src/guide-categories.js";
+import { addCategory, eventIsSport, inferChannelCategory, needsSportsTag } from "../src/guide-categories.js";
 import { config } from "../src/config.js";
 import { enrichAndBuildGuide, parseXmlTv } from "../src/epg.js";
 
@@ -46,4 +46,51 @@ test("GUIDE_CATEGORIES_ENABLED=false disables inference", () => {
   config.guideCategories.enabled = false;
   try { assert.doesNotMatch(guide(), /<category>Movie<\/category>/); }
   finally { config.guideCategories.enabled = prev; }
+});
+
+import { eventTypeFor } from "../src/finalize.js";
+import { parseProtectedSchedule } from "../src/dlhd.js";
+
+test("explicit Sports-branded channels beat Movie/Kids brand rules", () => {
+  for (const name of ["Showtime Sports", "HBO Sports", "Nick Sports"]) assert.equal(inferChannelCategory({ name }), "Sports", name);
+  assert.equal(inferChannelCategory({ name: "Disney Channel" }), "Kids");
+});
+
+test("addCategory ignores category-looking text in CDATA and comments", () => {
+  const p = `<programme channel="a"><title>F</title><desc><![CDATA[See <category>News</category>]]></desc><!-- <category>Kids</category> --></programme>`;
+  assert.match(addCategory(p, "Movie", { onlyIfNone: true }), /<category>Movie<\/category>\s*<\/programme>/);
+});
+
+test("football with 'Live From' in the title stays Football", () => {
+  assert.equal(eventTypeFor({ category: "Football", name: "Premier League Live From Anfield" }), "Football");
+  assert.equal(eventTypeFor({ category: "Football", name: "Live From Old Trafford: Manchester United vs Chelsea" }), "Football");
+});
+
+test("needsSportsTag: not for music, not when already Sports", () => {
+  assert.equal(needsSportsTag("Music"), false);
+  assert.equal(needsSportsTag("Sports"), false);
+  assert.equal(needsSportsTag("Sport"), false);
+  assert.equal(needsSportsTag("Football"), true);
+});
+
+test("double-encoded DLHD titles are fully decoded", () => {
+  const payload = { "Sunday 13th Sep 2026": { Football: [{ event: "Brighton &amp;amp; Hove v X", time: "15:00", channels: [{ channel_id: "1", channel_name: "A" }] }] } };
+  const { events } = parseProtectedSchedule(payload);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].name ?? events[0].title, "Brighton & Hove v X");
+});
+
+function gapFill(category) {
+  const parsed = parseXmlTv(`<?xml version="1.0"?><tv><channel id="b.uk"><display-name>BBC One</display-name></channel></tv>`);
+  const channels = [{ id: "b", key: "bbc one", tvgId: "justone.b", name: "BBC One", logo: "", aliasNames: [], dlhdRefId: "channel-b", referenceKind: "channel", variants: [{ originalTvgId: "b.uk" }] }];
+  const dlhdReference = { linearEvents: [{ id: "g", name: "Gap Event", category, start: Date.UTC(2026, 8, 18, 20, 30), end: Date.UTC(2026, 8, 18, 22, 30), linkedStaticChannels: [{ id: "channel-b" }] }] };
+  return enrichAndBuildGuide(channels, [{ id: "g", name: "G", parsed }], {}, { dlhdReference });
+}
+
+test("gap-fill programmes: music is not Sports, Sports is not duplicated, football gets one", () => {
+  const music = gapFill("Music");
+  assert.match(music, /<title>Gap Event<\/title>/);
+  assert.doesNotMatch(music, /<category>Sports<\/category>/);
+  assert.equal((gapFill("Sports").match(/<category>Sports<\/category>/g) || []).length, 1);
+  assert.equal((gapFill("Football").match(/<category>Sports<\/category>/g) || []).length, 1);
 });

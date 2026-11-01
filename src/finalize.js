@@ -1,5 +1,5 @@
 import { config, withInternalKey } from "./config.js";
-import { eventIsSport } from "./guide-categories.js";
+import { needsSportsTag } from "./guide-categories.js";
 import { countryGroup, countryName, countryOf } from "./identity.js";
 import { providerOrderForChannel } from "./provider-order.js";
 import { normalize, text, xmlEscape } from "./util.js";
@@ -48,7 +48,7 @@ export function eventTypeFor(ref = {}) {
   if (/\b(?:cycling|tour de|giro d|vuelta)\b/.test(hay)) return "Cycling";
   if (/\b(?:darts|pdc)\b/.test(hay)) return "Darts";
   if (/\b(?:snooker|billiards)\b/.test(hay)) return "Snooker";
-  if (/\b(?:rock in rio|festival|concert|music|coachella|tomorrowland|glastonbury|live from)\b/.test(hay)) return "Music";
+  if (/\b(?:rock in rio|festival|concert|music|coachella|tomorrowland|glastonbury)\b/.test(hay)) return "Music";
   if (/\b(?:jeopardy|tv shows?|premiere|episode|season)\b/.test(hay)) return "TV & Entertainment";
 
   if (/\b(?:soccer|football|futsal|premier league|champions league|europa league|conference league|la liga|liga i|liga 1|liga 2|serie a|serie b|allsvenskan|superettan|brasileirao|eredivisie|bundesliga|mls|nws|copa|cup|division|league one|league two|national league|eerste divisie|challenger pro league|pro league|primeira liga|segunda liga|serie [abc]|ligue [123]|eliteserien|ekstraklasa|i liga|prva liga|botola|premiership|nwsl|a league|k league|j league|fc|afc|liga)\b/.test(hay)) return "Football";
@@ -201,7 +201,7 @@ function eventXml(channel) {
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.competition ? `    <sub-title>${xmlEscape(event.competition)}</sub-title>` : "",
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && eventIsSport(event.category) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(description)}</desc>`,
     event.programmeArtwork ? `    <icon src="${xmlEscape(event.programmeArtwork)}" />` : "",
     "  </programme>",

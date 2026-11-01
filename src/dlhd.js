@@ -14,7 +14,9 @@ function htmlText(value) {
 }
 // DLHD sometimes double-encodes titles ("Brighton &amp;amp; Hove"): decode what is left.
 function decodeTitleEntities(value) {
-  return /&(?:amp|lt|gt|quot|apos|#\d+);/i.test(value) ? text(xmlDecode(value)) : value;
+  if (!/&(?:amp|lt|gt|quot|apos|#\d+);/i.test(value)) return value;
+  // Unwrap one layer of "&amp;" only when it escapes another entity, then decode once.
+  return text(xmlDecode(value.replace(/&amp;(amp|lt|gt|quot|apos|#\d+);/gi, "&$1;")));
 }
 function logoUrl(baseUrl, value) {
   const raw = text(value);

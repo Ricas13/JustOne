@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import { addCategory, eventIsSport, inferChannelCategory } from "./guide-categories.js";
+import { addCategory, inferChannelCategory, needsSportsTag } from "./guide-categories.js";
 import { normalize, stripTags, text, xmlDecode, xmlEscape } from "./util.js";
 
 const EPG_QUALITY_SUFFIXES = new Set(["hd", "fhd", "uhd", "4k", "sd", "hevc", "h264", "h265", "1080p", "720p", "2160p"]);
@@ -331,7 +331,7 @@ function generatedLinearProgramme(event, channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(event.name || "Live Event")}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && !/^sports?$/i.test(text(event.category)) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape("DLHD schedule reference for this linear channel.")}</desc>`,
     logo ? `    <icon src="${xmlEscape(logo)}" />` : "",
     "  </programme>",
@@ -347,7 +347,7 @@ function generatedEventProgramme(channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
-    config.guideCategories.enabled && eventIsSport(event.category) ? "    <category>Sports</category>" : "",
+    config.guideCategories.enabled && needsSportsTag(event.category) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(event.source === "provider" ? "Event listed by the IPTV provider." : "DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
     channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
     "  </programme>",
