@@ -336,10 +336,14 @@ test("a title confirmed absent for a long time is a new occurrence, an unobserve
   assert.equal(back.refs.length, 1);
   assert.equal(back.refs[0].start, NOW + 2 * 24 * 3_600_000);
 
-  // If a source was down during those refreshes, absence is unconfirmed.
-  const failedScan = resolveProviderEvents({ items: [], previousRegistry: first.registry, now: NOW + 24 * 3_600_000, sourcesIncomplete: true });
-  const afterFailure = resolveProviderEvents({ items, previousRegistry: failedScan.registry, now: NOW + 2 * 24 * 3_600_000, sourcesIncomplete: true });
+  // If the source that carried it was down during those refreshes, absence is unconfirmed...
+  const failedScan = resolveProviderEvents({ items: [], previousRegistry: first.registry, now: NOW + 24 * 3_600_000, failedSourceIds: ["a"] });
+  const afterFailure = resolveProviderEvents({ items, previousRegistry: failedScan.registry, now: NOW + 2 * 24 * 3_600_000, failedSourceIds: ["a"] });
   assert.equal(afterFailure.refs.length, 0);
+  // ...but an unrelated source being down confirms nothing either way: source "a" saw it gone.
+  const unrelatedScan = resolveProviderEvents({ items: [], previousRegistry: first.registry, now: NOW + 24 * 3_600_000, failedSourceIds: ["b"] });
+  const afterUnrelated = resolveProviderEvents({ items, previousRegistry: unrelatedScan.registry, now: NOW + 2 * 24 * 3_600_000, failedSourceIds: ["b"] });
+  assert.equal(afterUnrelated.refs.length, 1);
 });
 
 test("the registry only remembers events that need it and stays bounded", () => {
@@ -351,7 +355,7 @@ test("the registry only remembers events that need it and stays bounded", () => 
     return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
   });
   const big = resolveProviderEvents({ items, now: NOW });
-  assert.ok(Object.keys(big.registry).length <= 2000);
+  assert.ok(Object.keys(big.registry).length <= 1001);
   assert.equal(big.refs.length, 150);
 });
 
@@ -459,7 +463,7 @@ test("a full registry fails closed: estimated events that cannot be remembered a
     return { source: source("a"), row: r, parsed: parseProviderEventRow(r, { ...opts, now: at_ }) };
   });
   const first = resolveProviderEvents({ items: make(2010, now), now });
-  assert.equal(first.status.unremembered, 11, "2000 slots (one is the meta entry) fit; the rest are dropped");
+  assert.equal(first.status.unremembered, 1010, "1000 active slots fit; the rest are not published");
   const later = Date.UTC(2026, 9, 31, 19, 0);
   const second = resolveProviderEvents({ items: make(2010, later), previousRegistry: first.registry, now: later });
   assert.equal(second.refs.length, 0, "nothing that expired is re-created because it was evicted");
@@ -519,4 +523,124 @@ test("a retained variant only follows the same occurrence of an event", () => {
   const old = { event: { start: Date.UTC(2026, 9, 31, 10, 0) } };
   assert.equal(sameProviderOccurrence(old, { event: { start: Date.UTC(2026, 9, 31, 12, 0) } }), true);
   assert.equal(sameProviderOccurrence(old, { event: { start: Date.UTC(2026, 10, 1, 10, 0) } }), false);
+});
+
+const untimed = (n, now, prefix = "Gala", src = "a") => Array.from({ length: n }, (_, i) => {
+  const r = row(`PPV| LIVE EVENT ${src}${i} [${prefix} Number${i} Spectacular${i}]`, "VIP | PPV-SPORT EVENTS");
+  return { source: source(src), row: r, parsed: parseProviderEventRow(r, { ...opts, now }) };
+});
+
+test("expired events never starve a new event, and are not re-created either", () => {
+  const first = Date.UTC(2026, 9, 31, 13, 0);
+  const later = Date.UTC(2026, 9, 31, 19, 0);
+  const wide = { maxEvents: 5000 };
+  const a = resolveProviderEvents({ items: untimed(900, first), now: first, ...wide });
+  assert.equal(a.refs.length, 900);
+  const fresh = at("New Gala Zzzz Special", "", "a");
+  const b = resolveProviderEvents({
+    items: [...untimed(900, later), { ...fresh, parsed: parseProviderEventRow(fresh.row, { ...opts, now: later }) }],
+    previousRegistry: a.registry, now: later, ...wide,
+  });
+  assert.deepEqual(b.refs.map((x) => x.name), ["New Gala Zzzz Special"], "the new event is published; the 900 expired ones are not");
+  assert.equal(b.status.unremembered, 0);
+  // Even filling the active registry with expired titles cannot hide a new one.
+  const full = resolveProviderEvents({ items: untimed(1000, first), now: first, ...wide });
+  assert.equal(full.refs.length, 1000);
+  const next = resolveProviderEvents({
+    items: [...untimed(1000, later), { ...fresh, parsed: parseProviderEventRow(fresh.row, { ...opts, now: later }) }],
+    previousRegistry: full.registry, now: later, ...wide,
+  });
+  assert.deepEqual(next.refs.map((x) => x.name), ["New Gala Zzzz Special"]);
+});
+
+test("a constant opponent does not make clustering quadratic", () => {
+  const parsed = (title, i, hour = 14) => {
+    const r = row(`PPV| LIVE EVENT ${i} [${title} (2026-10-31 ${hour}:00:00)]`);
+    return { source: source("a"), row: r, parsed: parseProviderEventRow(r, opts) };
+  };
+  for (const make of [(i) => `Alpha Team${i} vs Beta`, (i) => `Gamma vs Delta Club${i}`, (i) => `Beta vs Alpha Team${i}`]) {
+    const stats = { comparisons: 0 };
+    const clusters = clusterProviderEvents(Array.from({ length: 3000 }, (_, i) => parsed(make(i), i)), stats);
+    assert.equal(clusters.length, 3000);
+    assert.ok(stats.comparisons < 30_000, `${stats.comparisons} comparisons for ${make(0)}`);
+  }
+  // Correctness is unchanged: variants of one fixture still merge when the other side is shared.
+  const merged = clusterProviderEvents([parsed("Alpha Team1 vs Beta", 1), parsed("Alpha vs Beta", 2), parsed("Alpha Team2 vs Beta", 3)]);
+  assert.deepEqual(merged.map((c) => c.items.length).sort(), [1, 2]);
+});
+
+test("an outage of an unrelated source does not stop a returning event being recognised as new", () => {
+  const day = (n) => Date.UTC(2026, 9, 31 + n, 13, 0);
+  const concert = (now) => [{ ...at("Concert Festival Grand Show", "", "a"), parsed: parseProviderEventRow(at("Concert Festival Grand Show", "", "a").row, { ...opts, now }) }];
+  const d1 = resolveProviderEvents({ items: concert(day(0)), now: day(0), failedSourceIds: [] });
+  assert.equal(d1.refs.length, 1);
+  const d2 = resolveProviderEvents({ items: [], previousRegistry: d1.registry, now: day(1), failedSourceIds: ["b"] });
+  const unrelated = resolveProviderEvents({ items: concert(day(2)), previousRegistry: d2.registry, now: day(2), failedSourceIds: ["b"] });
+  assert.equal(unrelated.refs.length, 1, "source a saw it gone on day 2; source b being down is irrelevant");
+  assert.equal(unrelated.refs[0].start, day(2));
+  const d2a = resolveProviderEvents({ items: [], previousRegistry: d1.registry, now: day(1), failedSourceIds: ["a"] });
+  const related = resolveProviderEvents({ items: concert(day(2)), previousRegistry: d2a.registry, now: day(2), failedSourceIds: ["a"] });
+  assert.equal(related.refs.length, 0, "its own source was down, so its disappearance was never confirmed");
+});
+
+test("a cluster's whole start-time span stays within tolerance, whatever order rows arrive in", () => {
+  const rows = [15, 8, 22].map((hour, i) => at("Cricket Live", `2026-10-31 ${String(hour).padStart(2, "0")}:00:00`, `s${i}`));
+  const shapes = new Set();
+  for (const order of [[0, 1, 2], [1, 0, 2], [2, 0, 1], [0, 2, 1], [1, 2, 0], [2, 1, 0]]) {
+    const clusters = clusterProviderEvents(order.map((i) => rows[i]));
+    for (const c of clusters) assert.ok(c.maxStart - c.minStart <= 8 * 3_600_000, "span too wide");
+    shapes.add(clusters.map((c) => c.starts.map((t) => new Date(t).getUTCHours()).sort((a, b) => a - b).join(",")).sort().join(" | "));
+  }
+  assert.equal(shapes.size, 1);
+  assert.equal(clusterProviderEvents(rows).length, 2);
+});
+
+test("missing or malformed run metadata is not evidence of a recent sighting", () => {
+  const day = Date.UTC(2026, 9, 29, 13, 0);
+  const seeded = resolveProviderEvents({ items: [at("Concert Festival Grand Show", "", "a")], now: day });
+  const [id] = Object.keys(seeded.registry).filter((k) => k !== "__meta");
+  const now = day + 48 * 3_600_000;
+  const rebuilt = (registry) => {
+    const item = at("Concert Festival Grand Show", "", "a");
+    return resolveProviderEvents({ items: [{ ...item, parsed: parseProviderEventRow(item.row, { ...opts, now }) }], previousRegistry: registry, now });
+  };
+  for (const meta of [undefined, { lastRun: "soon" }, { lastRun: -5 }, { lastRun: now + 10 * 24 * 3_600_000 }]) {
+    const registry = { [id]: seeded.registry[id] };
+    if (meta) registry.__meta = meta;
+    const result = rebuilt(registry);
+    assert.equal(result.refs.length, 1, `meta ${JSON.stringify(meta)}: a 48h-old estimate must be treated as a new occurrence`);
+    assert.equal(result.refs[0].start, now);
+  }
+});
+
+test("a weekday and a clock are one expression in either order", () => {
+  const fri = { ...opts, now: Date.UTC(2026, 9, 30, 12, 0) }; // Friday 30 Oct 2026
+  const sat7pm = Date.UTC(2026, 9, 31, 19, 0);
+  for (const raw of ["Canelo vs Mbilli Sat 7 pm", "Sat 7 pm Canelo vs Mbilli", "Canelo vs Mbilli Saturday 19:00", "7pm Sat Canelo vs Mbilli", "Saturday, 7:00pm Canelo vs Mbilli"]) {
+    const parsed = parseProviderEventRow(row(`PPV 01 [${raw}]`), fri);
+    assert.equal(parsed.title, "Canelo vs Mbilli", raw);
+    assert.equal(parsed.start, sat7pm, raw);
+    assert.equal(parsed.timeSource, "title-weekday", raw);
+  }
+  // A bare number after a weekday is not a clock.
+  assert.equal(parseProviderEventRow(row("PPV 01 [Sun 5 Nations Highlights Show]"), fri).start, null);
+});
+
+test("stale guide cleanup only looks at an element's own id / channel attribute", () => {
+  const guide = [
+    "<tv>",
+    '  <channel id="justone.bbc" data-id="justone.pevent.fake"><display-name>BBC</display-name></channel>',
+    '  <programme channel="justone.bbc" backup-channel="justone.pevent.fake" start="20261031100000 +0000" stop="20261031110000 +0000"><title>News</title></programme>',
+    '  <channel id="justone.pevent.gone-1"><display-name>Gone</display-name></channel>',
+    "  <programme start=\"20261031100000 +0000\" stop=\"20261031110000 +0000\" channel='justone.pevent.gone-1'><title>Gone</title></programme>",
+    "</tv>",
+  ].join("\n");
+  const cleaned = removeStaleProviderEvents(guide, []);
+  assert.ok(cleaned.includes('id="justone.bbc"') && cleaned.includes('<title>News</title>'), "unrelated BBC entries survive");
+  assert.ok(!cleaned.includes("gone-1") && !cleaned.includes("<title>Gone</title>"));
+  // One pass over the document, however many stale ids there are.
+  const many = Array.from({ length: 300 }, (_, i) => `<channel id="justone.pevent.x-${i}"><display-name>x</display-name></channel><programme channel="justone.pevent.x-${i}" start="a" stop="b"><title>x</title></programme>`).join("\n");
+  const started = process.hrtime.bigint();
+  assert.equal(removeStaleProviderEvents(`<tv>\n${many}\n</tv>`, []).includes("justone.pevent"), false);
+  assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 2000);
 });

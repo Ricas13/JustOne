@@ -215,20 +215,17 @@ function regexEscape(value) {
 // last-known-good guide can still carry ones that have since expired or been
 // switched off, so they are removed here unless they are currently published.
 export function removeStaleProviderEvents(guideXml, channels) {
-  let xml = String(guideXml || "");
   const live = new Set((channels || []).filter((channel) => channel?.referenceKind === "event").map((channel) => channel.tvgId));
-  const staleIds = new Set();
-  for (const match of xml.matchAll(/\b(?:id|channel)=(?:"(justone\.pevent\.[^"]*)"|'(justone\.pevent\.[^']*)')/g)) {
-    const id = match[1] || match[2];
-    if (!live.has(id)) staleIds.add(id);
-  }
-  for (const id of staleIds) {
-    const escaped = regexEscape(id);
-    xml = xml
-      .replace(new RegExp(`\\s*<channel\\b[^>]*\\bid=(?:"${escaped}"|'${escaped}')[^>]*>[\\s\\S]*?<\\/channel>\\s*`, "gi"), "\n")
-      .replace(new RegExp(`\\s*<programme\\b(?=[^>]*\\bchannel=(?:"${escaped}"|'${escaped}'))[^>]*>[\\s\\S]*?<\\/programme>\\s*`, "gi"), "\n");
-  }
-  return xml;
+  // Only the element's own `id` / `channel` attribute counts, never a suffix of another
+  // attribute name (data-id, backup-channel) or a value elsewhere in the element.
+  const attribute = (attrs, name) => {
+    const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
+    return m ? (m[1] ?? m[2]) : null;
+  };
+  const stale = (id) => typeof id === "string" && id.startsWith("justone.pevent.") && !live.has(id);
+  return String(guideXml || "")
+    .replace(/<channel\b([^>]*)>[\s\S]*?<\/channel>[ \t]*\r?\n?/gi, (whole, attrs) => (stale(attribute(attrs, "id")) ? "" : whole))
+    .replace(/<programme\b([^>]*)>[\s\S]*?<\/programme>[ \t]*\r?\n?/gi, (whole, attrs) => (stale(attribute(attrs, "channel")) ? "" : whole));
 }
 
 export function syncGuideEvents(guideXml, channels) {

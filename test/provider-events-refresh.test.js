@@ -108,3 +108,19 @@ test("when the source recovers its variant is simply the fresh one", async () =>
   assert.equal(events.length, 1);
   assert.deepEqual(urls(events[0]), ["http://a.example/stream/1.ts", "http://b.example/stream/9.ts"]);
 });
+
+test("a still-open window is not enough: an incompatible occurrence does not inherit a failed source's variant", async () => {
+  const saved = await loadSnapshot();
+  const [channel] = providerEvents(saved);
+  // The remembered occurrence is still "open" (ends in the future) but starts a day after the current one.
+  channel.event.start = Date.now() + 20 * 3_600_000;
+  channel.event.end = channel.event.start + 3 * 3_600_000;
+  channel.variants = [{ ...channel.variants[0], sourceId: "src_a", url: "http://a.example/stream/old.ts" }];
+  await saveSnapshot(saved);
+
+  fs.rmSync(path.join(dataDir, "provider-cache"), { recursive: true, force: true });
+  routes.set("/a.m3u", { status: 500, body: "boom" });
+  const events = providerEvents(await refreshCatalog({ sourceMode: "auto" }));
+  assert.equal(events.length, 1);
+  assert.deepEqual(urls(events[0]), ["http://b.example/stream/9.ts"]);
+});

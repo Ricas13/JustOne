@@ -889,7 +889,7 @@ export async function refreshCatalog({ onProgress, sourceMode = "auto" } = {}) {
       leadMinutes: config.providerEvents.leadMinutes,
       tailMinutes: config.providerEvents.tailMinutes,
       maxEvents: config.providerEvents.maxEvents,
-      sourcesIncomplete: sourceStatus.some((status) => !status.ok),
+      failedSourceIds: sourceStatus.filter((status) => !status.ok).map((status) => status.id),
     });
     sourceRows.push(...providerEvents.rows);
     for (const row of providerEvents.rows) matchedRefIds.add(row.reference.id);
