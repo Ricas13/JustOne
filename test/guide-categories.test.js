@@ -166,3 +166,25 @@ test("final event classification keeps clear sport evidence over entertainment w
   assert.equal(eventTypeFor({ category: "Events", name: "Premier League Season Preview" }), "Football");
   assert.equal(eventTypeFor({ category: "Events", name: "Coachella 2026" }), "Music");
 });
+
+test("bowl venues and concerts are not American football; named bowl games are", () => {
+  assert.equal(eventTypeFor({ category: "Music", name: "Hollywood Bowl Concert: London Philharmonic" }), "Music");
+  assert.equal(eventTypeFor({ category: "Music", name: "Super Bowl Halftime Concert" }), "Music");
+  assert.equal(eventTypeFor({ category: "Rugby", name: "Rugby Sevens Bowl Final" }), "Rugby");
+  assert.equal(eventTypeFor({ category: "Events", name: "Music City Bowl" }), "American Football");
+  assert.equal(eventTypeFor({ category: "Events", name: "Rose Bowl" }), "American Football");
+  assert.equal(eventTypeFor({ category: "Events", name: "Champions League of Legends Concert" }), "Music");
+});
+
+test("many closed comments or CDATA sections are scanned in linear time", () => {
+  for (const unit of ["<!--ok-->", "<![CDATA[ok]]>"]) {
+    const x = "<programme><title>F</title>" + unit.repeat(40000) + "</programme>";
+    const t = Date.now();
+    addCategory(x, "Movie", { onlyIfNone: true });
+    assert.ok(Date.now() - t < 1000, `${unit} took ${Date.now() - t}ms`); // quadratic scanning takes several seconds here
+  }
+});
+
+test("an empty provider <category></category> does not suppress inference", () => {
+  assert.match(addCategory("<programme><category></category></programme>", "Movie", { onlyIfNone: true }), /<category>Movie<\/category>/);
+});

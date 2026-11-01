@@ -45,17 +45,17 @@ export function needsSportsTag(category, name = "") {
 
 /** Linear-time removal of comments and CDATA; an unterminated one swallows the rest, as an XML parser would reject it. */
 function stripCommentsAndCdata(xml) {
+  const open = /<!--|<!\[CDATA\[/g; // one forward-only scan for both markers
   let out = "";
   let pos = 0;
-  while (pos < xml.length) {
-    const c = xml.indexOf("<!--", pos);
-    const d = xml.indexOf("<![CDATA[", pos);
-    const start = c < 0 ? d : d < 0 ? c : Math.min(c, d);
-    if (start < 0) { out += xml.slice(pos); break; }
-    out += xml.slice(pos, start);
-    const end = xml.indexOf(start === c ? "-->" : "]]>", start + 4);
+  for (;;) {
+    open.lastIndex = pos;
+    const m = open.exec(xml);
+    if (!m) { out += xml.slice(pos); break; }
+    out += xml.slice(pos, m.index);
+    const end = xml.indexOf(m[0] === "<!--" ? "-->" : "]]>", m.index + m[0].length);
     if (end < 0) break;
-    pos = end + (start === c ? 3 : 3);
+    pos = end + 3;
   }
   return out;
 }
@@ -70,7 +70,7 @@ export function addCategory(programmeXml, label, { onlyIfNone = false } = {}) {
   if (!label) return xml;
   // Ignore comments and CDATA so category-looking text inside them is not mistaken for a tag.
   const visible = stripCommentsAndCdata(xml);
-  const existing = [...visible.matchAll(/<category\b[^<>]*>([^<]*)<\/category\s*>/gi)].map((m) => m[1].trim().toLowerCase());
+  const existing = [...visible.matchAll(/<category\b[^<>]*>([^<]*)<\/category\s*>/gi)].map((m) => m[1].trim().toLowerCase()).filter(Boolean);
   if (onlyIfNone && existing.length) return xml;
   if (existing.includes(label.toLowerCase())) return xml;
   // Insert before the real (last) closing tag, so a "</programme>" inside CDATA or a comment cannot swallow it.

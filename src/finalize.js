@@ -32,7 +32,9 @@ const COUNTRY_RANK = new Map([["GB", 0], ["PT", 1], ["US", 2]]);
 export function eventTypeFor(ref = {}) {
   const hay = normalize(`${ref.category || ""} ${ref.name || ref.title || ""}`);
 
-  if (/\b(?:nfl|american football|college football|bowl)\b/.test(hay)) return "American Football";
+  if (/\b(?:nfl|american football|college football)\b/.test(hay)) return "American Football";
+  // Named bowl games only: "Hollywood Bowl" concerts and rugby "Bowl" finals are not American football.
+  if (/\b(?:super|rose|orange|sugar|cotton|fiesta|peach|citrus|gator|alamo|liberty|pinstripe|music city|holiday) bowl\b/.test(hay) && !/\b(?:concert|halftime|festival)\b/.test(hay)) return "American Football";
   if (/\b(?:basketball|nba|wnba|euroleague|acb|vtb united league|liga femenina|eurocup|baloncesto)\b/.test(hay)) return "Basketball";
   if (/\b(?:baseball|mlb|beisbol)\b/.test(hay)) return "Baseball";
   if (/\b(?:ice hockey|nhl|khl|mhl|ahl|echl|qmjhl|ohl|ushl|whl|euro hockey tour)\b/.test(hay)) return "Ice Hockey";
@@ -49,7 +51,7 @@ export function eventTypeFor(ref = {}) {
   if (/\b(?:darts|pdc)\b/.test(hay)) return "Darts";
   if (/\b(?:snooker|billiards)\b/.test(hay)) return "Snooker";
   // Named top-flight competitions beat ambiguous entertainment words ("Premier League Season Preview").
-  if (/\b(?:premier league|champions league|europa league|la liga|bundesliga|serie a|ligue 1)\b/.test(hay)) return "Football";
+  if (/\b(?:premier league|champions league|europa league|la liga|bundesliga|serie a|ligue 1)\b/.test(hay) && !/\b(?:concert|festival|of legends)\b/.test(hay)) return "Football";
   if (/\b(?:rock in rio|festival|concert|music|coachella|tomorrowland|glastonbury)\b/.test(hay)) return "Music";
   if (/\b(?:jeopardy|tv shows?|premiere|episode|season)\b/.test(hay)) return "TV & Entertainment";
 
