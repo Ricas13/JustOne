@@ -1,5 +1,5 @@
 import { countryGroup, countryOf, stripCountryDecoration, strippedChannelName } from "./identity.js";
-import { hash, normalize, slug, stripTags, text } from "./util.js";
+import { hash, normalize, slug, stripTags, text, xmlDecode } from "./util.js";
 
 
 const NUMBER_WORDS = new Map([
@@ -11,6 +11,12 @@ const GENERIC_CHANNEL_LINK_RE = /^(?:watch|watch now|play|play now|live|live now
 
 function htmlText(value) {
   return stripTags(String(value || "").replace(/&nbsp;/gi, " ").replace(/&#039;/g, "'"));
+}
+// DLHD sometimes double-encodes titles ("Brighton &amp;amp; Hove"): decode what is left.
+function decodeTitleEntities(value) {
+  if (!/&(?:amp|lt|gt|quot|apos|#\d+);/i.test(value)) return value;
+  // Unwrap one layer of "&amp;" only when it escapes another entity, then decode once.
+  return text(xmlDecode(value.replace(/&amp;(amp|lt|gt|quot|apos|#\d+);/gi, "&$1;")));
 }
 function logoUrl(baseUrl, value) {
   const raw = text(value);
@@ -213,7 +219,7 @@ export function parseProtectedSchedule(payload, baseUrl = "https://dlive.sx") {
     if (!categories || typeof categories !== "object") continue;
     for (const [category, rows] of Object.entries(categories)) {
       for (const row of Array.isArray(rows) ? rows : []) {
-        const title = text(row.event ?? row.title);
+        const title = decodeTitleEntities(text(row.event ?? row.title));
         if (!title) continue;
         const time = text(row.time);
         const tm = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(time);

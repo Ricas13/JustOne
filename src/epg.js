@@ -1,3 +1,5 @@
+import { config } from "./config.js";
+import { addCategory, inferChannelCategory, needsSportsTag } from "./guide-categories.js";
 import { normalize, stripTags, text, xmlDecode, xmlEscape } from "./util.js";
 
 const EPG_QUALITY_SUFFIXES = new Set(["hd", "fhd", "uhd", "4k", "sd", "hevc", "h264", "h265", "1080p", "720p", "2160p"]);
@@ -274,7 +276,7 @@ function mergedProgrammesForHits(hits) {
   return accepted.map((row) => row.raw);
 }
 
-function remapProgramme(programme, tvgId, fallbackImage = "") {
+function remapProgramme(programme, tvgId, fallbackImage = "", inferredCategory = null) {
   let out = String(programme || "")
     .replace(/\bchannel=(?:"[^"]+"|'[^']+')/i, `channel="${xmlEscape(tvgId)}"`);
 
@@ -302,6 +304,10 @@ function remapProgramme(programme, tvgId, fallbackImage = "") {
     );
   }
 
+  // Provider programmes with no category at all get the channel's inferred one;
+  // anything the provider tagged is left exactly as it was.
+  if (inferredCategory) out = addCategory(out, inferredCategory, { onlyIfNone: true });
+
   return out;
 }
 
@@ -325,6 +331,7 @@ function generatedLinearProgramme(event, channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(event.name || "Live Event")}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
+    config.guideCategories.enabled && needsSportsTag(event.category, event.name) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape("DLHD schedule reference for this linear channel.")}</desc>`,
     logo ? `    <icon src="${xmlEscape(logo)}" />` : "",
     "  </programme>",
@@ -340,6 +347,7 @@ function generatedEventProgramme(channel) {
     `  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="${xmlEscape(channel.tvgId)}">`,
     `    <title>${xmlEscape(channel.name)}</title>`,
     event.category ? `    <category>${xmlEscape(event.category)}</category>` : "",
+    config.guideCategories.enabled && needsSportsTag(event.category, event.name || channel.name) ? "    <category>Sports</category>" : "",
     `    <desc>${xmlEscape(event.source === "provider" ? "Event listed by the IPTV provider." : "DLHD schedule reference; playback is supplied by configured IPTV providers.")}</desc>`,
     channel.logo ? `    <icon src="${xmlEscape(channel.logo)}" />` : "",
     "  </programme>",
@@ -416,8 +424,9 @@ export function enrichAndBuildGuide(channels, docs, overrides = {}, { dlhdRefere
     const hit = hits.get(channel.id);
     const upstreamProgrammes = hit ? (mergedProgrammes.get(channel.id) || []) : [];
     const fallbackImage = channel.logo || hit?.meta?.icon || "";
+    const inferredCategory = config.guideCategories.enabled ? inferChannelCategory(channel) : null;
     for (const programme of upstreamProgrammes) {
-      out.push(remapProgramme(programme, channel.tvgId, fallbackImage));
+      out.push(remapProgramme(programme, channel.tvgId, fallbackImage, inferredCategory));
     }
 
     // DLHD schedule events that belong to an ordinary 24/7 channel are used as
