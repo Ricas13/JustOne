@@ -55,6 +55,8 @@ function stripCommentsAndCdata(xml) {
     out += xml.slice(pos, m.index);
     const end = xml.indexOf(m[0] === "<!--" ? "-->" : "]]>", m.index + m[0].length);
     if (end < 0) break;
+    // Non-empty CDATA leaves a placeholder so <category><![CDATA[Drama]]></category> still counts as non-empty.
+    if (m[0] !== "<!--" && end > m.index + m[0].length) out += "x";
     pos = end + 3;
   }
   return out;

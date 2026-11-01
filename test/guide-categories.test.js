@@ -188,3 +188,11 @@ test("many closed comments or CDATA sections are scanned in linear time", () => 
 test("an empty provider <category></category> does not suppress inference", () => {
   assert.match(addCategory("<programme><category></category></programme>", "Movie", { onlyIfNone: true }), /<category>Movie<\/category>/);
 });
+
+test("a CDATA-wrapped provider category is preserved; an empty CDATA one is not", () => {
+  const tagged = "<programme><category><![CDATA[Drama]]></category></programme>";
+  assert.equal(addCategory(tagged, "Movie", { onlyIfNone: true }), tagged);
+  assert.match(addCategory("<programme><category><![CDATA[]]></category></programme>", "Movie", { onlyIfNone: true }), /<category>Movie<\/category>/);
+  // category-looking text inside CDATA still does not count
+  assert.match(addCategory("<programme><desc><![CDATA[<category>News</category>]]></desc></programme>", "Movie", { onlyIfNone: true }), /<category>Movie<\/category>\s*<\/programme>/);
+});
