@@ -76,7 +76,10 @@ export function addCategory(programmeXml, label, { onlyIfNone = false } = {}) {
   if (onlyIfNone && existing.length) return xml;
   if (existing.includes(label.toLowerCase())) return xml;
   // Insert before the real (last) closing tag, so a "</programme>" inside CDATA or a comment cannot swallow it.
-  const close = xml.toLowerCase().lastIndexOf("</programme>");
+  // Match in the original XML: Unicode lowercasing may change string length
+  // (e.g. Turkish İ becomes i + a combining dot), shifting insertion offsets.
+  let close = -1;
+  for (const match of xml.matchAll(/<\/programme\s*>/gi)) close = match.index;
   if (close < 0) return xml;
   return `${xml.slice(0, close)}  <category>${label}</category>\n${xml.slice(close)}`;
 }
