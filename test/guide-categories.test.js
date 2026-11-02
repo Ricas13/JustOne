@@ -196,3 +196,33 @@ test("a CDATA-wrapped provider category is preserved; an empty CDATA one is not"
   // category-looking text inside CDATA still does not count
   assert.match(addCategory("<programme><desc><![CDATA[<category>News</category>]]></desc></programme>", "Movie", { onlyIfNone: true }), /<category>Movie<\/category>\s*<\/programme>/);
 });
+
+
+test("Unicode case folding does not shift the XMLTV closing-tag insertion offset", () => {
+  for (const title of ["Muğlaspor - İstanbulspor", "İİİ İstanbulspor", "Galatasaray vs Fenerbahçe"]) {
+    const source = '<programme channel="tr"><title>' + title + '</title></programme>';
+    const out = addCategory(source, "Sports", { onlyIfNone: true });
+    assert.ok(out.endsWith('  <category>Sports</category>\n</programme>'), title + ': ' + out);
+    assert.equal((out.match(/<\/programme>/g) || []).length, 1);
+  }
+
+  const upper = '<programme><title>İstanbul</title></PROGRAMME>';
+  assert.ok(addCategory(upper, "Sports", { onlyIfNone: true }).endsWith('  <category>Sports</category>\n</PROGRAMME>'));
+});
+
+test("Sports EPG inference preserves real provider programme closing tags with Turkish titles", () => {
+  const parsed = parseXmlTv(
+    '<?xml version="1.0"?><tv><channel id="bein.tr"><display-name>beIN Sports 2 Turkey</display-name></channel>' +
+    '<programme channel="bein.tr" start="20261103054500 +0000" stop="20261103073000 +0000">' +
+    '<title>Muğlaspor - İstanbulspor</title><desc></desc></programme></tv>'
+  );
+  const channels = [{
+    id: "bein", key: "bein sports 2 turkey", tvgId: "justone.channel.bein-sports-2-turkey.7e6d819a",
+    name: "beIN Sports 2 Turkey", logo: "", aliasNames: [],
+    variants: [{ originalTvgId: "bein.tr" }],
+  }];
+  const out = enrichAndBuildGuide(channels, [{ id: "guide", name: "Guide", parsed }], {});
+  assert.match(out, /<category>Sports<\/category>\s*<\/programme>/);
+  assert.doesNotMatch(out, /<\s+<category>/);
+  assert.equal((out.match(/<\/programme>/g) || []).length, 1);
+});
